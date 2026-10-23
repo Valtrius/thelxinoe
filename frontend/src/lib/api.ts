@@ -2,6 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { version as clientVersion } from '../../package.json';
 import { captureSession, invalidateSession } from './session';
 import { trackPageWork } from './page-readiness';
+import { invalidatePageWrite } from './navigation-cache';
 export const desktop = typeof window !== 'undefined' && isTauri();
 // The API this build speaks; servers report the range of client APIs they accept.
 export const clientApi = __THELXINOE_API_VERSION__;
@@ -52,7 +53,13 @@ export function api<T>(
   method = 'GET',
   body?: unknown,
 ): Promise<T> {
-  return trackPageWork(() => request<T>(path, method, body));
+  const ownsSession = captureSession();
+  return trackPageWork(() =>
+    request<T>(path, method, body).then((value) => {
+      if (method !== 'GET' && ownsSession()) invalidatePageWrite(path);
+      return value;
+    }),
+  );
 }
 async function request<T>(
   path: string,

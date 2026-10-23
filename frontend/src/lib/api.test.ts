@@ -1,9 +1,57 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { version as clientVersion } from '../../package.json';
 import { ApiError, Events, api, clientApi, missingWebCode } from './api';
+import { navigationCache } from './navigation-cache';
+import { invalidateSession } from './session';
 afterEach(() => {
+  navigationCache.clear();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+it('invalidates navigation data after successful writes but preserves it after rejected writes', async () => {
+  const load = vi.fn(async () => ['movie']);
+  const read = () => navigationCache.read('catalog', 'movies', load, () => {});
+  await read();
+  const fetch = vi.fn(async () => ({
+    ok: false,
+    status: 409,
+    json: async () => ({ error: { code: 'conflict', message: 'Changed' } }),
+  }));
+  vi.stubGlobal('fetch', fetch);
+  await expect(
+    api('/catalog/id/state', 'PUT', { watched: true }),
+  ).rejects.toThrow('Changed');
+  await read();
+  expect(load).toHaveBeenCalledTimes(1);
+  fetch.mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ error: { code: '', message: '' } }),
+  });
+  await api('/catalog/id/state', 'PUT', { watched: true });
+  await read();
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+it('a late write acknowledgement cannot invalidate a new session snapshot', async () => {
+  let finish!: (value: unknown) => void;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    ),
+  );
+  const old = api('/catalog/id/state', 'PUT', { watched: true });
+  invalidateSession();
+  const load = vi.fn(async () => ['current account']);
+  await navigationCache.read('catalog', 'movies', load, () => {});
+  finish({ ok: true, json: async () => ({ saved: true }) });
+  await old;
+  await navigationCache.read('catalog', 'movies', load, () => {});
+  expect(load).toHaveBeenCalledTimes(1);
 });
 class Socket {
   static CONNECTING = 0;

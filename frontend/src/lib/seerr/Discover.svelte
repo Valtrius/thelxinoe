@@ -14,6 +14,7 @@
   import { api, type User } from '../api';
   import { forgetSeerrStatus, seerrStatus } from './status';
   import { inBackground } from '../page-readiness';
+  import { navigationCache } from '../navigation-cache';
   import { attention, acknowledgeAttention } from '../attention';
   import AttentionDot from '../ui/AttentionDot.svelte';
   import Button from '../ui/Button.svelte';
@@ -230,13 +231,21 @@
     feed.error = '';
     const path = `/seerr/discover/${feed.id}`;
     try {
-      const result = await (background
-        ? inBackground(() => api<Results>(path))
-        : api<Results>(path));
-      if (active)
-        feed.items = result.results.filter(
-          (item) => item.mediaType !== 'person',
+      const read = () =>
+        navigationCache.read(
+          'discover',
+          path,
+          () => api<Results>(path),
+          (result) => {
+            if (active) {
+              feed.items = result.results.filter(
+                (item) => item.mediaType !== 'person',
+              );
+              feed.loading = false;
+            }
+          },
         );
+      await (background ? inBackground(read) : read());
     } catch (caught) {
       forgetSeerrStatus();
       if (active) feed.error = String(caught);
@@ -263,6 +272,7 @@
     };
   }
   function retryFeed(feed: Feed) {
+    navigationCache.invalidate('discover');
     feed.requested = false;
     void loadFeed(feed);
   }
@@ -277,26 +287,32 @@
     searching = true;
     error = '';
     try {
-      const result = await api<Results>(
-        `/seerr/search?q=${encodeURIComponent(term)}&page=${nextPage}`,
-      );
-      if (!active || version !== searchGeneration) return;
-      results =
-        nextPage === 1
-          ? result.results
-          : [
-              ...results,
-              ...result.results.filter(
-                (item) =>
-                  !results.some(
-                    (old) =>
-                      old.id === item.id && old.mediaType === item.mediaType,
+      const path = `/seerr/search?q=${encodeURIComponent(term)}&page=${nextPage}`;
+      await navigationCache.read(
+        'discover',
+        path,
+        () => api<Results>(path),
+        (result) => {
+          if (!active || version !== searchGeneration) return;
+          results =
+            nextPage === 1
+              ? result.results
+              : [
+                  ...results,
+                  ...result.results.filter(
+                    (item) =>
+                      !results.some(
+                        (old) =>
+                          old.id === item.id &&
+                          old.mediaType === item.mediaType,
+                      ),
                   ),
-              ),
-            ];
-      page = result.page;
-      pages = result.totalPages;
-      total = result.totalResults;
+                ];
+          page = result.page;
+          pages = result.totalPages;
+          total = result.totalResults;
+        },
+      );
     } catch (caught) {
       if (version === searchGeneration) error = String(caught);
     } finally {

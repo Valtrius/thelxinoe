@@ -21,6 +21,7 @@
   import { twitchPreview, twitchPreviewSet } from './providers/utils';
   import { LatestRequest } from './latest-request';
   import { RefreshTask } from './refresh-task';
+  import { navigationCache } from './navigation-cache';
   import Button from './ui/Button.svelte';
   import Notice from './ui/Notice.svelte';
   import LibraryCard from './ui/LibraryCard.svelte';
@@ -190,8 +191,17 @@
     loading.library = true;
     errors.library = '';
     try {
-      const result = await api<Library>('/me/home');
-      if (current()) library = result;
+      await navigationCache.read(
+        'catalog',
+        '/me/home',
+        () => api<Library>('/me/home'),
+        (result) => {
+          if (current()) {
+            library = result;
+            loaded.library = true;
+          }
+        },
+      );
     } catch (error) {
       if (current()) errors.library = String(error);
     } finally {
@@ -369,6 +379,7 @@
     });
   });
   function refreshSources() {
+    navigationCache.invalidate('catalog', 'youtube', 'twitch', 'kick');
     Object.values(reads).forEach((read) => void read.refresh());
   }
   onMount(() => {

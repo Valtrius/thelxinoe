@@ -12,6 +12,7 @@
   } from '@lucide/svelte';
   import { DropdownMenu } from 'bits-ui';
   import { api } from './api';
+  import { navigationCache } from './navigation-cache';
   import { activity } from './activity';
   import { LatestRequest } from './latest-request';
   import {
@@ -120,20 +121,32 @@
       const query = parent
         ? `parent=${parent}`
         : `kind=${domain === 'Movies' ? 'movie' : domain === 'Shows' ? 'show' : 'artist'}`;
-      const result = await api<{ items: Item[] }>(
-        `/catalog?${query}&q=${encodeURIComponent(search)}${collection ? `&collection=${collection}` : ''}`,
+      const path = `/catalog?${query}&q=${encodeURIComponent(search)}${collection ? `&collection=${collection}` : ''}`;
+      const list = navigationCache.read(
+        'catalog',
+        path,
+        () => api<{ items: Item[] }>(path),
+        (result) => {
+          if (request === generation) {
+            items = result.items;
+            busy = false;
+          }
+        },
       );
+      const groups =
+        domain === 'Movies'
+          ? navigationCache.read(
+              'catalog',
+              '/catalog/collections',
+              () => api<{ items: typeof collections }>('/catalog/collections'),
+              (result) => {
+                if (request === generation) collections = result.items;
+              },
+            )
+          : Promise.resolve();
+      await Promise.all([list, groups]);
       if (request !== generation) return;
-      items = result.items;
       if (refreshDetails && selected) await loadDetails(selected.id);
-      if (request !== generation) return;
-      if (domain === 'Movies') {
-        const result = await api<{ items: typeof collections }>(
-          '/catalog/collections',
-        );
-        if (request !== generation) return;
-        collections = result.items;
-      }
     } catch (e) {
       if (request === generation) error = String(e);
     } finally {
@@ -190,8 +203,16 @@
       })();
     });
   });
+  let observedRevision: number | undefined;
   $effect(() => {
-    if (revision > 0) untrack(() => void load());
+    const next = revision;
+    untrack(() => {
+      if (observedRevision !== undefined && observedRevision !== next) {
+        navigationCache.invalidate('catalog');
+        void load();
+      }
+      observedRevision = next;
+    });
   });
   async function open(item: Item) {
     if (selectedChanged) {

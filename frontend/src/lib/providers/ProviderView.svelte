@@ -6,6 +6,7 @@
   import { captureSession } from '../session';
   import { LatestRequest } from '../latest-request';
   import { RefreshTask } from '../refresh-task';
+  import { navigationCache } from '../navigation-cache';
   import { appearance, updateAppearance } from '../appearance';
   import { compactViewport } from '../responsive';
   import type { MediaChoice, PlayingMedia } from '../playback';
@@ -228,25 +229,34 @@
     const selected: 'youtube' | 'twitch' | 'kick' = platform;
     const current = accountRequests.begin();
     try {
-      const value = await request<OnlineAccount | KickFeed>(
-        `/online/${selected}`,
+      const path = `/online/${selected}`;
+      await navigationCache.read(
+        selected,
+        path,
+        () => request<OnlineAccount | KickFeed>(path),
+        (value) => {
+          if (disposed || !current() || selected !== platform) return;
+          loadedAccounts[selected] = true;
+          if (selected === 'kick') kick = value as KickFeed;
+          else accounts[selected] = value as OnlineAccount;
+          authNow = Date.now();
+          if (
+            selected === 'youtube' &&
+            ((value as OnlineAccount).pending ||
+              (value as OnlineAccount).account.status === 'connected')
+          )
+            pendingGoogleUntil = null;
+          const snapshot = JSON.stringify([selected, value]);
+          if (snapshot !== lastSnapshot || forceData) {
+            if (lastSnapshot && snapshot !== lastSnapshot)
+              navigationCache.invalidate(selected);
+            lastSnapshot = snapshot;
+            forceData = false;
+            refreshData();
+          }
+        },
+        0,
       );
-      if (disposed || !current() || selected !== platform) return;
-      if (selected === 'kick') kick = value as KickFeed;
-      else accounts[selected] = value as OnlineAccount;
-      authNow = Date.now();
-      if (
-        selected === 'youtube' &&
-        ((value as OnlineAccount).pending ||
-          (value as OnlineAccount).account.status === 'connected')
-      )
-        pendingGoogleUntil = null;
-      const snapshot = JSON.stringify([selected, value]);
-      if (snapshot !== lastSnapshot || forceData) {
-        lastSnapshot = snapshot;
-        forceData = false;
-        refreshData();
-      }
     } catch (error) {
       if (!disposed && current() && selected === platform)
         showToast({
