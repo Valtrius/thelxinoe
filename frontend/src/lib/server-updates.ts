@@ -3,6 +3,7 @@ import { api, ApiError, desktop, serverUrl } from './api';
 import { startActivity } from './activity';
 import { refreshAttention } from './attention';
 import { inBackground } from './page-readiness';
+import { RefreshTask } from './refresh-task';
 
 export type ServerUpdate = {
   id: string;
@@ -165,12 +166,12 @@ export const serverUpdates = readable(value, (set) => {
     uncertainInstall = null;
     update({ status: null, offlineSince: 0, error: '' });
   }
-  void refreshServerUpdate();
-  const refresh = () => void refreshServerUpdate();
-  const timer = setInterval(refresh, 3000);
+  const reads = new RefreshTask(refreshServerUpdate, 3000);
+  const refresh = () => void reads.refresh();
+  reads.start();
   window.addEventListener('thelxinoe-product-update', refresh);
   return () => {
-    clearInterval(timer);
+    reads.stop();
     window.removeEventListener('thelxinoe-product-update', refresh);
   };
 });

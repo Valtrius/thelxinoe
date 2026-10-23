@@ -4,7 +4,8 @@
   import { sources, completionDetails } from './helpers';
   import { statisticsPlatformMetrics } from './helpers';
   import { LatestRequest } from '../latest-request';
-  import { onMount, untrack } from 'svelte';
+  import { RefreshTask } from '../refresh-task';
+  import { untrack } from 'svelte';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { CalendarDays, Clock3, Eye, RefreshCw, Timer } from '@lucide/svelte';
   import { api, type User } from '../api';
@@ -65,6 +66,7 @@
   let loading = $state(true);
   let refreshing = $state(false);
   const requests = new LatestRequest();
+  let reads: RefreshTask;
   const channelListKey = $derived(`${range}:${platform}:${scope}:${user.id}`);
   $effect(() => {
     range = ranges.some((item) => item.value === filters.range)
@@ -135,15 +137,15 @@
       $providers,
     ];
     void selection;
-    untrack(() => void loadOverview());
-  });
-
-  onMount(() => {
-    const interval = window.setInterval(() => {
-      if (!document.hidden) void loadOverview(true);
-    }, 30_000);
+    const task = new RefreshTask(() => loadOverview(overview !== null), 30_000);
+    reads = task;
+    untrack(() => {
+      overview = null;
+      loading = true;
+      task.start();
+    });
     return () => {
-      window.clearInterval(interval);
+      task.stop();
       requests.invalidate();
     };
   });
@@ -274,7 +276,7 @@
       aria-label="Refresh statistics"
       title="Refresh statistics"
       disabled={refreshing}
-      onclick={() => void loadOverview(true)}
+      onclick={() => void reads.refresh()}
       ><RefreshCw
         class={`size-4 ${refreshing ? 'animate-spin' : ''}`}
       /></Button
@@ -292,7 +294,7 @@
         <Button
           size="sm"
           variant="secondary"
-          onclick={() => void loadOverview()}>Retry</Button
+          onclick={() => void reads.refresh()}>Retry</Button
         >
       </div>
     </section>

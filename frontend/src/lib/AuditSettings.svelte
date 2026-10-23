@@ -3,6 +3,7 @@
   import { api, type User } from './api';
   import History from './History.svelte';
   import { LatestRequest } from './latest-request';
+  import { RefreshTask } from './refresh-task';
   import Button from './ui/Button.svelte';
   import SettingsCard from './ui/SettingsCard.svelte';
   import SettingRow from './ui/SettingRow.svelte';
@@ -29,6 +30,7 @@
   let busy = $state(false);
   let error = $state('');
   const requests = new LatestRequest();
+  let reads: RefreshTask | undefined;
   const scheduled = $derived(view === 'scheduled');
   const visible = $derived(
     items
@@ -93,7 +95,7 @@
     requests.invalidate();
     try {
       await api(`/admin/retention/${item.id}/${action}`, 'POST');
-      await refresh();
+      await reads?.refresh();
     } catch (failure) {
       error = String(failure);
     } finally {
@@ -102,12 +104,11 @@
   }
   $effect(() => {
     if (view === 'activity') return;
-    untrack(() => void refresh());
-    const timer = setInterval(() => {
-      if (!busy) void refresh();
-    }, 30_000);
+    const task = new RefreshTask(refresh, 30_000, () => !busy);
+    reads = task;
+    untrack(() => task.start());
     return () => {
-      clearInterval(timer);
+      task.stop();
       requests.invalidate();
     };
   });

@@ -6,6 +6,7 @@
   import { onMount } from 'svelte';
   import { LoaderCircle } from '@lucide/svelte';
   import { api } from './api';
+  import { RefreshTask } from './refresh-task';
   import { inBackground } from './page-readiness';
   import { isServerUpdateInterruption } from './server-updates';
   import Button from './ui/Button.svelte';
@@ -77,11 +78,7 @@
       busy = false;
     }
   }
-  onMount(() => {
-    void load();
-    const timer = setInterval(() => void load(), 30000);
-    return () => clearInterval(timer);
-  });
+  onMount(() => new RefreshTask(load, 30_000).start());
   const size = (n: number) => `${(n / 1024 ** 3).toFixed(2)} GB`;
   const when = (seconds: number) =>
     new Date(seconds * 1000).toLocaleString(undefined, {

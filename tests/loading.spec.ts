@@ -100,6 +100,39 @@ for (const platform of ['YouTube', 'Twitch', 'Kick'] as const) {
   });
 }
 
+test('switching providers starts the next account read while the previous one is pending', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, { section: 'YouTube' });
+  const gate = responseGate();
+  await page.route('**/api/v1/online/youtube/watchlists', (route) =>
+    route.fulfill({ json: { items: [] } }),
+  );
+  await page.route('**/api/v1/online/youtube', async (route) => {
+    await gate.promise;
+    await route.fallback();
+  });
+  try {
+    await page.goto('/');
+    await expect(
+      page.getByRole('status', { name: 'Loading YouTube', exact: true }),
+    ).toBeVisible();
+    const next = page.waitForResponse('**/api/v1/online/twitch');
+    await page
+      .getByRole('navigation', { name: 'Main navigation' })
+      .getByRole('link', { name: 'Twitch', exact: true })
+      .click();
+    await next;
+    await expect(page.locator('[data-feed-content]')).toBeVisible();
+    await expect(page.locator('.page-header h1')).toHaveText('Twitch');
+    gate.release();
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  } finally {
+    gate.release();
+  }
+});
+
 test('Home displays ready sources while the library is pending and keeps content during refresh', async ({
   page,
 }, testInfo) => {

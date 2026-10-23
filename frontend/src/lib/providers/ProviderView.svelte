@@ -5,6 +5,7 @@
   import { api as request, desktop } from '../api';
   import { captureSession } from '../session';
   import { LatestRequest } from '../latest-request';
+  import { RefreshTask } from '../refresh-task';
   import { appearance, updateAppearance } from '../appearance';
   import { compactViewport } from '../responsive';
   import type { MediaChoice, PlayingMedia } from '../playback';
@@ -77,14 +78,21 @@
   let authNow = $state(Date.now());
   let nativeReady = $state(true);
   let disposed = false;
-  let loadingPlatform: typeof platform | null = null;
   const loadedAccounts = $state<Partial<Record<typeof platform, boolean>>>({});
   const accountRequests = new LatestRequest();
   let lastSnapshot = '';
+  let forceData = false;
+  let reads: RefreshTask | undefined;
+  const load = () => reads?.refresh() ?? Promise.resolve();
   let refreshAfter = 0;
   let refreshTimer: ReturnType<typeof setTimeout>;
   function refreshData() {
     if (disposed || !ownsSession()) return;
+    if (document.hidden) {
+      forceData = true;
+      void load();
+      return;
+    }
     if (platform !== 'youtube') {
       dataRevision++;
       return;
@@ -149,16 +157,6 @@
     };
   });
   const authPending = $derived(authState.status === 'pending');
-  $effect(() => {
-    const timer = setInterval(
-      () => {
-        authNow = Date.now();
-        if (!document.hidden) void load();
-      },
-      authPending ? 1000 : 5000,
-    );
-    return () => clearInterval(timer);
-  });
   // YouTube's daily quota resets at midnight Pacific time after the server's quota day.
   function quotaReset(day: string): string | null {
     const [year, month, date] = day.split('-').map(Number);
@@ -225,10 +223,9 @@
         sourceKind: 'remote',
       })),
   );
-  async function load() {
-    if (loadingPlatform === platform || disposed || !ownsSession()) return;
+  async function readAccount() {
+    if (disposed || !ownsSession()) return;
     const selected: 'youtube' | 'twitch' | 'kick' = platform;
-    loadingPlatform = selected;
     const current = accountRequests.begin();
     try {
       const value = await request<OnlineAccount | KickFeed>(
@@ -245,8 +242,9 @@
       )
         pendingGoogleUntil = null;
       const snapshot = JSON.stringify([selected, value]);
-      if (snapshot !== lastSnapshot) {
+      if (snapshot !== lastSnapshot || forceData) {
         lastSnapshot = snapshot;
+        forceData = false;
         refreshData();
       }
     } catch (error) {
@@ -260,15 +258,34 @@
     } finally {
       if (current()) {
         loadedAccounts[selected] = true;
-        loadingPlatform = null;
       }
     }
   }
   $effect(() => {
     void platform;
+    const task = new RefreshTask(readAccount, () =>
+      authPending ? 1000 : 5000,
+    );
+    reads = task;
+    untrack(() => {
+      forceData = true;
+      task.start();
+    });
+    return () => {
+      task.stop();
+      accountRequests.invalidate();
+      clearTimeout(refreshTimer);
+    };
+  });
+  let revisionReady = false;
+  $effect(() => {
     void revision;
     untrack(() => {
-      refreshData();
+      if (!revisionReady) {
+        revisionReady = true;
+        return;
+      }
+      forceData = true;
       void load();
     });
   });
@@ -316,7 +333,6 @@
     window.addEventListener('thelxinoe-provider-auth-cancelled', cancelled);
     window.addEventListener('thelxinoe-youtube-progress', progress);
     window.addEventListener('thelxinoe-youtube-download-removed', removed);
-    void load();
     if (desktop)
       void toolsApi
         .check('mpv')
@@ -328,16 +344,9 @@
         .catch(() => {
           nativeReady = false;
         });
-    const refreshVisible = () => {
-      if (!document.hidden) void load();
-    };
-    document.addEventListener('visibilitychange', refreshVisible);
-    window.addEventListener('focus', refreshVisible);
     return () => {
       disposed = true;
       accountRequests.invalidate();
-      document.removeEventListener('visibilitychange', refreshVisible);
-      window.removeEventListener('focus', refreshVisible);
       clearTimeout(refreshTimer);
       clearToasts();
       window.removeEventListener('thelxinoe-download-progress', downloading);

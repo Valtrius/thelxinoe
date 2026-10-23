@@ -31,6 +31,10 @@ let observed: { error: string; status: ServerUpdateStatus | null };
 beforeEach(async () => {
   vi.resetModules();
   vi.stubGlobal('window', new EventTarget());
+  vi.stubGlobal(
+    'document',
+    Object.assign(new EventTarget(), { hidden: false }),
+  );
   source.url = 'https://server.test';
   status = {
     version: '0.1.0',
