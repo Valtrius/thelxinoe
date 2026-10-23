@@ -151,7 +151,7 @@ async fn browse_media(
         .iter()
         .any(|item| item["ImageTags"]["Primary"].is_string())
     {
-        let grant = crate::grants::issue(state, p, "artwork", 300).await?;
+        let grant = crate::grants::artwork(state, p).await?;
         for item in &mut items {
             if item["ImageTags"]["Primary"].is_string() {
                 item["ImageTags"]["Primary"] = json!(grant);

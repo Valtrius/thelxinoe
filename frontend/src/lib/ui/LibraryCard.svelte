@@ -13,6 +13,7 @@
   import { launchingMedia } from '../native-playback';
   import LaunchingOverlay from './LaunchingOverlay.svelte';
   import { youtubeThumbnailSet } from '../providers/utils';
+  import { libraryArtworkSet } from '../artwork';
   let {
     item,
     open,
@@ -88,7 +89,9 @@
     !art ? '' : /^https?:\/\//.test(art) ? art : `${serverUrl()}${art}`,
   );
   const sourceSet = $derived(
-    item.kind === 'youtube' ? youtubeThumbnailSet(source) : undefined,
+    item.kind === 'youtube'
+      ? youtubeThumbnailSet(source)
+      : libraryArtworkSet(source),
   );
   $effect(() => {
     void source;
@@ -133,7 +136,7 @@
   >
     <div
       class={[
-        'tile-art relative grid w-full place-items-center overflow-hidden bg-[linear-gradient(130deg,#121923,#080b10_60%)] text-accent',
+        'tile-art relative grid w-full place-items-center overflow-hidden bg-[linear-gradient(130deg,#121923,#080b10_60%)] text-accent [content-visibility:auto]',
         landscape || (wide && !music)
           ? 'aspect-video'
           : music

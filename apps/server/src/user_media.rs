@@ -100,7 +100,7 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<J
         .filter_map(Value::as_array_mut)
         .flat_map(|items| items.iter_mut())
         .collect::<Vec<_>>();
-    let grant = crate::grants::issue(&state, &p, "artwork", 300).await?;
+    let grant = crate::grants::artwork(&state, &p).await?;
     crate::library::decorate_cards_with(&state, &p, &mut items, &grant).await?;
     // Home shelves are landscape: cards prefer their title's backdrop over a poster.
     crate::managers::status::decorate(&state, &p, &mut items, &grant).await?;

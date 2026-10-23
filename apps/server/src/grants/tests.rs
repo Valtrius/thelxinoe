@@ -2,28 +2,44 @@ use super::*;
 
 #[tokio::test]
 async fn youtube_urls_survive_repeated_requests_rotate_daily_and_follow_session_revocation() {
+    stable_artwork_urls("youtube-artwork", "artwork").await;
+}
+
+#[tokio::test]
+async fn library_urls_survive_repeated_requests_rotate_daily_and_follow_session_revocation() {
+    stable_artwork_urls("artwork", "youtube-artwork").await;
+}
+
+async fn stable_artwork_urls(resource: &'static str, other_resource: &'static str) {
+    async fn issue(state: &AppState, p: &Principal, resource: &str) -> anyhow::Result<String> {
+        if resource == "artwork" {
+            artwork(state, p).await
+        } else {
+            youtube_artwork(state, p).await
+        }
+    }
     let (_temp, state, cookie) = crate::test_support::fixture().await;
     let mut headers = HeaderMap::new();
     headers.insert(axum::http::header::COOKIE, cookie.parse().unwrap());
     let p = security::principal(&state, &headers).await.unwrap();
-    let (a, b) = tokio::join!(youtube_artwork(&state, &p), youtube_artwork(&state, &p));
+    let (a, b) = tokio::join!(issue(&state, &p, resource), issue(&state, &p, resource));
     let token = a.unwrap();
     assert_eq!(token, b.unwrap());
     // No process-local state is required to recover the token.
     assert_eq!(
         token,
-        storage::youtube_artwork(&state.db, state.secrets.clone(), p.clone())
+        storage::artwork(&state.db, state.secrets.clone(), p.clone(), resource)
             .await
             .unwrap()
     );
     assert!(
-        resolve(&state, &token, "youtube-artwork", false)
+        resolve(&state, &token, resource, false)
             .await
             .unwrap()
             .is_some()
     );
     assert!(
-        resolve(&state, &token, "artwork", false)
+        resolve(&state, &token, other_resource, false)
             .await
             .unwrap()
             .is_none()
@@ -43,8 +59,8 @@ async fn youtube_urls_survive_repeated_requests_rotate_daily_and_follow_session_
             .unwrap(),
     );
     let other = security::principal(&state, &headers).await.unwrap();
-    assert_ne!(token, youtube_artwork(&state, &other).await.unwrap());
-    let scope = format!("youtube-artwork-grant:{}", p.session_id);
+    assert_ne!(token, issue(&state, &other, resource).await.unwrap());
+    let scope = format!("{resource}-grant:{}", p.session_id);
     state
         .secrets
         .put(
@@ -54,9 +70,9 @@ async fn youtube_urls_survive_repeated_requests_rotate_daily_and_follow_session_
         )
         .await
         .unwrap();
-    assert_ne!(token, youtube_artwork(&state, &p).await.unwrap());
+    assert_ne!(token, issue(&state, &p, resource).await.unwrap());
     assert!(
-        resolve(&state, &token, "youtube-artwork", false)
+        resolve(&state, &token, resource, false)
             .await
             .unwrap()
             .is_some()
@@ -71,14 +87,14 @@ async fn youtube_urls_survive_repeated_requests_rotate_daily_and_follow_session_
         .await
         .unwrap();
     assert!(
-        resolve(&state, &token, "youtube-artwork", false)
+        resolve(&state, &token, resource, false)
             .await
             .unwrap()
             .is_none()
     );
     // Rotation also collects the encrypted tokens of removed sessions.
-    let other_scope = format!("youtube-artwork-grant:{}", other.session_id);
-    let other_token = youtube_artwork(&state, &other).await.unwrap();
+    let other_scope = format!("{resource}-grant:{}", other.session_id);
+    let other_token = issue(&state, &other, resource).await.unwrap();
     state
         .secrets
         .put(
@@ -88,7 +104,7 @@ async fn youtube_urls_survive_repeated_requests_rotate_daily_and_follow_session_
         )
         .await
         .unwrap();
-    youtube_artwork(&state, &other).await.unwrap();
+    issue(&state, &other, resource).await.unwrap();
     assert!(
         state
             .secrets

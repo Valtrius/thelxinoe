@@ -2,13 +2,15 @@
 use super::*;
 use thelxinoe_database::Database;
 
-pub(super) async fn youtube_artwork(
+pub(super) async fn artwork(
     db: &Database,
     secrets: thelxinoe_auth::SecretStore,
     p: Principal,
+    resource: &'static str,
 ) -> anyhow::Result<String> {
     const DAY: i64 = 86400;
-    let scope = format!("youtube-artwork-grant:{}", p.session_id);
+    let prefix = format!("{resource}-grant:");
+    let scope = format!("{prefix}{}", p.session_id);
     fn cached(
         db: &rusqlite::Connection,
         secrets: &thelxinoe_auth::SecretStore,
@@ -33,23 +35,23 @@ pub(super) async fn youtube_artwork(
     let reader_secrets = secrets.clone();
     let reader_scope = scope.clone();
     if let Some(token) = db
-        .read("grants.youtube_artwork", move |db| {
+        .read("grants.artwork", move |db| {
             cached(db, &reader_secrets, &reader_scope)
         })
         .await?
     {
         return Ok(token);
     }
-    db.write("grants.youtube_artwork.issue", move |db| {
+    db.write("grants.artwork.issue", move |db| {
         let tx = db.transaction()?;
         if let Some(token) = cached(&tx, &secrets, &scope)? { return Ok(token); }
         let token = thelxinoe_auth::token();
         let issued = now();
         let encrypted = secrets.encrypt(&scope, &serde_json::to_vec(&(&token, issued))?)?;
-        tx.execute("DELETE FROM secrets WHERE scope LIKE 'youtube-artwork-grant:%' AND substr(scope,23) NOT IN (SELECT id FROM sessions WHERE expires_at>?1)", [issued])?;
+        tx.execute("DELETE FROM secrets WHERE scope LIKE ?1 AND substr(scope,?2) NOT IN (SELECT id FROM sessions WHERE expires_at>?3)", params![format!("{prefix}%"), prefix.len() as i64 + 1, issued])?;
         tx.execute("DELETE FROM playback_grants WHERE expires_at<=?1", [issued])?;
         // A URL issued just before rotation still has a full day to load lazy images.
-        tx.execute("INSERT INTO playback_grants VALUES (?1,?2,?3,'youtube-artwork',?4)", params![thelxinoe_auth::digest(&token), p.user.id, p.session_id, issued + 2 * DAY])?;
+        tx.execute("INSERT INTO playback_grants VALUES (?1,?2,?3,?4,?5)", params![thelxinoe_auth::digest(&token), p.user.id, p.session_id, resource, issued + 2 * DAY])?;
         tx.execute("INSERT INTO secrets VALUES (?1,?2) ON CONFLICT(scope) DO UPDATE SET ciphertext=excluded.ciphertext", params![scope, encrypted])?;
         tx.commit()?;
         Ok(token)

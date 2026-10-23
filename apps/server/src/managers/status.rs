@@ -1388,7 +1388,7 @@ async fn lookup(
     };
     let title = match found {
         Some(found) => {
-            let grant = crate::grants::issue(&state, &p, "artwork", 300).await?;
+            let grant = crate::grants::artwork(&state, &p).await?;
             let t = found.title;
             json!({"title":t.title,"year":t.year,"overview":t.overview,"runtime":t.runtime,"genres":t.genres,
                 "tmdb_id":t.tmdb_id,"tvdb_id":if manager == "sonarr" {t.tvdb_id} else {None},"imdb_id":t.imdb_id,
@@ -1403,6 +1403,7 @@ async fn lookup(
 #[derive(Deserialize)]
 struct ArtGrant {
     grant: String,
+    width: Option<u32>,
 }
 /// Manager artwork for a title, cached on disk and fetched only from the manager itself.
 async fn artwork(
@@ -1414,6 +1415,7 @@ async fn artwork(
     crate::grants::resolve(&state, &query.grant, "artwork", false)
         .await?
         .ok_or_else(ApiError::unauthorized)?;
+    crate::artwork::validate_width(query.width)?;
     let entity = entity
         .parse::<i64>()
         .ok()
@@ -1442,7 +1444,7 @@ async fn artwork(
         static DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
         let _permit = DOWNLOADS.acquire().await.map_err(anyhow::Error::from)?;
         if cached(&dir, &name, &local).await {
-            return super::metadata::serve_artwork(path, request).await;
+            return super::metadata::serve_artwork(path, request, query.width).await;
         }
         match download(&state, &service_id, &dir, &name, &local).await {
             Ok(true) => {}
@@ -1455,7 +1457,7 @@ async fn artwork(
             }
         }
     }
-    super::metadata::serve_artwork(path, request).await
+    super::metadata::serve_artwork(path, request, query.width).await
 }
 /// What decides which cached title artwork is still wanted: each service's titles.
 fn artwork_key(snapshot: &Snapshot) -> u64 {
