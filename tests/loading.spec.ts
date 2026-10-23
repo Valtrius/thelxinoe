@@ -184,6 +184,90 @@ test('Home displays ready sources while the library is pending and keeps content
   }
 });
 
+test('Home appears with the library while YouTube reads its account and feed together', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, { section: 'Home' });
+  const account = responseGate();
+  let feedRequested = false;
+  await page.route('**/api/v1/online/providers', (route) =>
+    route.fulfill({ json: { youtube: true, twitch: false, kick: false } }),
+  );
+  await page.route('**/api/v1/online/youtube', async (route) => {
+    await account.promise;
+    await route.fulfill({
+      json: { configured: true, account: { status: 'connected' } },
+    });
+  });
+  await page.route('**/api/v1/online/youtube/home', (route) => {
+    feedRequested = true;
+    return route.fulfill({
+      json: {
+        continue_watching: [],
+        next_up: [
+          {
+            videoId: 'abcdefghijk',
+            channelName: 'Channel',
+            title: 'Ready upload',
+            durationSeconds: 600,
+          },
+        ],
+      },
+    });
+  });
+  try {
+    await page.goto('/');
+    await expect(page.locator('[data-page-content]')).toHaveAttribute(
+      'data-page-phase',
+      'idle',
+    );
+    await expect(
+      page.getByRole('status', {
+        name: 'Loading YouTube subscriptions',
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect.poll(() => feedRequested).toBe(true);
+    account.release();
+    await expect(
+      page.getByRole('heading', { name: 'Ready upload', exact: true }),
+    ).toBeVisible();
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  } finally {
+    account.release();
+  }
+});
+
+test('Home stops reading the YouTube feed once it found the account disconnected', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, { section: 'Home' });
+  let accounts = 0;
+  let feeds = 0;
+  await page.route('**/api/v1/online/providers', (route) =>
+    route.fulfill({ json: { youtube: true, twitch: false, kick: false } }),
+  );
+  await page.route('**/api/v1/online/youtube', async (route) => {
+    accounts++;
+    await route.fallback();
+  });
+  await page.route('**/api/v1/online/youtube/home', async (route) => {
+    feeds++;
+    await route.fallback();
+  });
+  await page.goto('/');
+  await expect.poll(() => accounts).toBe(1);
+  await page.getByRole('button', { name: 'Refresh Home' }).click();
+  await expect.poll(() => accounts).toBe(2);
+  await expect(
+    page.getByRole('button', { name: 'Refresh Home' }),
+  ).toBeEnabled();
+  expect(feeds).toBe(1);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('Discover displays completed feeds while another feed is pending', async ({
   page,
 }, testInfo) => {
@@ -225,6 +309,86 @@ test('Discover displays completed feeds while another feed is pending', async ({
   } finally {
     gate.release();
   }
+});
+
+test('Discover appears with its first row while the others load', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, { section: 'Discover' });
+  const gate = responseGate();
+  await page.route('**/api/v1/seerr/status', (route) =>
+    route.fulfill({ json: { configured: true, ready: true } }),
+  );
+  await page.route('**/api/v1/seerr/discover/*', async (route) => {
+    const feed = new URL(route.request().url()).pathname.split('/').at(-1);
+    if (feed !== 'trending') await gate.promise;
+    await route.fulfill({
+      json: {
+        results: [{ id: 1, mediaType: 'movie', title: `First ${feed}` }],
+      },
+    });
+  });
+  try {
+    await page.goto('/');
+    await expect(page.locator('[data-page-content]')).toHaveAttribute(
+      'data-page-phase',
+      'idle',
+    );
+    await expect(
+      page.getByRole('button', { name: /First trending/ }).first(),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('status', { name: 'Loading Popular movies', exact: true }),
+    ).toBeVisible();
+    gate.release();
+    await expect(
+      page.getByRole('button', { name: /First movies/ }),
+    ).toBeVisible();
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  } finally {
+    gate.release();
+  }
+});
+
+test('Discover loads a row once it nears the screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 600 });
+  const fixture = await installUiFixture(page, { section: 'Discover' });
+  const requested: string[] = [];
+  await page.route('**/api/v1/seerr/status', (route) =>
+    route.fulfill({ json: { configured: true, ready: true } }),
+  );
+  await page.route('**/api/v1/seerr/discover/*', async (route) => {
+    const feed = new URL(route.request().url()).pathname.split('/').at(-1)!;
+    requested.push(feed);
+    await route.fulfill({
+      json: {
+        results: Array.from({ length: 8 }, (_, index) => ({
+          id: index + 1,
+          mediaType: 'movie',
+          title: `${feed} ${index}`,
+        })),
+      },
+    });
+  });
+  await page.goto('/');
+  await expect(
+    page.getByRole('button', { name: /trending 0/ }).first(),
+  ).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(requested).toContain('trending');
+  expect(requested).not.toContain('upcoming-tv');
+  const skeleton = page.getByRole('status', {
+    name: 'Loading Upcoming series',
+    exact: true,
+  });
+  await skeleton.scrollIntoViewIfNeeded();
+  await expect(
+    page.getByRole('button', { name: /upcoming-tv 0/ }),
+  ).toBeVisible();
+  expect(requested.filter((feed) => feed === 'upcoming-tv')).toHaveLength(1);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
 });
 
 for (const viewport of [

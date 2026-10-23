@@ -27,6 +27,19 @@
   }
 }
 
+/* Images still loading when their page appeared fade in as they arrive. */
+img[data-arriving] {
+  opacity: 0;
+}
+img[data-arrived] {
+  animation: image-arrive var(--animation-duration) ease-out;
+}
+@keyframes image-arrive {
+  from {
+    opacity: 0;
+  }
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);

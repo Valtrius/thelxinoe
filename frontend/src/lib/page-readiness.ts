@@ -2,6 +2,9 @@ import { tick } from 'svelte';
 
 let active: PagePreparation | undefined;
 let background = 0;
+// How long a page waits for its visible images once it is otherwise ready.
+// Images still loading then fade in as they arrive.
+export const imageWait = 300;
 
 export function trackPageWork<T>(start: () => Promise<T>): Promise<T> {
   const finish = background ? undefined : active?.add();
@@ -42,6 +45,22 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
+function arriving(image: HTMLImageElement) {
+  if (image.complete || 'arriving' in image.dataset) return;
+  image.dataset.arriving = '';
+  const arrived = () => {
+    image.removeEventListener('load', arrived);
+    image.removeEventListener('error', arrived);
+    delete image.dataset.arriving;
+    image.dataset.arrived = '';
+    image.addEventListener('animationend', () => delete image.dataset.arrived, {
+      once: true,
+    });
+  };
+  image.addEventListener('load', arrived);
+  image.addEventListener('error', arrived);
+}
+
 function pageFrame(signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -77,6 +96,7 @@ class PagePreparation {
     let stableFrames = 0;
     let revision = -1;
     let geometry = '';
+    let imageDeadline: number | undefined;
     while (stableFrames < 2) {
       await tick();
       await pageFrame(signal);
@@ -100,14 +120,23 @@ class PagePreparation {
           rect.left <= bounds.right
         );
       });
-      if (images.length) {
+      imageDeadline ??= images.length
+        ? performance.now() + imageWait
+        : undefined;
+      const remaining = (imageDeadline ?? 0) - performance.now();
+      if (images.length && remaining > 0) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
         await untilAborted(
-          Promise.allSettled(images.map((image) => image.decode())),
+          Promise.race([
+            Promise.allSettled(images.map((image) => image.decode())),
+            new Promise((resolve) => (timer = setTimeout(resolve, remaining))),
+          ]),
           signal,
-        );
+        ).finally(() => clearTimeout(timer));
         stableFrames = 0;
         continue;
       }
+      images.forEach(arriving);
       const next = `${root.clientWidth}:${root.clientHeight}:${viewport.scrollTop}:${root.scrollHeight}`;
       stableFrames = next === geometry ? stableFrames + 1 : 0;
       geometry = next;

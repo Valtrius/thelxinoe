@@ -13,6 +13,7 @@
   } from '@lucide/svelte';
   import { api, type User } from '../api';
   import { forgetSeerrStatus, seerrStatus } from './status';
+  import { inBackground } from '../page-readiness';
   import { attention, acknowledgeAttention } from '../attention';
   import AttentionDot from '../ui/AttentionDot.svelte';
   import Button from '../ui/Button.svelte';
@@ -67,32 +68,28 @@
     items: Media[];
     error: string;
     loading: boolean;
+    requested: boolean;
+    // Whether the row is on or near the screen.
+    near: boolean;
   };
+  const feed = (id: string, label: string): Feed => ({
+    id,
+    label,
+    items: [],
+    error: '',
+    loading: true,
+    requested: false,
+    near: false,
+  });
   let feeds = $state<Feed[]>([
-    { id: 'trending', label: 'Trending', items: [], error: '', loading: true },
-    {
-      id: 'movies',
-      label: 'Popular movies',
-      items: [],
-      error: '',
-      loading: true,
-    },
-    { id: 'tv', label: 'Popular series', items: [], error: '', loading: true },
-    {
-      id: 'upcoming',
-      label: 'Upcoming movies',
-      items: [],
-      error: '',
-      loading: true,
-    },
-    {
-      id: 'upcoming-tv',
-      label: 'Upcoming series',
-      items: [],
-      error: '',
-      loading: true,
-    },
+    feed('trending', 'Trending'),
+    feed('movies', 'Popular movies'),
+    feed('tv', 'Popular series'),
+    feed('upcoming', 'Upcoming movies'),
+    feed('upcoming-tv', 'Upcoming series'),
   ]);
+  // Seerr answered ready, so rows may load.
+  let feedsReady = $state(false);
   let tab = $state('discover'),
     query = $state(''),
     results = $state<Media[]>([]),
@@ -196,8 +193,14 @@
   }
   const menuItemClass =
     'flex h-8 w-full cursor-default items-center gap-[0.55rem] whitespace-nowrap px-[0.55rem] text-left text-[0.7rem] text-muted outline-none data-[highlighted]:bg-accent-soft data-[highlighted]:text-foreground [&_svg]:size-[0.85rem] compact:h-11 compact:text-[13px]';
+  // The page appears with its first row. The others load as they near the
+  // screen, each showing its skeleton meanwhile.
   async function load() {
-    for (const feed of feeds) feed.loading = true;
+    feedsReady = false;
+    for (const feed of feeds) {
+      feed.loading = true;
+      feed.requested = false;
+    }
     error = '';
     try {
       const state = await seerrStatus();
@@ -208,31 +211,60 @@
         error = 'Seerr is still completing setup. Try again shortly.';
         return;
       }
-      await Promise.all(
-        feeds.map(async (feed) => {
-          try {
-            const result = await api<Results>(`/seerr/discover/${feed.id}`);
-            if (active) {
-              feed.items = result.results.filter(
-                (item) => item.mediaType !== 'person',
-              );
-              feed.error = '';
-            }
-          } catch (caught) {
-            forgetSeerrStatus();
-            if (active) feed.error = String(caught);
-          } finally {
-            if (active) feed.loading = false;
-          }
-        }),
+      feedsReady = true;
+      // A title page, the requests or a search do not show the rows.
+      await loadFeed(
+        visibleFeeds[0],
+        !!selected || tab === 'requests' || !!query.trim(),
       );
     } catch (caught) {
       if (active) error = String(caught);
     } finally {
-      if (active) {
-        for (const feed of feeds) feed.loading = false;
-      }
+      if (active && !feedsReady) for (const feed of feeds) feed.loading = false;
     }
+  }
+  async function loadFeed(feed: Feed, background = true) {
+    if (!feedsReady || feed.requested) return;
+    feed.requested = true;
+    feed.loading = true;
+    feed.error = '';
+    const path = `/seerr/discover/${feed.id}`;
+    try {
+      const result = await (background
+        ? inBackground(() => api<Results>(path))
+        : api<Results>(path));
+      if (active)
+        feed.items = result.results.filter(
+          (item) => item.mediaType !== 'person',
+        );
+    } catch (caught) {
+      forgetSeerrStatus();
+      if (active) feed.error = String(caught);
+    } finally {
+      if (active) feed.loading = false;
+    }
+  }
+  $effect(() => {
+    if (!feedsReady) return;
+    for (const feed of visibleFeeds)
+      if (feed.near && !feed.requested) untrack(() => void loadFeed(feed));
+  });
+  function nearScreen(node: HTMLElement, feed: Feed) {
+    const observer = new IntersectionObserver(
+      (entries) => (feed.near = entries.some((entry) => entry.isIntersecting)),
+      { root: scrollWorkspace(), rootMargin: '600px 0px' },
+    );
+    observer.observe(node);
+    return {
+      destroy() {
+        observer.disconnect();
+        feed.near = false;
+      },
+    };
+  }
+  function retryFeed(feed: Feed) {
+    feed.requested = false;
+    void loadFeed(feed);
   }
   async function search(nextPage = 1) {
     const term = query.trim(),
@@ -658,15 +690,17 @@
               label={feed.label}
               items={feed.items}
               {open}
-            />{:else if feed.loading}<MediaSkeleton
-              label={`Loading ${feed.label}`}
-              heading={feed.label}
-              layout="poster-row"
-              count={6}
-            />{:else if feed.error}<Notice variant="error"
+            />{:else if feed.loading}<div use:nearScreen={feed}>
+              <MediaSkeleton
+                label={`Loading ${feed.label}`}
+                heading={feed.label}
+                layout="poster-row"
+                count={6}
+              />
+            </div>{:else if feed.error}<Notice variant="error"
               ><strong>{feed.label}</strong>
               <p>{feed.error}</p>
-              <Button variant="ghost" size="sm" onclick={() => void load()}
+              <Button variant="ghost" size="sm" onclick={() => retryFeed(feed)}
                 >Try again</Button
               ></Notice
             >{/if}{/each}
