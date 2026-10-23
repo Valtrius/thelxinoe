@@ -300,6 +300,25 @@ fn format_sort(quality: &str) -> String {
     }
 }
 
+/// yt-dlp's format selection: the best video and audio, in a codec the administrator
+/// allows when the video offers one.
+fn format_selection(excluded: &[&str]) -> String {
+    if excluded.is_empty() {
+        return "bv*+ba/b".into();
+    }
+    let codecs = excluded
+        .iter()
+        .map(|codec| match *codec {
+            "av1" => "av01",
+            "vp9" => "vp0?9",
+            _ => "avc1|h264",
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    let allowed = format!("[vcodec!~='^({codecs})']");
+    format!("bv*{allowed}+ba/b{allowed}/bv*+ba/b")
+}
+
 fn parse_progress(line: &str) -> Option<(i64, Option<i64>, Option<i64>, &'static str)> {
     let parts = line
         .strip_prefix("THELXINOE_PROGRESS:")?
@@ -350,6 +369,7 @@ async fn download(
         .await?;
     let budget = crate::auto_delete::budget(&state.db, video.to_owned()).await?;
     let quality = super::storage::configuration(&state.db).await?.3;
+    let selection = format_selection(&super::excluded_codecs(state).await?);
     let mut bundle: tools::OnlineSnapshot = serde_json::from_str(bundle)?;
     state.tools.runtime.restore_online(&mut bundle)?;
     tools::verify(&bundle.ffmpeg).await?;
@@ -388,8 +408,6 @@ async fn download(
                 "--no-simulate",
                 "--match-filter",
                 "!is_live",
-                "-f",
-                "bv*+ba/b",
                 "--merge-output-format",
                 "mp4",
                 "--ffmpeg-location",
@@ -397,6 +415,7 @@ async fn download(
             .map(Into::into),
         );
         args.push(bundle.ffmpeg.path.clone().into_os_string());
+        args.extend(["-f".into(), selection.clone().into()]);
         args.extend(["--format-sort".into(), format_sort(&quality).into()]);
         if let Some(budget) = budget {
             args.extend(["--max-filesize".into(), budget.to_string().into()]);

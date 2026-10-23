@@ -260,6 +260,47 @@ async fn both_admin_configuration_routes_control_the_same_download_policy() {
     );
     assert_eq!(format_sort("1440p"), "res:1440,fps,hdr:sdr");
     assert_eq!(format_sort("best"), "res,fps,hdr:sdr");
+    assert_eq!(
+        online["youtube_video_codecs"],
+        json!(["av1", "vp9", "h264"])
+    );
+    for (body, status) in [
+        (
+            json!({"youtube_video_codecs":["h264","vp9"]}),
+            StatusCode::OK,
+        ),
+        (json!({}), StatusCode::OK),
+        (json!({"youtube_video_codecs":[]}), StatusCode::BAD_REQUEST),
+        (
+            json!({"youtube_video_codecs":["hevc"]}),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let mut settings =
+            json!({"youtube_downloads":false,"youtube_daily_quota":10000,"youtube_network":"ipv6"});
+        settings
+            .as_object_mut()
+            .unwrap()
+            .extend(body.as_object().unwrap().clone());
+        assert_eq!(
+            call(&state, "/api/v1/admin/online", "PUT", settings, &cookie)
+                .await
+                .0,
+            status
+        );
+    }
+    assert_eq!(
+        call(&state, "/api/v1/admin/online", "GET", json!({}), &cookie)
+            .await
+            .2["youtube_video_codecs"],
+        json!(["vp9", "h264"]),
+        "clients without the codecs keep them"
+    );
+    assert_eq!(format_selection(&[]), "bv*+ba/b");
+    assert_eq!(
+        format_selection(&["av1"]),
+        "bv*[vcodec!~='^(av01)']+ba/b[vcodec!~='^(av01)']/bv*+ba/b"
+    );
     // An unknown family is rejected instead of silently selecting one.
     assert!(
         call(

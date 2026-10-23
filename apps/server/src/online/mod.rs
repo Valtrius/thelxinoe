@@ -38,6 +38,16 @@ use axum::{
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+/// YouTube's video codecs, which the administrator can exclude for players that cannot
+/// decode them.
+pub(super) const VIDEO_CODECS: [&str; 3] = ["av1", "vp9", "h264"];
+async fn excluded_codecs(state: &AppState) -> anyhow::Result<Vec<&'static str>> {
+    let allowed = storage::configuration(&state.db).await?.4;
+    Ok(VIDEO_CODECS
+        .into_iter()
+        .filter(|codec| !allowed.iter().any(|allowed| allowed == codec))
+        .collect())
+}
 pub async fn run(state: AppState) -> anyhow::Result<()> {
     tokio::try_join!(
         sync::run(state.clone()),
@@ -319,7 +329,7 @@ async fn configuration(State(state): State<AppState>, headers: HeaderMap) -> Res
     security::require(&state, &headers, Capability::ManageServer).await?;
     let settings = storage::configuration(&state.db).await?;
     Ok(Json(
-        json!({"google_configured":google(&state).await.is_ok(),"redirect_uri":redirect_uri(&state).ok(),"youtube_downloads":settings.0,"youtube_daily_quota":settings.1,"youtube_network":settings.2,"youtube_network_status":network::status(&state,settings.2),"youtube_download_quality":settings.3,"quota":quota::status(&state).await?}),
+        json!({"google_configured":google(&state).await.is_ok(),"redirect_uri":redirect_uri(&state).ok(),"youtube_downloads":settings.0,"youtube_daily_quota":settings.1,"youtube_network":settings.2,"youtube_network_status":network::status(&state,settings.2),"youtube_download_quality":settings.3,"youtube_video_codecs":settings.4,"quota":quota::status(&state).await?}),
     ))
 }
 #[derive(Deserialize)]
@@ -331,6 +341,9 @@ struct Settings {
     /// Absent keeps the current quality, for clients that don't offer it.
     #[serde(default)]
     youtube_download_quality: Option<String>,
+    /// Absent keeps the current codecs.
+    #[serde(default)]
+    youtube_video_codecs: Option<Vec<String>>,
 }
 async fn configure(
     State(state): State<AppState>,
@@ -349,6 +362,14 @@ async fn configure(
         .is_some_and(|quality| !downloads::QUALITIES.contains(&quality))
     {
         return Err(ApiError::bad("Unsupported download quality"));
+    }
+    if input.youtube_video_codecs.as_ref().is_some_and(|codecs| {
+        codecs.is_empty()
+            || codecs
+                .iter()
+                .any(|codec| !VIDEO_CODECS.contains(&codec.as_str()))
+    }) {
+        return Err(ApiError::bad("Choose at least one supported video codec"));
     }
     let changed = if let Some(client) = &input.google {
         client.validate()?;
@@ -370,6 +391,7 @@ async fn configure(
         })
         .transpose()?;
     storage::configure(&state.db, input, p, changed, encrypted).await?;
+    streams::forget(&state).await;
     state
         .emit(None, "online.configuration.changed", json!({}))
         .await?;

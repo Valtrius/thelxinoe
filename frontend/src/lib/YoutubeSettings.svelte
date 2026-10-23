@@ -13,7 +13,10 @@
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import ProviderIntegrationSwitch from './providers/ProviderIntegrationSwitch.svelte';
   import { providers } from './providers/availability';
-  import type { YoutubeDownloadQuality } from './providers/types';
+  import type {
+    YoutubeDownloadQuality,
+    YoutubeVideoCodec,
+  } from './providers/types';
   let { onConfigured }: { onConfigured?: () => void } = $props();
   type Family = 'ipv4' | 'ipv6';
   type Network = 'auto' | Family;
@@ -24,6 +27,7 @@
     youtube_daily_quota: number;
     youtube_network: Network;
     youtube_download_quality: YoutubeDownloadQuality;
+    youtube_video_codecs: YoutubeVideoCodec[];
     youtube_network_status: {
       ipv4: boolean;
       ipv6: boolean;
@@ -32,6 +36,11 @@
     quota: { used: number; blocked: boolean };
   };
   const familyLabels: Record<Family, string> = { ipv4: 'IPv4', ipv6: 'IPv6' };
+  const codecLabels: Record<YoutubeVideoCodec, string> = {
+    av1: 'AV1',
+    vp9: 'VP9',
+    h264: 'H.264',
+  };
   const ids = $props.id();
   let config = $state<Configuration | null>(null),
     clientId = $state(''),
@@ -40,6 +49,7 @@
     budget = $state(10000),
     network = $state<Network>('auto'),
     downloadQuality = $state<YoutubeDownloadQuality>('best'),
+    codecs = $state<YoutubeVideoCodec[]>([]),
     busy = $state(false),
     savingPreferences = $state(false),
     message = $state('');
@@ -49,6 +59,7 @@
     budget = config.youtube_daily_quota;
     network = config.youtube_network;
     downloadQuality = config.youtube_download_quality;
+    codecs = config.youtube_video_codecs;
   }
   // The server reports no current family only when a fixed family has no route.
   function networkSummary(config: Configuration) {
@@ -83,6 +94,7 @@
         youtube_daily_quota: budget,
         youtube_network: network,
         youtube_download_quality: downloadQuality,
+        youtube_video_codecs: codecs,
       });
       clientId = '';
       clientSecret = '';
@@ -210,12 +222,14 @@
           youtube_daily_quota: budget,
           youtube_network: network,
           youtube_download_quality: downloadQuality,
+          youtube_video_codecs: codecs,
         }}
         onRevert={(previous) => {
           downloads = previous.youtube_downloads;
           budget = previous.youtube_daily_quota;
           network = previous.youtube_network;
           downloadQuality = previous.youtube_download_quality;
+          codecs = previous.youtube_video_codecs;
         }}
         onsave={async (submitted) => {
           await api('/admin/online', 'PUT', submitted);
@@ -253,6 +267,38 @@
             <option value="ipv4">IPv4 only</option>
             <option value="ipv6">IPv6 only</option>
           </select>
+        </SettingRow>
+        <SettingRow
+          label="Video codecs"
+          description="Playback and downloads use only these codecs when a video offers them, even at a lower resolution."
+        >
+          {#snippet children({ labelId })}
+            <div
+              role="group"
+              aria-labelledby={labelId}
+              class="flex flex-wrap gap-4 text-xs"
+            >
+              {#each Object.entries(codecLabels) as [codec, label] (codec)}
+                {@const checked = codecs.includes(codec as YoutubeVideoCodec)}
+                <label class="flex cursor-pointer items-center gap-2"
+                  ><input
+                    type="checkbox"
+                    class="size-3.5 accent-accent"
+                    {checked}
+                    disabled={checked && codecs.length === 1}
+                    onchange={(event) =>
+                      (codecs = (
+                        Object.keys(codecLabels) as YoutubeVideoCodec[]
+                      ).filter((c) =>
+                        c === codec
+                          ? event.currentTarget.checked
+                          : codecs.includes(c),
+                      ))}
+                  />{label}</label
+                >
+              {/each}
+            </div>
+          {/snippet}
         </SettingRow>
         <SettingRow label="Allow YouTube downloads" for={`${ids}-downloads`}>
           <Switch id={`${ids}-downloads`} bind:checked={downloads} />

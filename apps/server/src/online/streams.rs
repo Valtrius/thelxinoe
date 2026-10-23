@@ -296,12 +296,13 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
             return Ok(prepared);
         }
         let prepared = if live::domain(video) {
-            let mut selected = select(&live::extract(state, video).await?, None)?;
+            let mut selected = select(&live::extract(state, video).await?, None, &[])?;
             selected.probe = inspect_codecs(state, selected.rendition()).await?;
             selected
         } else {
+            let excluded = &super::excluded_codecs(state).await?;
             extract::with_metadata(state, video, |metadata, family| async move {
-                let mut selected = select(&metadata, Some(proxy(state, family).await?))?;
+                let mut selected = select(&metadata, Some(proxy(state, family).await?), excluded)?;
                 if selected.source.live {
                     selected.probe = inspect_codecs(state, selected.rendition()).await?;
                 }
@@ -319,6 +320,10 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
         pending.remove(video);
     }
     result
+}
+/// Drops prepared renditions, so the next playback applies changed settings.
+pub(crate) async fn forget(state: &AppState) {
+    state.online.streams.prepared.lock().await.clear();
 }
 async fn proxy(state: &AppState, family: Family) -> Result<String> {
     state
@@ -384,13 +389,13 @@ fn expiry(address: &str) -> Option<i64> {
         .parse()
         .ok()
 }
-fn select(metadata: &Value, proxy: Option<String>) -> Result<Prepared> {
+fn select(metadata: &Value, proxy: Option<String>, excluded: &[&str]) -> Result<Prepared> {
     let live = metadata["is_live"].as_bool().unwrap_or(false);
     let duration = metadata["duration"].as_f64().unwrap_or(0.0);
     if !live && (!duration.is_finite() || duration <= 0.0) {
         return Err(ApiError::conflict("This video is not ready for playback"));
     }
-    let formats = formats::extract(metadata, proxy)?;
+    let formats = formats::extract(metadata, proxy, excluded)?;
     let best = formats
         .iter()
         .rev()
@@ -626,10 +631,12 @@ async fn create_recorded(
                 // A cached signed address can be refused after extraction. Extract
                 // again, moving to the other address family if it is blocked.
                 state.online.streams.prepared.lock().await.remove(video);
+                let excluded = &super::excluded_codecs(state).await?;
                 let (fresh, _) = extract::with_metadata(state, video, |metadata, family| {
                     let options = &options;
                     async move {
-                        let prepared = select(&metadata, Some(proxy(state, family).await?))?;
+                        let prepared =
+                            select(&metadata, Some(proxy(state, family).await?), excluded)?;
                         let (kind, format, qualities) = plan(&prepared, options, vod)?;
                         let value = indexes(state, &format, kind == Kind::Indexed).await?;
                         Ok((prepared, kind, format, qualities, value))
@@ -992,28 +999,28 @@ mod tests {
     }
     #[test]
     fn selection_handles_separate_streams_and_live_without_exposing_urls() {
-        let vod = select(&metadata(false), None).unwrap();
+        let vod = select(&metadata(false), None, &[]).unwrap();
         assert_eq!(vod.duration, 100.0);
         assert!(vod.source.audio.is_some());
         assert!(vod.formats[0].native && vod.formats[0].indexed);
         assert_eq!(vod.probe["streams"][0]["height"], 1080);
         assert!(!vod.probe.to_string().contains("googlevideo"));
-        let live = select(&metadata(true), None).unwrap();
+        let live = select(&metadata(true), None, &[]).unwrap();
         assert!(!live.formats[0].native && !live.formats[0].indexed);
         assert_eq!(live.duration, 0.0);
         let mut live = metadata(true);
         live["formats"][1]["acodec"] = Value::Null;
         live["formats"][1]["protocol"] = json!("m3u8_native");
-        assert!(select(&live, None).unwrap().source.audio.is_some());
+        assert!(select(&live, None, &[]).unwrap().source.audio.is_some());
         // Recorded videos play from their separate files, never a playlist.
         for track in [0, 1] {
             let mut playlist = metadata(false);
             playlist["formats"][track]["protocol"] = json!("m3u8_native");
-            assert!(select(&playlist, None).is_err());
+            assert!(select(&playlist, None, &[]).is_err());
         }
         let mut malformed = metadata(false);
         malformed["formats"][0]["url"] = json!("https://localhost/private");
-        assert!(select(&malformed, None).is_err());
+        assert!(select(&malformed, None, &[]).is_err());
     }
     #[test]
     fn signed_addresses_are_reused_until_shortly_before_they_expire() {
@@ -1022,12 +1029,12 @@ mod tests {
             "https://r1.googlevideo.com/video?expire={}&signature=private",
             now() + 6 * 3600
         ));
-        assert!(select(&metadata, None).unwrap().expires >= now() + 3599);
+        assert!(select(&metadata, None, &[]).unwrap().expires >= now() + 3599);
         metadata["formats"][0]["url"] = json!(format!(
             "https://r1.googlevideo.com/video?expire={}",
             now() + 900
         ));
-        let expires = select(&metadata, None).unwrap().expires;
+        let expires = select(&metadata, None, &[]).unwrap().expires;
         assert!((now() + 250..=now() + 300).contains(&expires));
     }
     #[tokio::test]
@@ -1040,7 +1047,7 @@ mod tests {
             .prepared
             .lock()
             .await
-            .insert(video.into(), select(&metadata(false), None).unwrap());
+            .insert(video.into(), select(&metadata(false), None, &[]).unwrap());
         let input = json!({"media_id":"youtube:abcdefghijk","position":20,"options":{"quality":"auto","audio":null,"subtitle":null,"capabilities":{"video":["h264"],"audio":["aac"],"containers":[],"hls":true,"native_remote":true}}});
         assert_eq!(
             call(&state, "/api/v1/playback", "POST", input.clone(), &cookie)
@@ -1202,7 +1209,7 @@ mod tests {
         remember(
             &state,
             "abcdefghijk",
-            &select(&metadata(false), None).unwrap(),
+            &select(&metadata(false), None, &[]).unwrap(),
         )
         .await;
         drop(held);
@@ -1219,7 +1226,7 @@ mod tests {
             .prepared
             .lock()
             .await
-            .insert(video.into(), select(&metadata(true), None).unwrap());
+            .insert(video.into(), select(&metadata(true), None, &[]).unwrap());
         assert_eq!(
             call(
                 &state,
