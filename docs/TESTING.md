@@ -20,8 +20,8 @@ tests under `test-results/`. CI uploads both when a job fails. Container fixture
 save their results, screenshots and service logs under `.local/`. Native service
 traces are omitted because service responses contain API keys.
 
-No other container may mount the transfer fixture folders: the transfer review
-refuses a configuration with a second writer, so stop development containers that
+No other container may mount the transfer fixture folders: approval then needs a
+declaration the transfer tests don't make, so stop development containers that
 bind-mount the worktree before `pnpm run ci transfers`.
 
 Use the [update lab](UPDATES.md) for server and Windows updates. Protocol tests

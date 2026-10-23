@@ -252,8 +252,6 @@ pub struct Context<'a> {
     /// Every host folder the server mounts at or below /media.
     pub server_media: &'a [String],
     pub appdata_source: &'a str,
-    /// Every other container, inspected: writers and overlapping state.
-    pub others: &'a [Value],
 }
 
 fn media_destination(destination: &str) -> bool {
@@ -417,13 +415,6 @@ pub fn layout(kind: &str, raw: &Value, context: &Context) -> Result<Layout, Stri
         mount.role = "supplementary".into();
         supplementary.push(mount);
     }
-    // Another service's configuration must never share this state.
-    if let Some(name) = sharer(raw, &appdata, context.others) {
-        return Err(format!(
-            "{name} also mounts this configuration ({}); stop sharing it so the copy has a single writer",
-            appdata.source
-        ));
-    }
     Ok(Layout {
         appdata,
         retained,
@@ -431,12 +422,13 @@ pub fn layout(kind: &str, raw: &Value, context: &Context) -> Result<Layout, Stri
     })
 }
 
-/// Another container that mounts the source's configuration, by name.
-fn sharer<'a>(raw: &Value, appdata: &Mount, others: &'a [Value]) -> Option<&'a str> {
-    let other = others
+/// Other containers that mount the source's configuration, by name. The administrator
+/// declares that they don't write it; Thelxinoe can't observe their writes.
+pub fn sharers(raw: &Value, appdata: &Mount, others: &[Value]) -> Vec<String> {
+    let mut names: Vec<String> = others
         .iter()
         .filter(|o| o["Id"] != raw["Id"])
-        .find(|other| {
+        .filter(|other| {
             other["Mounts"]
                 .as_array()
                 .into_iter()
@@ -450,24 +442,31 @@ fn sharer<'a>(raw: &Value, appdata: &Mount, others: &'a [Value]) -> Option<&'a s
                             crate::policy::overlapping(&theirs.source, &appdata.source)
                         }
                 })
-        })?;
-    Some(
-        other["Name"]
-            .as_str()
-            .unwrap_or("another container")
-            .trim_start_matches('/'),
-    )
+        })
+        .map(|other| {
+            other["Name"]
+                .as_str()
+                .unwrap_or("another container")
+                .trim_start_matches('/')
+                .to_owned()
+        })
+        .collect();
+    // Container listings aren't ordered; the reviewed evidence must be.
+    names.sort();
+    names
 }
 
 /// What could restart, recreate or write the original once it runs again: an updater whose
-/// scope includes it, or another container mounting its configuration. Unrelated Compose
-/// members and containers with Docker access were declared at approval, so their changes
-/// don't count; the original's own configuration is compared separately.
+/// scope includes it, or another container mounting its configuration that wasn't declared.
+/// Unrelated Compose members, containers with Docker access and `declared` sharers were
+/// declared at approval, so their changes don't count; the original's own configuration is
+/// compared separately.
 pub fn restart_threat(
     raw: &Value,
     appdata: &Mount,
     others: &[Value],
     controller: &str,
+    declared: &[String],
 ) -> Option<String> {
     if let Some(updater) = automation(raw, others, controller)
         .into_iter()
@@ -478,8 +477,11 @@ pub fn restart_threat(
             updater.name, updater.name
         ));
     }
-    sharer(raw, appdata, others).map(|name| {
-        format!(
+    sharers(raw, appdata, others)
+        .into_iter()
+        .find(|name| !declared.contains(name))
+        .map(|name| {
+            format!(
             "{name} also mounts the original's configuration ({}); stop sharing it before returning",
             appdata.source
         )
@@ -827,12 +829,11 @@ pub fn ports(raw: &Value, port: Option<u16>) -> (Option<u16>, Vec<Value>) {
 mod tests {
     use super::*;
 
-    fn context<'a>(others: &'a [Value]) -> Context<'a> {
+    fn context() -> Context<'static> {
         Context {
             media_source: "/srv/media",
             server_media: &[],
             appdata_source: "/var/lib/docker/volumes/thelxinoe_deployment/_data",
-            others,
         }
     }
     fn bind(source: &str, destination: &str, writable: bool) -> Value {
@@ -911,7 +912,7 @@ mod tests {
             {"Type":"volume","Name":"radarr_config","Source":"/var/lib/docker/volumes/radarr_config/_data","Destination":"/config","RW":true},
             bind("/srv/media/movies","/movies",true), bind("/srv/media/downloads","/downloads",true),
             bind("/etc/localtime","/etc/localtime",false), bind("/srv/certs","/certs",false)]});
-        let layout = layout("radarr", &raw, &context(&[])).unwrap();
+        let layout = layout("radarr", &raw, &context()).unwrap();
         assert_eq!(layout.appdata.kind, "volume");
         assert_eq!(layout.appdata.source, "radarr_config");
         assert_eq!(
@@ -939,8 +940,8 @@ mod tests {
         reversed.reverse();
         let reversed = json!({"Id":"a","Config":{"Env":[]},"Mounts":reversed});
         assert_eq!(
-            serde_json::to_value(layout("radarr", &forward, &context(&[])).unwrap()).unwrap(),
-            serde_json::to_value(layout("radarr", &reversed, &context(&[])).unwrap()).unwrap()
+            serde_json::to_value(layout("radarr", &forward, &context()).unwrap()).unwrap(),
+            serde_json::to_value(layout("radarr", &reversed, &context()).unwrap()).unwrap()
         );
     }
 
@@ -951,79 +952,81 @@ mod tests {
         let secondary = ["/srv/shared/movies".to_owned()];
         let context = Context {
             server_media: &secondary,
-            ..context(&[])
+            ..context()
         };
         assert!(
             layout("radarr", &raw, &context)
                 .unwrap_err()
                 .contains("overlaps media")
         );
-        assert!(layout("radarr", &raw, &self::context(&[])).is_ok());
+        assert!(layout("radarr", &raw, &self::context()).is_ok());
     }
 
     #[test]
     fn ambiguous_or_unsupported_storage_is_rejected_with_its_reason() {
-        let reason = |mounts: Value, others: &[Value]| {
+        let reason = |mounts: Value| {
             layout(
                 "radarr",
                 &json!({"Id":"a","Config":{"Env":[]},"Mounts":mounts}),
-                &context(others),
+                &context(),
             )
             .unwrap_err()
         };
         assert!(
-            reason(json!([bind("/srv/media/movies", "/movies", true)]), &[])
-                .contains("writable layer")
+            reason(json!([bind("/srv/media/movies", "/movies", true)])).contains("writable layer")
         );
         assert!(
-            reason(
-                json!([
-                    bind("/srv/appdata/radarr", "/config", true),
-                    bind("/srv/logs", "/config/logs", true)
-                ]),
-                &[]
-            )
+            reason(json!([
+                bind("/srv/appdata/radarr", "/config", true),
+                bind("/srv/logs", "/config/logs", true)
+            ]))
             .contains("ambiguous")
         );
         assert!(
-            reason(
-                json!([
-                    bind("/srv/appdata/radarr", "/config", true),
-                    bind("/srv/backups", "/backups", true)
-                ]),
-                &[]
-            )
+            reason(json!([
+                bind("/srv/appdata/radarr", "/config", true),
+                bind("/srv/backups", "/backups", true)
+            ]))
             .contains("/backups is writable")
         );
         assert!(
-            reason(json!([bind("/srv/media/radarr", "/config", true)]), &[])
-                .contains("overlaps media")
+            reason(json!([bind("/srv/media/radarr", "/config", true)])).contains("overlaps media")
         );
         assert!(
-            reason(
-                json!([
-                    bind("/srv/appdata/radarr", "/config", true),
-                    bind("/var/run/docker.sock", "/var/run/docker.sock", true)
-                ]),
-                &[]
-            )
+            reason(json!([
+                bind("/srv/appdata/radarr", "/config", true),
+                bind("/var/run/docker.sock", "/var/run/docker.sock", true)
+            ]))
             .contains("Docker socket")
         );
         let partial = json!({"Id":"a","Config":{"Env":[]},
             "Mounts":[{"Type":"volume","Name":"shared","Source":"/var/lib/docker/volumes/shared/_data","Destination":"/config","RW":true}],
             "HostConfig":{"Mounts":[{"Type":"volume","Source":"shared","Target":"/config","VolumeOptions":{"Subpath":"radarr"}}]}});
         assert!(
-            layout("radarr", &partial, &context(&[]))
+            layout("radarr", &partial, &context())
                 .unwrap_err()
                 .contains("part of a Docker volume")
         );
-        let writer = json!({"Id":"b","Name":"/backup-sidecar","Mounts":[bind("/srv/appdata/radarr","/source",false)]});
+    }
+
+    #[test]
+    fn containers_sharing_the_configuration_are_reported_until_declared() {
+        let raw = json!({"Id":"a","Config":{"Env":[]},"Mounts":[bind("/srv/stacks/radarr/config","/config",true)]});
+        let parent = json!({"Id":"b","Name":"/arcane","Mounts":[bind("/srv/stacks","/app/data/projects",true)]});
+        let sidecar = json!({"Id":"c","Name":"/backup-sidecar","Mounts":[bind("/srv/stacks/radarr/config","/source",false)]});
+        let unrelated = json!({"Id":"d","Name":"/sonarr","Mounts":[bind("/srv/stacks/sonarr/config","/config",true)]});
+        let others = [sidecar, unrelated, parent, raw.clone()];
+        let layout = layout("radarr", &raw, &context()).unwrap();
+        let shared = sharers(&raw, &layout.appdata, &others);
+        assert_eq!(shared, ["arcane", "backup-sidecar"]);
         assert!(
-            reason(
-                json!([bind("/srv/appdata/radarr", "/config", true)]),
-                &[writer]
-            )
-            .contains("backup-sidecar")
+            restart_threat(&raw, &layout.appdata, &others, "", &shared[..1])
+                .unwrap()
+                .contains("backup-sidecar")
+        );
+        assert_eq!(
+            restart_threat(&raw, &layout.appdata, &others, "", &shared),
+            None
         );
     }
 

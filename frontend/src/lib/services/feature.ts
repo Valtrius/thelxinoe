@@ -355,6 +355,7 @@ export type TransferPlan = {
     scope: string;
     blocks: boolean;
   }[];
+  shared_appdata?: string[];
   compose: {
     project: string;
     service: string | null;
@@ -479,6 +480,7 @@ export type TransferDeclarations = {
   configuration_management: boolean;
   manual_compose: boolean;
   unobservable_automation: boolean;
+  shared_appdata: boolean;
   scoped_removed_from_files: boolean;
   scoped_no_orphan_removal: boolean;
   scoped_no_restart: boolean;

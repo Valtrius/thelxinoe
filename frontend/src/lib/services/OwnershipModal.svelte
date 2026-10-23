@@ -58,6 +58,7 @@
     configuration_management: false,
     manual_compose: false,
     unobservable_automation: false,
+    shared_appdata: false,
     scoped_removed_from_files: false,
     scoped_no_orphan_removal: false,
     scoped_no_restart: false,
@@ -92,6 +93,8 @@
   const dockerAccess = $derived(
     plan?.automation.filter((item) => item.kind === 'docker_access') ?? [],
   );
+  // Reviews from earlier releases don't report shared configuration.
+  const sharedAppdata = $derived(plan?.shared_appdata ?? []);
   const declared = $derived(
     declarations.cron &&
       declarations.systemd &&
@@ -99,6 +102,7 @@
       declarations.configuration_management &&
       declarations.manual_compose &&
       (!dockerAccess.length || declarations.unobservable_automation) &&
+      (!sharedAppdata.length || declarations.shared_appdata) &&
       (!plan?.compose ||
         (operation?.choices.compose_mode === 'scoped' &&
           declarations.scoped_removed_from_files &&
@@ -748,6 +752,15 @@
       {:else}<p class="text-muted">
           No updaters or other containers with Docker access.
         </p>{/if}
+      {#if sharedAppdata.length}
+        <Notice tone="warning" class="mt-2"
+          >{sharedAppdata.join(', ')}
+          {sharedAppdata.length === 1 ? 'also mounts' : 'also mount'} the original's
+          configuration ({plan!.source.appdata.source}). A write during the copy
+          or after the transfer can corrupt the copy or the original kept for
+          recovery.</Notice
+        >
+      {/if}
       {#if plan!.compose}
         <p class="mt-2">
           The original belongs to the Compose project <strong
@@ -859,6 +872,11 @@
             bind:checked={declarations.unobservable_automation}
             >{dockerAccess.map((item) => item.name).join(', ')} won't start, recreate
             or remove the original</Switch
+          >{/if}
+        {#if sharedAppdata.length}<Switch
+            size="sm"
+            bind:checked={declarations.shared_appdata}
+            >{sharedAppdata.join(', ')} won't write the original's configuration</Switch
           >{/if}
       </div>
     </section>
