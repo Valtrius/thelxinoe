@@ -23,7 +23,6 @@ import type {
 let launch: ((choice: MediaChoice) => Promise<void>) | undefined;
 let owner = '';
 const videos = new Map<string, YoutubeVideo>();
-const artworkExpires = new Map<string, number>();
 const streams = new Map<string, { id: string; title: string }>();
 export function connectPresentation(
   user: string,
@@ -34,7 +33,6 @@ export function connectPresentation(
   return () => {
     launch = undefined;
     videos.clear();
-    artworkExpires.clear();
     streams.clear();
     owner = '';
   };
@@ -80,15 +78,6 @@ export function normalizeError(error: unknown): AppError {
 function remember(video: YoutubeVideo): YoutubeVideo {
   if (video.thumbnailUrl?.startsWith('/'))
     video.thumbnailUrl = serverUrl() + video.thumbnailUrl;
-  const previous = videos.get(video.videoId);
-  if (
-    video.thumbnailUrl &&
-    previous?.thumbnailUrl &&
-    (artworkExpires.get(video.videoId) ?? 0) > Date.now()
-  ) {
-    video.thumbnailUrl = previous.thumbnailUrl;
-  } else if (video.thumbnailUrl)
-    artworkExpires.set(video.videoId, Date.now() + 240_000);
   videos.set(video.videoId, video);
   return video;
 }

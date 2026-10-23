@@ -21,7 +21,7 @@ const video = (id: string, title: string, position = 0, last_played = 0) => ({
 });
 
 for (const density of [1, 2]) {
-  test.describe(`YouTube thumbnails at ${density}x density`, () => {
+  test.describe(`Artwork at ${density}x density`, () => {
     test.use({ deviceScaleFactor: density });
     test('Home requests one size matching its card instead of the full image', async ({
       page,
@@ -54,6 +54,36 @@ for (const density of [1, 2]) {
         )
         .toBeGreaterThan(0);
       expect(requested).toEqual([density === 1 ? 320 : 640]);
+    });
+    test('Home selects a library card variant instead of the original', async ({
+      page,
+    }) => {
+      const { data } = await homeFixture(page);
+      Object.assign(data.library.continue_watching[0], {
+        artwork_url: '/api/v1/catalog/movie/artwork?grant=stable',
+      });
+      const requested: number[] = [];
+      await page.route('**/api/v1/catalog/movie/artwork?*', async (route) => {
+        const width = Number(
+          new URL(route.request().url()).searchParams.get('width'),
+        );
+        requested.push(width);
+        await route.fulfill({
+          contentType: 'image/svg+xml',
+          body: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${width * 1.5}"><rect width="100%" height="100%" fill="#555"/></svg>`,
+        });
+      });
+      await page.goto('/');
+      const image = page.locator(
+        '[data-layout-key="home-continue:movie"] img[data-art]',
+      );
+      await expect(image).toBeVisible();
+      await expect
+        .poll(() =>
+          image.evaluate((img) => (img as HTMLImageElement).naturalWidth),
+        )
+        .toBeGreaterThan(0);
+      expect(requested).toEqual([density === 1 ? 500 : 1000]);
     });
   });
 }

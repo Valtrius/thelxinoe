@@ -35,7 +35,16 @@ pub async fn resolve(
 }
 
 pub async fn youtube_artwork(state: &AppState, p: &Principal) -> anyhow::Result<String> {
-    storage::youtube_artwork(&state.db, state.secrets.clone(), p.clone()).await
+    storage::artwork(
+        &state.db,
+        state.secrets.clone(),
+        p.clone(),
+        "youtube-artwork",
+    )
+    .await
+}
+pub async fn artwork(state: &AppState, p: &Principal) -> anyhow::Result<String> {
+    storage::artwork(&state.db, state.secrets.clone(), p.clone(), "artwork").await
 }
 pub async fn event_ticket(
     State(state): State<AppState>,

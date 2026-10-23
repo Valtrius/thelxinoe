@@ -153,7 +153,7 @@ pub async fn browse(
     let last = (items.len() >= 500)
         .then(|| items.last()?["title"].as_str().map(str::to_lowercase))
         .flatten();
-    let grant = crate::grants::issue(&state, &p, "artwork", 300).await?;
+    let grant = crate::grants::artwork(&state, &p).await?;
     decorate_cards_with(
         &state,
         &p,
@@ -223,7 +223,7 @@ pub async fn detail(
     let mut item = storage::detail(&state.db, media_id.clone())
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let grant = crate::grants::issue(&state, &p, "artwork", 300).await?;
+    let grant = crate::grants::artwork(&state, &p).await?;
     item["artwork_url"] = Value::Null;
     decorate_cards_with(&state, &p, &mut [&mut item], &grant).await?;
     crate::managers::status::detail(&state, &p, &mut item, &grant).await?;

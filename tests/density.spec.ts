@@ -1,5 +1,97 @@
 import { expect, test } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
+
+test('offscreen artwork skips rendering without changing a large library grid', async ({
+  page,
+}) => {
+  await installUiFixture(page, { section: 'Movies' });
+  await page.route('**/api/v1/catalog?**', (route) =>
+    route.fulfill({
+      json: {
+        items: Array.from({ length: 150 }, (_, index) => ({
+          id: `movie-${index}`,
+          kind: 'movie',
+          title:
+            index % 2
+              ? `Movie ${index}`
+              : `A much longer movie title that wraps across several lines ${index}`,
+          available: true,
+          year: 2026,
+        })),
+        total: 150,
+      },
+    }),
+  );
+  await page.goto('/');
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
+  const cards = page.locator('.library-tile');
+  await expect(cards).toHaveCount(150);
+  const last = cards.last();
+  const skipped = () =>
+    last
+      .locator('.tile-art svg')
+      .evaluate(
+        (node) => !node.checkVisibility({ contentVisibilityAuto: true }),
+      );
+  await expect.poll(skipped).toBe(true);
+  const geometry = () =>
+    page.locator('[data-card-grid]').evaluate((grid) => ({
+      height: grid.getBoundingClientRect().height,
+      cards: [...grid.children].map((card) => ({
+        width: card.getBoundingClientRect().width,
+        height: card.getBoundingClientRect().height,
+      })),
+    }));
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect
+      .poll(() =>
+        cards
+          .first()
+          .boundingBox()
+          .then((box) => box!.width),
+      )
+      .toBeGreaterThan(0);
+    // Wait for the layout's own resize animation before comparing containment modes.
+    await expect
+      .poll(async () => {
+        const a = await geometry();
+        await page.evaluate(
+          () =>
+            new Promise((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(resolve)),
+            ),
+        );
+        return JSON.stringify(a) === JSON.stringify(await geometry());
+      })
+      .toBe(true);
+    const contained = await geometry();
+    await page
+      .locator('.tile-art')
+      .evaluateAll((nodes) =>
+        nodes.forEach(
+          (node) => ((node as HTMLElement).style.contentVisibility = 'visible'),
+        ),
+      );
+    expect(await geometry()).toEqual(contained);
+    await page
+      .locator('.tile-art')
+      .evaluateAll((nodes) =>
+        nodes.forEach((node) =>
+          (node as HTMLElement).style.removeProperty('content-visibility'),
+        ),
+      );
+    await last.scrollIntoViewIfNeeded();
+    await expect.poll(skipped).toBe(false);
+    await expect(last.locator('.tile-art')).toBeInViewport();
+    await last.locator('.card-primary').focus();
+    await expect(last.locator('.card-primary')).toBeFocused();
+    await cards.first().scrollIntoViewIfNeeded();
+  }
+});
 import { installDensityData } from '../scripts/density-fixtures.mjs';
 
 test('poster and video density stay independent across settings, all views and reloads', async ({

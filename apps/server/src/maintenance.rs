@@ -18,6 +18,9 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 }
 
 async fn prune(state: &AppState) -> anyhow::Result<()> {
+    if let Err(error) = crate::artwork::prune(&state.config.cache).await {
+        tracing::warn!(%error, "Card artwork cache cleanup failed");
+    }
     let started = now();
     let mut removed = 0;
     loop {

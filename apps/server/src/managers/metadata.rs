@@ -939,6 +939,7 @@ async fn collections(State(state): State<AppState>, headers: HeaderMap) -> Resul
 #[derive(Deserialize)]
 struct ArtGrant {
     grant: String,
+    width: Option<u32>,
 }
 
 async fn artwork(
@@ -953,14 +954,22 @@ async fn artwork(
     if media_id.len() != 36 || !media_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         return Err(ApiError::not_found());
     }
-    serve_artwork(state.config.cache.join("artwork").join(media_id), request).await
+    serve_artwork(
+        state.config.cache.join("artwork").join(media_id),
+        request,
+        query.width,
+    )
+    .await
 }
 
 /// Serve one cached artwork file with its detected image type.
 pub(super) async fn serve_artwork(
     path: std::path::PathBuf,
     request: Request<Body>,
+    width: Option<u32>,
 ) -> Result<Response> {
+    crate::artwork::validate_width(width)?;
+    let path = crate::artwork::card(path, width).await;
     use tokio::io::AsyncReadExt;
     // The type only needs the signature; the file itself streams from disk.
     let mut signature = Vec::with_capacity(4);
@@ -983,7 +992,7 @@ pub(super) async fn serve_artwork(
         .into_response();
     response
         .headers_mut()
-        .insert("cache-control", "private, max-age=300".parse().unwrap());
+        .insert("cache-control", "private, max-age=86400".parse().unwrap());
     response
         .headers_mut()
         .insert("content-type", content_type.parse().unwrap());

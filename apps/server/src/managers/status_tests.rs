@@ -1019,7 +1019,7 @@ async fn manager_artwork_is_proxied_from_the_cache_with_a_grant() {
     let served = call(&state, &url, "GET", Value::Null, "").await;
     assert_eq!(served.0, StatusCode::OK);
     assert_eq!(served.1["content-type"], "image/jpeg");
-    assert_eq!(served.1["cache-control"], "private, max-age=300");
+    assert_eq!(served.1["cache-control"], "private, max-age=86400");
     let grant = url.split("grant=").nth(1).unwrap();
     for path in [
         "/api/v1/catalog/titles/sonarr-1/10/artwork/fanart?grant=wrong".to_owned(),

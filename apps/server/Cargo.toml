@@ -41,7 +41,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 process-wrap = { version = "10", default-features = false, features = ["tokio1", "creation-flags", "job-object", "kill-on-drop", "process-group"] }
 tempfile = "3"
 base64 = "0.22"
-image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 webauthn-rs = { version = "0.5.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 openidconnect = { version = "4.0.1", default-features = false }
 totp-rs = { version = "6.0.0", features = ["otpauth", "gen_secret"] }
