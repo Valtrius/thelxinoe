@@ -583,6 +583,99 @@ async fn watchlist_library_skips_a_single_list_and_restores_folders_per_user() {
 }
 
 #[tokio::test]
+async fn youtube_genres_filter_videos_shorts_and_broadcasts() {
+    let (_temp, state, _) = fixture().await;
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES('alice','channel','Channel','s',1)", [])?;
+        for (video, title, broadcast, short) in [("aaaaaaaaaaa", "Video", "none", Some(0)), ("bbbbbbbbbbb", "Unchecked", "none", None), ("ccccccccccc", "Short", "none", Some(1)), ("ddddddddddd", "Live", "live", Some(0)), ("eeeeeeeeeee", "Replay", "replay", Some(1)), ("fffffffffff", "Upcoming", "upcoming", Some(0))] {
+            db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,privacy,duration,broadcast,is_short) VALUES('alice',?1,'channel',?2,'public',120,?3,?4)", rusqlite::params![video,title,broadcast,short])?;
+        }
+        db.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,active) VALUES('alice','t','t','Streamer','Title','Category',1,'2026-10-14T10:00:00Z','s',1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    let token = login(&state, "alice", DEVICE).await;
+    let auth = [("X-Emby-Token", token.as_str())];
+    let root = "d7df0f21caa645a09798267150600001";
+    let (status, genres) = call(
+        &state,
+        &format!("/Genres?ParentId={root}"),
+        "GET",
+        Value::Null,
+        &auth,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let genre = |name: &str| {
+        genres["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["Name"] == name)
+            .unwrap()["Id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let names = |page: &Value| {
+        let mut names = page["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["Name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let (_, all) = call(
+        &state,
+        &format!("/Items?ParentId={root}"),
+        "GET",
+        Value::Null,
+        &auth,
+    )
+    .await;
+    let short = all["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["Name"] == "Short")
+        .unwrap();
+    assert_eq!(short["Genres"], json!(["Shorts"]));
+    assert_eq!(short["GenreItems"][0]["Id"], genre("Shorts"));
+    for (selected, expected) in [
+        (vec!["Videos"], vec!["Unchecked", "Video"]),
+        (vec!["Shorts"], vec!["Short"]),
+        (vec!["Live", "Live replays"], vec!["Live", "Replay"]),
+    ] {
+        let ids = selected
+            .iter()
+            .map(|name| genre(name))
+            .collect::<Vec<_>>()
+            .join(",");
+        let (status, page) = call(
+            &state,
+            &format!("/Items?ParentId={root}&GenreIds={ids}"),
+            "GET",
+            Value::Null,
+            &auth,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(names(&page), expected, "{selected:?}");
+        assert_eq!(page["TotalRecordCount"], expected.len());
+    }
+    let (_, twitch) = call(
+        &state,
+        "/Genres?ParentId=d7df0f21caa645a09798267150600002",
+        "GET",
+        Value::Null,
+        &auth,
+    )
+    .await;
+    assert_eq!(twitch["TotalRecordCount"], 0);
+}
+
+#[tokio::test]
 async fn twitch_community_rating_sorts_by_viewers_and_describes_the_stream() {
     let (_temp, state, _) = fixture().await;
     state.db.write("test.fixture", |db| {
