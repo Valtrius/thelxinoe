@@ -196,6 +196,7 @@ export function settingsSeed() {
       youtube_daily_quota: 10000,
       youtube_network: 'auto',
       youtube_download_quality: 'best',
+      youtube_video_codecs: ['av1', 'vp9', 'h264'],
       youtube_network_status: { ipv4: true, ipv6: true, current: 'ipv6' },
       quota: { used: 1420, blocked: false },
     },

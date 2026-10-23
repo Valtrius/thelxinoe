@@ -76,6 +76,7 @@ async function providerFixture(page: Page, platform: string, admin = true) {
         youtube_daily_quota: 10000,
         youtube_network: 'auto',
         youtube_download_quality: 'best',
+        youtube_video_codecs: ['av1', 'vp9', 'h264'],
         youtube_network_status: { ipv4: true, ipv6: true, current: 'ipv4' },
         quota: { used: 0, blocked: false },
       });
@@ -426,6 +427,28 @@ test('YouTube public video network saves with the other preferences', async ({
         youtube_network: 'ipv6',
       },
     });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('YouTube video codecs save and keep at least one codec', async ({
+  page,
+}) => {
+  const fixture = await providerFixture(page, 'YouTube');
+  await page.goto('/');
+  const codecs = page.getByRole('group', { name: 'Video codecs' });
+  await codecs.getByLabel('AV1').uncheck();
+  await expect
+    .poll(() => fixture.state.writes.at(-1))
+    .toMatchObject({
+      path: '/admin/online',
+      body: { youtube_video_codecs: ['vp9', 'h264'] },
+    });
+  await codecs.getByLabel('VP9').uncheck();
+  await expect(codecs.getByLabel('H.264')).toBeDisabled();
+  await expect
+    .poll(() => fixture.state.writes.at(-1))
+    .toMatchObject({ body: { youtube_video_codecs: ['h264'] } });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

@@ -14,6 +14,7 @@ export type YoutubeDownloadFilter = 'all' | 'downloaded';
 export type YoutubeBroadcastState = 'none' | 'upcoming' | 'live' | 'replay';
 export type YoutubeDownloadQuality =
   'best' | '2160p' | '1440p' | '1080p' | '720p';
+export type YoutubeVideoCodec = 'av1' | 'vp9' | 'h264';
 export type YoutubeCardShortcut =
   | 'play_from_beginning'
   | 'play_signed_in'

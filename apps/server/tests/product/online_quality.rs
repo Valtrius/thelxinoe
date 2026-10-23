@@ -389,6 +389,7 @@ async fn jellyfin_live_playback_describes_tracks_and_delivers_playable_hls() {
              "vcodec":"h264","acodec":"aac","protocol":"m3u8_native","ext":"mp4","tbr":400}
         ]}),
         Some(proxy),
+        &[],
     )
     .unwrap();
     prepared.probe = inspect_codecs(&state, prepared.rendition()).await.unwrap();
@@ -548,7 +549,7 @@ async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_c
         .prepared
         .lock()
         .await
-        .insert(video.into(), select(&metadata, Some(proxy)).unwrap());
+        .insert(video.into(), select(&metadata, Some(proxy), &[]).unwrap());
     let token = crate::test_support::issue_session(
         &state.db,
         "alice".into(),
@@ -711,7 +712,7 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
         .prepared
         .lock()
         .await
-        .insert(video.into(), select(&metadata, Some(proxy)).unwrap());
+        .insert(video.into(), select(&metadata, Some(proxy), &[]).unwrap());
     let token = crate::test_support::issue_session(
         &state.db,
         "alice".into(),

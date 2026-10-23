@@ -111,7 +111,7 @@ async fn upstream(proxy: &str) -> Vec<Value> {
         .unwrap()
 }
 fn insert(state: &AppState, metadata: &Value, proxy: &str) -> Prepared {
-    let prepared = select(metadata, Some(proxy.into())).unwrap();
+    let prepared = select(metadata, Some(proxy.into()), &[]).unwrap();
     state
         .online
         .streams

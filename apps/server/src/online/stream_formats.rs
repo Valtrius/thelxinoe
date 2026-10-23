@@ -152,7 +152,13 @@ fn codec(value: &Value) -> String {
     }
     .into()
 }
-pub(super) fn extract(metadata: &Value, proxy: Option<String>) -> Result<Vec<Format>> {
+/// A video's renditions, ascending, without those in `excluded` codecs unless every
+/// delivery needs one of them.
+pub(super) fn extract(
+    metadata: &Value,
+    proxy: Option<String>,
+    excluded: &[&str],
+) -> Result<Vec<Format>> {
     let formats = metadata["formats"]
         .as_array()
         .ok_or_else(|| ApiError::conflict("No public media formats are available"))?;
@@ -261,6 +267,13 @@ pub(super) fn extract(metadata: &Value, proxy: Option<String>) -> Result<Vec<For
         _ => 0,
     };
     output.sort_by_key(|f| (f.height, f.fps, efficiency(f), f.indexed, f.native));
+    let allowed = |f: &Format| !excluded.contains(&f.video.as_str());
+    if output
+        .iter()
+        .any(|f| allowed(f) && (f.source.live || f.indexed))
+    {
+        output.retain(allowed);
+    }
     if output.is_empty() {
         return Err(ApiError::conflict(
             "No supported public video stream is available",
@@ -356,7 +369,7 @@ mod tests {
     }
     #[test]
     fn original_renditions_respect_codecs_and_select_original_audio() {
-        let formats = extract(&metadata(), Some("http://127.0.0.1:41000".into())).unwrap();
+        let formats = extract(&metadata(), Some("http://127.0.0.1:41000".into()), &[]).unwrap();
         assert!(
             formats
                 .iter()
@@ -417,8 +430,40 @@ mod tests {
         assert!(!best.indexed_for(&caps));
     }
     #[test]
+    fn excluded_codecs_leave_renditions_unless_every_delivery_needs_them() {
+        let codecs = |excluded: &[&str]| {
+            extract(&metadata(), None, excluded)
+                .unwrap()
+                .iter()
+                .map(|f| (f.height, f.video.clone()))
+                .collect::<Vec<_>>()
+        };
+        let pictures = |pictures: &[(u64, &str)]| {
+            pictures
+                .iter()
+                .map(|(height, codec)| (*height, codec.to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            codecs(&["av1"]),
+            pictures(&[
+                (360, "h264"),
+                (720, "h264"),
+                (1080, "h264"),
+                (1080, "vp9"),
+                (2160, "vp9")
+            ])
+        );
+        assert_eq!(
+            codecs(&["av1", "vp9"]),
+            pictures(&[(360, "h264"), (720, "h264"), (1080, "h264")])
+        );
+        // VP9 renditions are WebM files, which byte-range HLS cannot deliver.
+        assert_eq!(codecs(&["av1", "h264"]).len(), 7);
+    }
+    #[test]
     fn probes_describe_provider_codecs() {
-        let formats = extract(&metadata(), None).unwrap();
+        let formats = extract(&metadata(), None, &[]).unwrap();
         let h264 = formats.iter().find(|f| f.height == 720).unwrap();
         let probe = h264.probe(60.0);
         assert_eq!(probe["format"]["duration"], "60");
