@@ -101,6 +101,30 @@ export function youtubeUrl(videoId: string): string {
   return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
+export function youtubeThumbnailSet(value?: string | null): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value, 'https://thelxinoe.invalid');
+    if (
+      !/^\/api\/v1\/online\/youtube\/videos\/[\w-]{11}\/artwork$/.test(
+        url.pathname,
+      )
+    )
+      return undefined;
+    return [320, 640, 1280]
+      .map((width) => {
+        url.searchParams.set('width', String(width));
+        const address = value.startsWith('/')
+          ? `${url.pathname}${url.search}`
+          : url.href;
+        return `${address} ${width}w`;
+      })
+      .join(', ');
+  } catch {
+    return undefined;
+  }
+}
+
 export function youtubeThumbnailUrl(value?: string | null): string | null {
   if (!value) return null;
   try {

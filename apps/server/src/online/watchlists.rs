@@ -33,7 +33,7 @@ async fn changed(state: &AppState) -> Result<Json<Value>> {
 }
 pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    let grant = grants::issue(&state, &p, "youtube-artwork", 300).await?;
+    let grant = grants::youtube_artwork(&state, &p).await?;
     let lists = storage::list(&state.db, p, grant).await?;
     Ok(Json(json!(lists)))
 }
@@ -141,7 +141,7 @@ pub(crate) async fn add_for(
     if !input.manual_position.is_finite() || input.manual_position.abs() > 1e15 {
         return Err(ApiError::bad("Invalid watchlist position"));
     }
-    let grant = grants::issue(state, p, "youtube-artwork", 300).await?;
+    let grant = grants::youtube_artwork(state, p).await?;
     let user = p.user.id.clone();
     let result = video.clone();
     let added = storage::add_for_write_youtube_watchlists(video, grant, user, &state.db, id, input)

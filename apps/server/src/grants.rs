@@ -7,6 +7,9 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use thelxinoe_core::{Principal, now};
 
+#[cfg(test)]
+mod tests;
+
 pub async fn issue(
     state: &AppState,
     p: &Principal,
@@ -29,6 +32,10 @@ pub async fn resolve(
     let hash = thelxinoe_auth::digest(token);
     let resource = resource.to_string();
     storage::resolve(hash, resource, &state.db, consume).await
+}
+
+pub async fn youtube_artwork(state: &AppState, p: &Principal) -> anyhow::Result<String> {
+    storage::youtube_artwork(&state.db, state.secrets.clone(), p.clone()).await
 }
 pub async fn event_ticket(
     State(state): State<AppState>,

@@ -24,6 +24,7 @@
     relativeTime,
     youtubeAvatarSet,
     youtubeThumbnailUrl,
+    youtubeThumbnailSet,
   } from '../../utils';
 
   let {
@@ -157,6 +158,8 @@
       <img
         class={`size-full object-contain ${mediaCardThumbnailClass}`}
         src={thumbnailUrl}
+        srcset={youtubeThumbnailSet(thumbnailUrl)}
+        sizes="auto, 350px"
         alt=""
         loading="lazy"
         onload={updateThumbnailRatio}

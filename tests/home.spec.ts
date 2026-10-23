@@ -17,7 +17,46 @@ const video = (id: string, title: string, position = 0, last_played = 0) => ({
   isWatched: false,
   availabilityStatus: 'available',
   last_played,
+  thumbnailUrl: null as string | null,
 });
+
+for (const density of [1, 2]) {
+  test.describe(`YouTube thumbnails at ${density}x density`, () => {
+    test.use({ deviceScaleFactor: density });
+    test('Home requests one size matching its card instead of the full image', async ({
+      page,
+    }) => {
+      const { data } = await homeFixture(page);
+      data.youtube.continue_watching[0].thumbnailUrl =
+        '/api/v1/online/youtube/videos/abcdefghijk/artwork?grant=stable';
+      const requested: number[] = [];
+      await page.route(
+        '**/api/v1/online/youtube/videos/*/artwork?*',
+        async (route) => {
+          const width = Number(
+            new URL(route.request().url()).searchParams.get('width'),
+          );
+          requested.push(width);
+          await route.fulfill({
+            contentType: 'image/svg+xml',
+            body: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${(width * 9) / 16}"><rect width="100%" height="100%" fill="#555"/></svg>`,
+          });
+        },
+      );
+      await page.goto('/');
+      const image = page.locator(
+        '[data-layout-key="home-continue:youtube:abcdefghijk"] img[data-art]',
+      );
+      await expect(image).toBeVisible();
+      await expect
+        .poll(() =>
+          image.evaluate((img) => (img as HTMLImageElement).naturalWidth),
+        )
+        .toBeGreaterThan(0);
+      expect(requested).toEqual([density === 1 ? 320 : 640]);
+    });
+  });
+}
 
 async function homeFixture(page: Page) {
   const fixture = await installUiFixture(page, {

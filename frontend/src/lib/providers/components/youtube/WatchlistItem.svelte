@@ -16,7 +16,11 @@
     X,
   } from '@lucide/svelte';
   import type { YoutubeDownloadEvent, YoutubeVideo } from '../../types';
-  import { formatClock, youtubeThumbnailUrl } from '../../utils';
+  import {
+    formatClock,
+    youtubeThumbnailUrl,
+    youtubeThumbnailSet,
+  } from '../../utils';
 
   let {
     actions,
@@ -178,6 +182,9 @@
         <img
           class="size-full object-contain"
           src={youtubeThumbnailUrl(video.thumbnailUrl)}
+          srcset={youtubeThumbnailSet(video.thumbnailUrl)}
+          sizes="auto, 160px"
+          loading="lazy"
           alt=""
           draggable="false"
           onload={updateThumbnailRatio}
