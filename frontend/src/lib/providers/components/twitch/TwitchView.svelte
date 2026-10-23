@@ -8,7 +8,8 @@
   import { tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { Copy, ExternalLink, RefreshCw, X } from '@lucide/svelte';
-  import { api, normalizeError } from '../../api';
+  import { api, normalizeError, rememberStreams } from '../../api';
+  import { navigationCache } from '../../../navigation-cache';
   import { createCardGridWheelHandler } from '../../../card-grid-wheel';
   import { scaleCardScope } from '../../../card-grid-zoom';
   import { createLayoutMotion } from '../../../layout-motion';
@@ -202,14 +203,23 @@
     loading = streams.length === 0;
     error = null;
     try {
-      const next = await api.twitchStreams();
-      if (requestKey !== snapshotKey || !current()) return;
-      const layoutSnapshot = layoutMotion.capture();
-      streams = next;
-      await tick();
-      if (!current()) return;
-      restoreScrollAnchor(feedScroll, 'data-stream-id', anchor);
-      layoutMotion.play(layoutSnapshot);
+      await navigationCache.read(
+        'twitch',
+        `feed:${requestKey}`,
+        () => api.twitchStreams(),
+        async (next) => {
+          if (requestKey !== snapshotKey || !current()) return;
+          const layoutSnapshot = layoutMotion.capture();
+          rememberStreams(next);
+          streams = next;
+          loading = false;
+          await tick();
+          if (!current()) return;
+          restoreScrollAnchor(feedScroll, 'data-stream-id', anchor);
+          layoutMotion.play(layoutSnapshot);
+        },
+        preserveScroll ? 0 : 30_000,
+      );
     } catch (caught) {
       if (current()) error = normalizeError(caught);
     } finally {

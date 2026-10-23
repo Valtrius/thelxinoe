@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { derived, get } from 'svelte/store';
 import { appearance, updateAppearance } from '../appearance';
 import { api as request, ApiError, desktop, serverUrl } from '../api';
+import { captureSession } from '../session';
 import type { MediaChoice } from '../playback';
 import type {
   AppError,
@@ -80,6 +81,13 @@ function remember(video: YoutubeVideo): YoutubeVideo {
     video.thumbnailUrl = serverUrl() + video.thumbnailUrl;
   videos.set(video.videoId, video);
   return video;
+}
+export function rememberVideos(items: YoutubeVideo[]) {
+  items.forEach(remember);
+}
+export function rememberStreams(items: TwitchLiveStream[]) {
+  for (const item of items)
+    streams.set(item.login, { id: item.broadcasterId, title: item.title });
 }
 export const iso = (seconds?: number | null) =>
   seconds ? new Date(seconds * 1000).toISOString() : null;
@@ -241,20 +249,23 @@ export const api = {
     page: number,
     pageSize = 60,
   ): Promise<YoutubeVideoPage> {
+    const owns = captureSession();
     const result = await request<YoutubeVideoPage>(
       '/online/youtube/browse',
       'POST',
       { query, page, pageSize },
     );
-    result.items.forEach(remember);
+    if (owns()) result.items.forEach(remember);
     return result;
   },
   async youtubeWatchlists(): Promise<YoutubeWatchlist[]> {
+    const owns = captureSession();
     const lists = await request<YoutubeWatchlist[]>(
       '/online/youtube/watchlists',
     );
-    for (const list of lists)
-      for (const item of list.items) remember(item.video);
+    if (owns())
+      for (const list of lists)
+        for (const item of list.items) remember(item.video);
     return lists;
   },
   createYoutubeWatchlist: (name: string) =>
@@ -341,6 +352,7 @@ export const api = {
     return 'twitch';
   },
   async twitchStreams(): Promise<TwitchLiveStream[]> {
+    const owns = captureSession();
     const result = await request<{
       items: {
         id: string;
@@ -356,7 +368,7 @@ export const api = {
       }[];
     }>('/online/twitch/feed');
     return result.items.map((s) => {
-      streams.set(s.login, s);
+      if (owns()) streams.set(s.login, s);
       return {
         streamId: `${s.id}:${s.started_at}`,
         broadcasterId: s.id,

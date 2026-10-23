@@ -16,16 +16,19 @@ const ready = async (page: Page) => {
   await expect(pageContent(page)).toHaveCSS('opacity', '1');
 };
 
-test('the next page requests its data while the previous page is still leaving', async ({
+test('the next page revalidates stale data while the previous page is still leaving', async ({
   page,
 }, info) => {
   await page.goto('/#home');
   await ready(page);
-  // Load the Movies code first so only its data is left to fetch.
+  // Load the Movies code first, then age its data past the fresh cache window.
   await page.getByRole('link', { name: 'Movies', exact: true }).click();
   await ready(page);
   await page.getByRole('link', { name: 'Home', exact: true }).click();
   await ready(page);
+  await page.clock.setFixedTime(
+    new Date((await page.evaluate(() => Date.now())) + 31_000),
+  );
   await page.evaluate(() => {
     const phases: (string | undefined)[] = [];
     (window as unknown as { catalogPhases: typeof phases }).catalogPhases =

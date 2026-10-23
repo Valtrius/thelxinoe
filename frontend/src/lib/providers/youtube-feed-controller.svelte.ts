@@ -1,4 +1,5 @@
-import { api, normalizeError } from './api';
+import { api, normalizeError, rememberVideos } from './api';
+import { navigationCache } from '../navigation-cache';
 import { FeedRequests } from './feed-requests';
 import type {
   AppError,
@@ -6,6 +7,7 @@ import type {
   YoutubeVideoCounts,
   YoutubeChannelOption,
   YoutubeFeedQuery,
+  YoutubeVideoPage,
 } from './types';
 
 export function createYoutubeFeed(options: {
@@ -62,32 +64,47 @@ export function createYoutubeFeed(options: {
       }
       try {
         const nextPage = reset ? 0 : page + 1;
-        const result = await api.youtubeVideos(options.query, nextPage);
-        if (!current()) return;
-        channels = result.channels;
-        if (!options.acceptChannels(result.channels)) return;
+        const queryKey = JSON.stringify(options.query);
+        const query = JSON.parse(queryKey) as YoutubeFeedQuery;
+        let applied = false;
+        const accept = async (result: YoutubeVideoPage) => {
+          if (!current()) return;
+          rememberVideos(result.items);
+          channels = result.channels;
+          if (!options.acceptChannels(result.channels)) return;
 
-        const animate = options.prepareLayout(reset);
-        if (reset) {
-          videos = result.items;
-          firstPage = result.page;
-          retainedPageSizes = [result.items.length];
-        } else {
-          let nextVideos = [...videos, ...result.items];
-          const nextPageSizes = [...retainedPageSizes, result.items.length];
-          let nextFirstPage = firstPage;
-          while (nextPageSizes.length > maxRetainedPages) {
-            nextVideos = nextVideos.slice(nextPageSizes.shift() ?? 0);
-            nextFirstPage += 1;
+          const animate = options.prepareLayout(reset && !applied);
+          applied = true;
+          if (reset) {
+            videos = result.items;
+            firstPage = result.page;
+            retainedPageSizes = [result.items.length];
+          } else {
+            let nextVideos = [...videos, ...result.items];
+            const nextPageSizes = [...retainedPageSizes, result.items.length];
+            let nextFirstPage = firstPage;
+            while (nextPageSizes.length > maxRetainedPages) {
+              nextVideos = nextVideos.slice(nextPageSizes.shift() ?? 0);
+              nextFirstPage += 1;
+            }
+            videos = nextVideos;
+            firstPage = nextFirstPage;
+            retainedPageSizes = nextPageSizes;
           }
-          videos = nextVideos;
-          firstPage = nextFirstPage;
-          retainedPageSizes = nextPageSizes;
-        }
-        counts = result.counts;
-        page = result.page;
-        hasMore = result.hasMore;
-        await animate();
+          counts = result.counts;
+          page = result.page;
+          hasMore = result.hasMore;
+          loading = false;
+          await animate();
+        };
+        if (reset)
+          await navigationCache.read(
+            'youtube',
+            `feed:${queryKey}`,
+            () => api.youtubeVideos(query, nextPage),
+            accept,
+          );
+        else await accept(await api.youtubeVideos(query, nextPage));
       } catch (caught) {
         if (current()) options.onError(normalizeError(caught));
       } finally {

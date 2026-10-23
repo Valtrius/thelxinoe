@@ -33,6 +33,7 @@
     type AppRoute,
   } from './lib/navigation';
   import { captureSession, invalidateSession } from './lib/session';
+  import { invalidatePageEvent } from './lib/navigation-cache';
   import Sidebar from './lib/ui/Sidebar.svelte';
   import SectionIcon from './lib/ui/SectionIcon.svelte';
   import Drawer from './lib/ui/Drawer.svelte';
@@ -355,6 +356,7 @@
     events = new Events(
       (event) => {
         if (!ownsSession()) return;
+        invalidatePageEvent(event.kind);
         if (
           ['online.configuration.changed', 'server.reconnected'].includes(
             event.kind,
