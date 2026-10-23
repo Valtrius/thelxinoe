@@ -1,8 +1,15 @@
+<script module lang="ts">
+  import { SvelteSet } from 'svelte/reactivity';
+  // Accounts a load found disconnected this session. Their feeds are no
+  // longer read beside the account until it connects.
+  const disconnected = new SvelteSet<string>();
+</script>
+
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { RefreshCw, Radio } from '@lucide/svelte';
-  import { SvelteSet } from 'svelte/reactivity';
   import { api, type User } from './api';
+  import { inBackground } from './page-readiness';
   import type { MediaChoice, PlayingMedia } from './playback';
   import { providers } from './providers/availability';
   import {
@@ -203,16 +210,23 @@
       loaded.youtube = true;
       return;
     }
+    const key = `${user.id}:youtube`;
+    const home = disconnected.has(key)
+      ? undefined
+      : api<YoutubeHome>('/online/youtube/home');
+    home?.catch(() => {});
     try {
       const account = await api<OnlineAccount>('/online/youtube');
       if (!current()) return;
       if (account.account.status !== 'connected') {
+        disconnected.add(key);
         youtube = { continue_watching: [], next_up: [] };
         if (account.account.status === 'reconnect_required')
           errors.youtube = 'Reconnect YouTube';
         return;
       }
-      const result = await api<YoutubeHome>('/online/youtube/home');
+      disconnected.delete(key);
+      const result = await (home ?? api<YoutubeHome>('/online/youtube/home'));
       if (current()) {
         youtube = result;
         errors.youtube = account.sync?.error ?? '';
@@ -242,15 +256,22 @@
       loaded.twitch = true;
       return;
     }
+    const key = `${user.id}:twitch`;
+    const feed = disconnected.has(key)
+      ? undefined
+      : providerApi.twitchStreams();
+    feed?.catch(() => {});
     try {
       const account = await api<OnlineAccount>('/online/twitch');
       if (!current()) return;
       if (account.account.status !== 'connected') {
+        disconnected.add(key);
         twitch = [];
         if (account.account.status === 'reconnect_required')
           errors.twitch = 'Reconnect Twitch';
         return;
       }
+      disconnected.delete(key);
       if (
         account.sync?.error ||
         !account.sync?.last_complete ||
@@ -261,7 +282,7 @@
           account.sync?.error || 'Twitch live status is out of date';
         return;
       }
-      const result = await providerApi.twitchStreams();
+      const result = await (feed ?? providerApi.twitchStreams());
       if (current()) twitch = result;
     } catch (error) {
       if (current()) {
@@ -333,9 +354,13 @@
       libraryAgain = false;
       youtubeAgain = false;
       void loadLibrary();
-      void loadYoutube(enabled.youtube);
-      void loadTwitch(enabled.twitch);
-      void loadKick(enabled.kick);
+      // The page appears with the library; online sources show their
+      // skeletons until they arrive.
+      inBackground(() => {
+        void loadYoutube(enabled.youtube);
+        void loadTwitch(enabled.twitch);
+        void loadKick(enabled.kick);
+      });
     });
   });
   $effect(() => {

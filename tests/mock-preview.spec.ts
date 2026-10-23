@@ -542,7 +542,12 @@ test('the preview switches between the admin and user views', async ({
     'settings/devices',
   ]) {
     await page.goto(`/#${route}`);
-    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+    // Discover loads its lower rows as they near the screen.
+    const busy = page.locator('[aria-busy="true"]');
+    await expect(async () => {
+      if (await busy.count()) await busy.last().scrollIntoViewIfNeeded();
+      expect(await busy.count()).toBe(0);
+    }).toPass();
   }
   await page.goto('/#discover');
   await page.getByRole('button', { name: 'My requests', exact: true }).click();

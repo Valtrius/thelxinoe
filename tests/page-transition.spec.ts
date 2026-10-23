@@ -58,7 +58,7 @@ test('the next page requests its data while the previous page is still leaving',
   ).toBeVisible();
 });
 
-test('visible artwork finishes loading before the replacement page fades in', async ({
+test('a page appears without waiting long for its artwork, which fades in as it arrives', async ({
   page,
 }, info) => {
   await page.goto('/#home');
@@ -70,19 +70,22 @@ test('visible artwork finishes loading before the replacement page fades in', as
   });
   try {
     await page.getByRole('link', { name: 'Movies', exact: true }).click();
-    await expect(
-      page.locator('article[data-layout-key="library:movie-0"]'),
-    ).toBeAttached();
-    await expect(pageContent(page)).toHaveCSS('opacity', '0');
-    artwork.release();
     await ready(page);
+    const image = page
+      .locator('article[data-layout-key="library:movie-0"] img')
+      .first();
+    await expect(image).toHaveAttribute('data-arriving', '');
+    await expect(image).toHaveCSS('opacity', '0');
+    await page.screenshot({
+      path: info.outputPath('movies-before-artwork.png'),
+    });
+    artwork.release();
+    await expect(image).not.toHaveAttribute('data-arriving');
+    await expect(image).toHaveCSS('opacity', '1');
     expect(
-      await page
-        .locator('article.library-tile img')
-        .first()
-        .evaluate(
-          (image: HTMLImageElement) => image.complete && image.naturalWidth > 0,
-        ),
+      await image.evaluate(
+        (image: HTMLImageElement) => image.complete && image.naturalWidth > 0,
+      ),
     ).toBe(true);
     await page.screenshot({
       path: info.outputPath('movies-after-artwork.png'),
