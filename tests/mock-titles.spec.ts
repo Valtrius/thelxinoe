@@ -373,10 +373,13 @@ test('Home shelves keep every tile landscape without cropping posters', async ({
   const later = (id: string) =>
     page.locator(`article[data-layout-key="home-Watch later:${id}"]`);
   // Radarr's backdrop fills the tile; a title without one shows its whole poster.
+  await later('movie-1').scrollIntoViewIfNeeded();
   await expect(later('movie-1').locator('img[data-art]')).toHaveAttribute(
     'data-art',
     'backdrop',
   );
+  await later('movie-2').scrollIntoViewIfNeeded();
+  await expect(later('movie-2').locator('img[data-art]')).toBeInViewport();
   await expect(later('movie-2').locator('img[data-art]')).toHaveAttribute(
     'data-art',
     'contained',
