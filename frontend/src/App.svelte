@@ -131,6 +131,8 @@
   } from './lib/native-playback';
   import { dismissToastByKey, showToast } from './lib/providers/toasts';
   import { youtubeVideoIdFromInput } from './lib/providers/youtube-video-input';
+  import { captureSharedYoutubeVideo } from './lib/providers/youtube-share';
+  import SharedVideo from './lib/providers/components/youtube/SharedVideo.svelte';
   import { forgetSeerrStatus } from './lib/seerr/status';
   import { playbackProgress } from './lib/providers/youtube-progress';
   import {
@@ -185,6 +187,7 @@
   );
   const signInError =
     new URLSearchParams(location.search).get('auth_error') ?? '';
+  captureSharedYoutubeVideo();
   const providerPage = $derived(
     ['YouTube', 'Twitch', 'Kick'].includes(section),
   );
@@ -931,6 +934,11 @@
 <WebUpdateReload playing={Boolean(playing)} admin={user?.role === 'admin'} />
 <!-- One viewport, so a result still shows after leaving the page that started it. -->
 {#if user}<ToastViewport />{/if}
+{#if user && navigationReady}<SharedVideo
+    available={$providers.youtube}
+    openWatchlist={(watchlist) =>
+      go({ ...sectionRoute('YouTube', settingsSection), watchlist })}
+  />{/if}
 {#if loading}
   <AuthLayout card={false}>
     <img

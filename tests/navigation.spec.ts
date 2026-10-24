@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 import { responseGate } from './helpers/response-gate';
 
@@ -325,10 +325,7 @@ for (const decision of [
   });
 }
 
-test('YouTube watchlist deep links reveal the selected list and Back restores it', async ({
-  page,
-}, testInfo) => {
-  const fixture = await installUiFixture(page, { section: 'YouTube' });
+async function routeYoutubeWatchlists(page: Page, names: string[]) {
   await page.route('**/api/v1/online/youtube', (route) =>
     route.fulfill({
       json: {
@@ -340,10 +337,10 @@ test('YouTube watchlist deep links reveal the selected list and Back restores it
   );
   await page.route('**/api/v1/online/youtube/watchlists', (route) =>
     route.fulfill({
-      json: [1, 2].map((id) => ({
-        id,
-        name: id === 1 ? 'Watch Later' : 'Study',
-        isDefault: id === 1,
+      json: names.map((name, index) => ({
+        id: index + 1,
+        name,
+        isDefault: index === 0,
         autoDownload: false,
         autoRemoveWatched: false,
         sortMode: 'manual',
@@ -376,6 +373,13 @@ test('YouTube watchlist deep links reveal the selected list and Back restores it
       },
     }),
   );
+}
+
+test('YouTube watchlist deep links reveal the selected list and Back restores it', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, { section: 'YouTube' });
+  await routeYoutubeWatchlists(page, ['Watch Later', 'Study']);
   await page.goto('/#online/youtube/watchlists/2');
   const study = page
     .locator('[data-youtube-watchlist-frame]')
@@ -397,6 +401,101 @@ test('YouTube watchlist deep links reveal the selected list and Back restores it
     body: await page.screenshot(),
     contentType: 'image/png',
   });
+});
+
+// The manifest's share target opens the app with the share in its address.
+function sharedAddress(share: Record<string, string>) {
+  return `/?${new URLSearchParams(share)}`;
+}
+
+async function routeWatchlistAdditions(page: Page) {
+  const additions: { watchlist: string; body: unknown }[] = [];
+  await page.route('**/api/v1/online/youtube/watchlists/*/items', (route) => {
+    additions.push({
+      watchlist: route.request().url().split('/').at(-2)!,
+      body: route.request().postDataJSON(),
+    });
+    return route.fulfill({
+      json: {
+        added: true,
+        video: {
+          videoId: 'xwdamnfS6IM',
+          title: 'xwdamnfS6IM',
+          metadataPending: true,
+        },
+        autoDownloadError: null,
+      },
+    });
+  });
+  return additions;
+}
+
+test('a video shared before signing in joins the only watchlist', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, { signedIn: false });
+  await routeYoutubeWatchlists(page, ['Watch Later']);
+  const additions = await routeWatchlistAdditions(page);
+  await page.goto(
+    sharedAddress({
+      share_text: 'Watch https://youtu.be/xwdamnfS6IM?si=shared',
+    }),
+  );
+  await expect(page).not.toHaveURL(/share_text/);
+  await page.getByLabel('Username', { exact: true }).fill('viewer');
+  await page
+    .getByLabel('Password', { exact: true })
+    .fill('local test passphrase');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Added to Watch Later.' }),
+  ).toBeVisible();
+  expect(additions).toEqual([
+    { watchlist: '1', body: { videoId: 'xwdamnfS6IM', manualPosition: 0 } },
+  ]);
+  await testInfo.attach('shared-video-saved', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('a shared video asks which watchlist to join when there are several', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page);
+  await routeYoutubeWatchlists(page, ['Watch Later', 'Study']);
+  const additions = await routeWatchlistAdditions(page);
+  await page.goto(
+    sharedAddress({ share_url: 'https://www.youtube.com/watch?v=xwdamnfS6IM' }),
+  );
+  const dialog = page.getByRole('dialog', {
+    name: 'Save to watchlist',
+    exact: true,
+  });
+  await testInfo.attach('shared-video-choice', {
+    body: await dialog.screenshot(),
+    contentType: 'image/png',
+  });
+  await dialog.getByRole('button', { name: /^Study/ }).click();
+  await expect(dialog).toHaveCount(0);
+  await page
+    .getByRole('status')
+    .filter({ hasText: 'Added to Study.' })
+    .getByRole('button', { name: 'Open', exact: true })
+    .click();
+  await expect(page).toHaveURL(/#online\/youtube\/watchlists\/2$/);
+  await expect(
+    page
+      .locator('[data-youtube-watchlist-frame]')
+      .getByRole('button', { name: /^Study/ }),
+  ).toBeVisible();
+  expect(additions).toEqual([
+    { watchlist: '2', body: { videoId: 'xwdamnfS6IM', manualPosition: 0 } },
+  ]);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
 });
 
 test('the server alone removes a watched video from an auto-remove watchlist', async ({
