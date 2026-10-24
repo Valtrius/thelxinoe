@@ -9,7 +9,7 @@ use std::{collections::HashMap, sync::Arc};
 
 fn blob(value: Value, blobs: &mut HashMap<String, String>) -> String {
     let body = value.to_string();
-    let digest = format!("sha256:{:x}", Sha256::digest(body.as_bytes()));
+    let digest = sha256(body.as_bytes());
     blobs.insert(digest.clone(), body);
     digest
 }
@@ -124,28 +124,45 @@ fn labels_distinguish_app_versions_from_container_builds_without_guessing() {
 }
 
 #[tokio::test]
+async fn local_labels_are_used_without_a_registry_lookup() {
+    let labels = json!({"org.opencontainers.image.version":"v3.4.1"});
+    let release = metadata("seerr", "ghcr.io/seerr-team/seerr@sha256:0", &labels)
+        .await
+        .unwrap();
+    assert_eq!(release.version.as_deref(), Some("3.4.1"));
+    assert!(release.release_notes_url.is_none());
+    assert!(
+        metadata("radarr", "repository@new", &Value::Null)
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
 #[ignore = "Read-only network verification against the curated public registries"]
 async fn live_curated_release_metadata() {
     let client = http_client().unwrap();
-    for template in crate::templates::TEMPLATES {
-        let repository = registry_repository(template).unwrap();
-        let token = registry_token(&client, repository).await.unwrap();
+    for (kind, repository) in [
+        ("radarr", "lscr.io/linuxserver/radarr"),
+        ("seerr", "ghcr.io/seerr-team/seerr"),
+    ] {
+        let reference = format!("{repository}@");
+        let (registry, _) = registry_reference(&reference).unwrap();
+        let token = registry_token(&client, registry).await.unwrap();
         let body = read_body(
             client
-                .get(format!("https://ghcr.io/v2/{repository}/manifests/latest"))
+                .get(format!("https://ghcr.io/v2/{registry}/manifests/latest"))
                 .bearer_auth(&token)
                 .header("Accept", MANIFEST_TYPES),
         )
         .await
         .unwrap();
-        let digest = format!("sha256:{:x}", Sha256::digest(&body));
-        let image = format!("{}@{digest}", template.repository);
-        let release = metadata(template, &image).await;
-        println!("{}", json!({"kind":template.kind,"release":release}));
+        let image = format!("{repository}@{}", sha256(&body));
+        let release = metadata(kind, &image, &Value::Null).await;
+        println!("{}", json!({"kind":kind,"release":release}));
         assert!(
-            release.version.is_some(),
-            "Missing version for {}",
-            template.kind
+            release.is_some_and(|release| release.version.is_some()),
+            "Missing version for {kind}"
         );
         // Notes may legitimately be absent (unpublished tag or API rate limit).
     }

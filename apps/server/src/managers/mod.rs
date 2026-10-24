@@ -19,6 +19,7 @@ pub(crate) mod recyclarr;
 mod requests;
 mod retention;
 mod seerr;
+mod service_releases;
 pub(crate) mod status;
 pub(crate) use seerr::observe_requests;
 mod stack;

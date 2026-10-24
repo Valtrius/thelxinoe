@@ -216,22 +216,18 @@ async fn resumed_activation_protects_playback_while_rollback_ownership_is_live_o
 async fn discovery_keeps_release_metadata_bound_to_its_candidate() {
     let (_temp, state, cookie) = fixture().await;
     managed(&state, "notify").await;
-    for (image, metadata, expected_version) in [
+    for (image, labels, expected_version) in [
         (
             Some("repository@new"),
-            json!({"image":"repository@new","version":"6.4.4.10685","build_version":"6.4.4.10685-ls318","release_notes_url":"https://github.com/Radarr/Radarr/releases/tag/v6.4.4.10685"}),
+            json!({"org.opencontainers.image.version":"6.4.4.10685-ls318"}),
             Some("6.4.4.10685"),
         ),
-        (
-            Some("repository@newer"),
-            json!({"image":"repository@new","version":"6.4.4.10685","build_version":null,"release_notes_url":null}),
-            None,
-        ),
+        (Some("repository@newer"), Value::Null, None),
         (None, Value::Null, None),
     ] {
         state.managers.docker.lock().unwrap().insert(
             "stack/releases".into(),
-            json!({"items":[{"kind":"radarr","image":image,"release":metadata}]}),
+            json!({"items":[{"kind":"radarr","image":image,"labels":labels}]}),
         );
         let response = call(
             &state,
