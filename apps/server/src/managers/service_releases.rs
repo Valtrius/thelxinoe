@@ -1,7 +1,7 @@
 //! Optional display metadata, bound to the discovered digest without pulling image layers.
-use crate::templates::Template;
 use anyhow::{Context, Result, ensure};
 use reqwest::{Client, RequestBuilder};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -9,59 +9,61 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
-use thelxinoe_core::service_release::ServiceRelease;
+
+/// Display metadata for one immutable service image; never used to select an update.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ServiceRelease {
+    pub image: String,
+    pub version: Option<String>,
+    pub build_version: Option<String>,
+    pub release_notes_url: Option<String>,
+}
 
 const MANIFEST_TYPES: &str = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json";
-type Cache = HashMap<&'static str, (Instant, ServiceRelease)>;
+type Cache = HashMap<String, (Instant, String, Option<ServiceRelease>)>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 
-pub async fn metadata(template: Template, image: &str) -> ServiceRelease {
+/// The controller has no network: it only reports the labels of a curated image
+/// already in its engine, which are used without any registry or release lookup.
+pub(super) async fn metadata(
+    kind: &str,
+    image: &str,
+    local_labels: &Value,
+) -> Option<ServiceRelease> {
+    if local_labels.is_object() {
+        return Some(from_labels(kind, image, local_labels));
+    }
     let cache = CACHE.get_or_init(Mutex::default);
-    if let Some((checked, release)) = cache.lock().unwrap().get(template.kind) {
-        let lifetime = if release.version.is_some() { 3600 } else { 300 };
-        if release.image == image && checked.elapsed() < Duration::from_secs(lifetime) {
+    if let Some((checked, cached, release)) = cache.lock().unwrap().get(kind) {
+        let known = release.as_ref().is_some_and(|r| r.version.is_some());
+        let lifetime = if known { 3600 } else { 300 };
+        if cached == image && checked.elapsed() < Duration::from_secs(lifetime) {
             return release.clone();
         }
     }
-    let mut release = ServiceRelease {
-        image: image.into(),
-        version: None,
-        build_version: None,
-        release_notes_url: None,
-    };
-    if crate::templates::pinned_image(template)
-        .ok()
-        .flatten()
-        .as_deref()
-        == Some(image)
-    {
-        if let Ok(raw) = crate::docker::engine(&format!("/images/{image}/json")).await {
-            return from_labels(template.kind, image, &raw["Config"]["Labels"]);
-        }
-        return release;
-    }
-    // Metadata availability must never prevent discovery of an image update.
-    if let Ok(client) = http_client() {
-        let lookup = async {
-            let repository = registry_repository(template).context("Unsupported registry")?;
-            let digest = image
-                .strip_prefix(&format!("{}@", template.repository))
-                .context("Unexpected image repository")?;
-            let token = registry_token(&client, repository).await?;
-            image_labels(&client, "https://ghcr.io", repository, &token, digest).await
-        };
-        if let Ok(Ok(labels)) = tokio::time::timeout(Duration::from_secs(20), lookup).await {
-            release = from_labels(template.kind, image, &labels);
-            if let Some(version) = &release.version {
-                release.release_notes_url = release_notes(&client, template.kind, version).await;
-            }
-        }
-    }
-    cache
-        .lock()
-        .unwrap()
-        .insert(template.kind, (Instant::now(), release.clone()));
+    let release = lookup(kind, image).await;
+    cache.lock().unwrap().insert(
+        kind.to_owned(),
+        (Instant::now(), image.to_owned(), release.clone()),
+    );
     release
+}
+
+async fn lookup(kind: &str, image: &str) -> Option<ServiceRelease> {
+    let (repository, digest) = registry_reference(image)?;
+    let client = http_client().ok()?;
+    let labels = tokio::time::timeout(Duration::from_secs(20), async {
+        let token = registry_token(&client, repository).await?;
+        image_labels(&client, "https://ghcr.io", repository, &token, digest).await
+    })
+    .await
+    .ok()?
+    .ok()?;
+    let mut release = from_labels(kind, image, &labels);
+    if let Some(version) = &release.version {
+        release.release_notes_url = release_notes(&client, kind, version).await;
+    }
+    Some(release)
 }
 
 fn http_client() -> Result<Client> {
@@ -72,13 +74,17 @@ fn http_client() -> Result<Client> {
         .build()?)
 }
 
-fn registry_repository(template: Template) -> Option<&'static str> {
+fn registry_reference(image: &str) -> Option<(&str, &str)> {
+    let (repository, digest) = image.split_once('@')?;
     // LinuxServer publishes the same content-addressed images to GHCR. Requesting
     // and verifying the original digest also rejects any difference between mirrors.
-    template
-        .repository
+    let repository = repository
         .strip_prefix("ghcr.io/")
-        .or_else(|| template.repository.strip_prefix("lscr.io/"))
+        .or_else(|| repository.strip_prefix("lscr.io/"))?;
+    repository
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._/-".contains(&b))
+        .then_some((repository, digest))
 }
 
 async fn read_body(request: RequestBuilder) -> Result<Vec<u8>> {
@@ -107,6 +113,14 @@ async fn registry_token(client: &Client, repository: &str) -> Result<String> {
         .into())
 }
 
+fn sha256(bytes: &[u8]) -> String {
+    let hex: String = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("sha256:{hex}")
+}
+
 fn valid_digest(digest: &str) -> bool {
     digest.len() == 71
         && digest.starts_with("sha256:")
@@ -130,7 +144,7 @@ async fn registry_json(
     )
     .await?;
     ensure!(
-        format!("sha256:{:x}", Sha256::digest(&bytes)).eq_ignore_ascii_case(digest),
+        sha256(&bytes).eq_ignore_ascii_case(digest),
         "Metadata digest mismatch"
     );
     Ok(serde_json::from_slice(&bytes)?)

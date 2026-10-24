@@ -743,11 +743,17 @@ async fn releases() -> Result<Json<Value>> {
     for t in templates::TEMPLATES {
         pending.spawn(async move {
             let image = stable_image(t).await.ok();
-            let release = match &image {
-                Some(image) => Some(crate::service_releases::metadata(t, image).await),
-                None => None,
+            // This container has no network; the server looks up registry metadata.
+            let labels = match &image {
+                Some(image) if matches!(templates::pinned_image(t), Ok(Some(_))) => {
+                    engine(&format!("/images/{image}/json"))
+                        .await
+                        .ok()
+                        .map(|raw| raw["Config"]["Labels"].clone())
+                }
+                _ => None,
             };
-            json!({"kind":t.kind,"channel":"stable","image":image,"release":release,"tested_image":format!("{}@{}",t.repository,t.digest)})
+            json!({"kind":t.kind,"channel":"stable","image":image,"labels":labels,"tested_image":format!("{}@{}",t.repository,t.digest)})
         });
     }
     let mut results = Vec::new();

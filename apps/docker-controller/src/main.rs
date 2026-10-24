@@ -11,8 +11,6 @@ mod policy;
 #[cfg(unix)]
 mod recovery;
 #[cfg(unix)]
-mod service_releases;
-#[cfg(unix)]
 mod stack;
 #[cfg(unix)]
 mod state_copy;

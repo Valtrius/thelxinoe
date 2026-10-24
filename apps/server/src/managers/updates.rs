@@ -4,8 +4,8 @@
 mod storage;
 
 use super::*;
+use service_releases::ServiceRelease;
 use stack::controller;
-use thelxinoe_core::service_release::ServiceRelease;
 
 #[cfg(test)]
 #[path = "../storage/managers/update_tests.rs"]
@@ -399,6 +399,24 @@ async fn check_releases(state: &AppState, force: bool) -> Result<()> {
         .await
         .unwrap_or(Value::Null);
     let stack = controller(state, "", None).await?;
+    // Metadata availability must never prevent discovery of an image update.
+    let lookups = releases["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| pending.iter().any(|p| r["kind"] == p.1))
+        .filter_map(|r| {
+            let kind = r["kind"].as_str()?;
+            let image = r["image"].as_str()?;
+            Some(async move {
+                let release = service_releases::metadata(kind, image, &r["labels"]).await;
+                (kind, release)
+            })
+        });
+    let metadata: std::collections::HashMap<_, _> = futures_util::future::join_all(lookups)
+        .await
+        .into_iter()
+        .collect();
     for (service, kind, _, start, end, _) in pending {
         let discovered = releases["items"]
             .as_array()
@@ -408,8 +426,10 @@ async fn check_releases(state: &AppState, force: bool) -> Result<()> {
         let candidate = discovered
             .and_then(|r| r["image"].as_str())
             .map(str::to_owned);
-        let release = discovered
-            .and_then(|r| serde_json::from_value::<ServiceRelease>(r["release"].clone()).ok())
+        let release = metadata
+            .get(kind.as_str())
+            .cloned()
+            .flatten()
             .filter(|r| Some(r.image.as_str()) == candidate.as_deref());
         let current = stack["items"]
             .as_array()
