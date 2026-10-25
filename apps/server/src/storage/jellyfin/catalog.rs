@@ -38,6 +38,13 @@ pub(super) async fn browse_media(
         limit,
     } = input;
 
+    // Like Jellyfin, a single item has every field and lists only the requested ones.
+    let chapters = id.is_some()
+        || q.get("fields").is_some_and(|fields| {
+            fields
+                .split(',')
+                .any(|f| f.eq_ignore_ascii_case("Chapters"))
+        });
     db.read("jellyfin.catalog.browse_media", move |db| {
         let (args, filter) = media_filter(db, &q, uid, id, parent)?;
         let directions = q
@@ -84,7 +91,7 @@ pub(super) async fn browse_media(
         let rows = db
             .prepare(&sql)?
             .query_map(rusqlite::params_from_iter(&args), |r| {
-                Ok((row(r, &server)?, r.get::<_, i64>(20)? as usize))
+                Ok((row(r, &server, chapters)?, r.get::<_, i64>(20)? as usize))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let total = if let Some(row) = rows.first() {
@@ -209,6 +216,20 @@ fn media_filter(
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter().filter(|name| ids.contains(&genre_id(name))).collect::<Vec<_>>();
         conditions.push(format!("EXISTS(SELECT 1 FROM json_each(m.metadata,'$.genres') genre WHERE json_extract(genre.value,'$.name') IN (SELECT value FROM json_each({})))", bind(json!(genres).to_string())));
+    }
+    if let Some(ids) = q.get("studioids") {
+        let ids = ids
+            .split(',')
+            .map(canonical)
+            .collect::<std::collections::BTreeSet<_>>();
+        let studios = db.prepare("SELECT DISTINCT json_extract(metadata,'$.studio') FROM media WHERE json_type(metadata,'$.studio')='text'")?
+            .query_map([], |row| row.get::<_,String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter().filter(|name| ids.contains(&studio_id(name))).collect::<Vec<_>>();
+        conditions.push(format!(
+            "json_extract(m.metadata,'$.studio') IN (SELECT value FROM json_each({}))",
+            bind(json!(studios).to_string())
+        ));
     }
     for (key, kind) in [
         ("audiolanguages", "audio"),
@@ -367,10 +388,81 @@ pub(super) async fn display_preferences(
     }).await
 }
 
-pub(super) const SELECT: &str = "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.created_at,m.root_id,COALESCE(u.favorite,0),COALESCE(u.watched,0),COALESCE(ep.position,0),COALESCE(ep.duration,0),p.kind,p.sort_number,pc.title,p.parent_id,gc.title,(SELECT f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.edition,f.id LIMIT 1),(SELECT COUNT(*) FROM media ch WHERE ch.parent_id=m.id),COUNT(*) OVER()";
+pub(super) const SELECT: &str = "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.created_at,m.root_id,COALESCE(u.favorite,0),COALESCE(u.watched,0),COALESCE(ep.position,0),COALESCE(ep.duration,0),p.kind,p.sort_number,pc.title,p.parent_id,gc.title,(SELECT f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.edition,f.id LIMIT 1),(SELECT COUNT(*) FROM media ch WHERE ch.parent_id=m.id),COUNT(*) OVER(),\
+    CASE m.kind WHEN 'show' THEN (SELECT COUNT(*) FROM media s JOIN media e ON e.parent_id=s.id LEFT JOIN media_state es ON es.media_id=e.id AND es.user_id=?1 WHERE s.parent_id=m.id AND s.kind='season' AND COALESCE(s.sort_number,1)>0 AND e.kind='episode' AND COALESCE(es.watched,0)=0 AND EXISTS(SELECT 1 FROM media_sources es_source JOIN media_files es_file ON es_file.id=es_source.file_id WHERE es_source.media_id=e.id AND es_file.present=1)) \
+    WHEN 'season' THEN (SELECT COUNT(*) FROM media e LEFT JOIN media_state es ON es.media_id=e.id AND es.user_id=?1 WHERE e.parent_id=m.id AND e.kind='episode' AND COALESCE(es.watched,0)=0 AND EXISTS(SELECT 1 FROM media_sources es_source JOIN media_files es_file ON es_file.id=es_source.file_id WHERE es_source.media_id=e.id AND es_file.present=1)) END";
 const FROM: &str = "FROM media m JOIN media_cards c ON c.id=m.id LEFT JOIN media_state u ON u.media_id=m.id AND u.user_id=?1 LEFT JOIN edition_progress ep ON ep.rowid=(SELECT rowid FROM edition_progress WHERE media_id=m.id AND user_id=?1 ORDER BY updated_at DESC,edition LIMIT 1) LEFT JOIN media p ON p.id=m.parent_id LEFT JOIN media_cards pc ON pc.id=p.id LEFT JOIN media_cards gc ON gc.id=p.parent_id";
 
-pub(super) fn row(r: &rusqlite::Row<'_>, server: &str) -> rusqlite::Result<Value> {
+/// External identities under Jellyfin's provider names; values are always strings.
+fn provider_ids(metadata: &Value) -> Value {
+    let mut ids = serde_json::Map::new();
+    for (key, name) in [
+        ("tmdb_id", "Tmdb"),
+        ("imdb_id", "Imdb"),
+        ("tvdb_id", "Tvdb"),
+    ] {
+        let id = match &metadata[key] {
+            Value::Number(id) => id.as_u64().filter(|id| *id > 0).map(|id| id.to_string()),
+            Value::String(id) if !id.is_empty() => Some(id.clone()),
+            _ => None,
+        };
+        if let Some(id) = id {
+            ids.insert(name.into(), json!(id));
+        }
+    }
+    Value::Object(ids)
+}
+
+/// When a movie was released, a series first aired or an episode aired.
+fn premiere_date(metadata: &Value) -> Option<String> {
+    ["air_date_utc", "air_date", "release_date", "first_air_date"]
+        .into_iter()
+        .filter_map(|key| metadata[key].as_str())
+        .find_map(|value| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map(|at| at.to_utc())
+                .or_else(|_| {
+                    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                        .map(|day| day.and_time(chrono::NaiveTime::MIN).and_utc())
+                })
+                .ok()
+        })
+        .map(|at| at.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
+/// Chapter markers of the probed file. Chapters have no images.
+fn chapters(probe: &Value) -> Value {
+    json!(
+        probe["chapters"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|chapter| {
+                let start = chapter["start_time"].as_str()?.parse::<f64>().ok()?;
+                Some(json!({
+                    "StartPositionTicks": ticks(start),
+                    "Name": chapter["tags"]["title"],
+                    "ImageDateModified": "0001-01-01T00:00:00Z"
+                }))
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+/// Whether a file has a picture to take a still from, not only cover art.
+fn has_video(probe: &Value) -> bool {
+    probe["streams"].as_array().is_some_and(|streams| {
+        streams
+            .iter()
+            .any(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
+    })
+}
+
+pub(super) fn row(
+    r: &rusqlite::Row<'_>,
+    server: &str,
+    with_chapters: bool,
+) -> rusqlite::Result<Value> {
     let id: String = r.get(0)?;
     let kind: String = r.get(1)?;
     let title: String = r.get(2)?;
@@ -395,6 +487,29 @@ pub(super) fn row(r: &rusqlite::Row<'_>, server: &str) -> rusqlite::Result<Value
     let mut value = json!({"Id":id,"ServerId":server,"Name":title,"SortName":title,"Type":item_type(&kind),"IsFolder":!["movie","episode","track"].contains(&kind.as_str()),"MediaType":if kind=="track"{"Audio"}else{"Video"},"LocationType":"FileSystem","ParentId":parent.clone().unwrap_or(r.get::<_,String>(8)?),"ProductionYear":year,"IndexNumber":r.get::<_,Option<i64>>(5)?,"RunTimeTicks":ticks(duration),"Overview":metadata.get("overview"),"ChildCount":r.get::<_,i64>(19)?,"Genres":[],"People":[],"Studios":[],"ProviderIds":{},"ImageTags":{},"BackdropImageTags":[],"MediaSources":[],"UserData":{"Key":id,"ItemId":id,"IsFavorite":r.get::<_,bool>(9)?,"Played":played,"PlayCount":if played {1}else{0},"PlaybackPositionTicks":if played {0}else{ticks(position)},"PlayedPercentage":if duration>0.0{position/duration*100.0}else{0.0}}});
     if metadata["artwork_cached"] == true {
         value["ImageTags"] = json!({"Primary":format!("{}",r.get::<_,i64>(7)?)});
+    } else if ["movie", "episode"].contains(&kind.as_str()) && has_video(&probe) {
+        // A still from the file stands in for missing artwork.
+        value["ImageTags"] = json!({"Primary":"still"});
+    }
+    value["ProviderIds"] = provider_ids(&metadata);
+    value["PremiereDate"] = json!(premiere_date(&metadata));
+    if let Some(rating) = metadata["vote_average"].as_f64().filter(|v| *v > 0.0) {
+        value["CommunityRating"] = json!((rating * 10.0).round() / 10.0);
+    }
+    if let Some(score) = metadata["critic_rating"].as_f64().filter(|v| *v > 0.0) {
+        value["CriticRating"] = json!(score.round());
+    }
+    if let Some(certification) = metadata["certification"].as_str().filter(|v| !v.is_empty()) {
+        value["OfficialRating"] = json!(certification);
+    }
+    if let Some(studio) = metadata["studio"].as_str().filter(|v| !v.is_empty()) {
+        value["Studios"] = json!([{"Name":studio,"Id":studio_id(studio)}]);
+    }
+    if with_chapters && ["movie", "episode"].contains(&kind.as_str()) {
+        value["Chapters"] = chapters(&probe);
+    }
+    if let Some(unplayed) = r.get::<_, Option<i64>>(21)? {
+        value["UserData"]["UnplayedItemCount"] = json!(unplayed);
     }
     if let Some(genres) = metadata["genres"].as_array() {
         value["Genres"] = json!(

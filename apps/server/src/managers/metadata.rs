@@ -343,11 +343,26 @@ fn normalize(kind: &str, row: &Value) -> Value {
     {
         value["vote_average"] = json!(rating);
     }
+    if matches!(kind, "movie" | "show") {
+        value["certification"] = row["certification"].clone();
+        // Radarr names the production studio, Sonarr the original network.
+        value["studio"] = row["studio"]
+            .as_str()
+            .or(row["network"].as_str())
+            .map_or(Value::Null, |name| json!(name));
+    }
     match kind {
         "movie" => {
             value["release_date"] = row["releaseDate"].clone();
             value["tmdb_id"] = row["tmdbId"].clone();
             value["imdb_id"] = row["imdbId"].clone();
+            if let Some(score) = row
+                .pointer("/ratings/rottenTomatoes/value")
+                .and_then(Value::as_f64)
+                .filter(|score| *score > 0.0)
+            {
+                value["critic_rating"] = json!(score);
+            }
             if row["collection"]["tmdbId"].as_i64().is_some() {
                 value["belongs_to_collection"] = json!({
                     "id":row["collection"]["tmdbId"],

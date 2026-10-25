@@ -54,10 +54,17 @@ pub async fn views(state: &AppState) -> Result<Value> {
 }
 
 pub fn genre_id(name: &str) -> String {
+    name_id("genre", name)
+}
+pub fn studio_id(name: &str) -> String {
+    name_id("studio", name)
+}
+/// The stable UUID of an entity known only by its name.
+fn name_id(kind: &str, name: &str) -> String {
     uuid::Uuid::parse_str(
-        &thelxinoe_auth::digest(&format!("jellyfin-genre:{}", name.to_lowercase()))[..32],
+        &thelxinoe_auth::digest(&format!("jellyfin-{kind}:{}", name.to_lowercase()))[..32],
     )
-    .expect("genre digest is a UUID")
+    .expect("name digest is a UUID")
     .to_string()
 }
 
@@ -147,14 +154,49 @@ async fn browse_media(
         },
     )
     .await?;
-    if items
-        .iter()
-        .any(|item| item["ImageTags"]["Primary"].is_string())
+    let art = crate::managers::status::title_art(
+        state,
+        items
+            .iter()
+            .filter(|item| {
+                ["Movie", "Series", "Season", "Episode"]
+                    .contains(&item["Type"].as_str().unwrap_or(""))
+            })
+            .filter_map(|item| item["Id"].as_str().map(str::to_owned))
+            .collect(),
+    )
+    .await?;
+    if !art.is_empty()
+        || items
+            .iter()
+            .any(|item| item["ImageTags"]["Primary"].is_string())
     {
+        // Image tags carry the artwork grant for clients that fetch images without headers.
         let grant = crate::grants::artwork(state, p).await?;
         for item in &mut items {
             if item["ImageTags"]["Primary"].is_string() {
                 item["ImageTags"]["Primary"] = json!(grant);
+            }
+            let Some(art) = item["Id"].as_str().and_then(|id| art.get(id)).copied() else {
+                continue;
+            };
+            if ["Movie", "Series"].contains(&item["Type"].as_str().unwrap_or("")) {
+                if art.backdrop {
+                    item["BackdropImageTags"] = json!([grant]);
+                }
+                if art.logo {
+                    item["ImageTags"]["Logo"] = json!(grant);
+                }
+            } else {
+                let series = item["SeriesId"].clone();
+                if art.backdrop {
+                    item["ParentBackdropItemId"] = series.clone();
+                    item["ParentBackdropImageTags"] = json!([grant]);
+                }
+                if art.logo {
+                    item["ParentLogoItemId"] = series;
+                    item["ParentLogoImageTag"] = json!(grant);
+                }
             }
         }
     }
@@ -297,18 +339,49 @@ pub async fn playlists(
     }
 }
 
-pub async fn image(state: &AppState, id: &str, kind: &str, request: Request) -> Result<Response> {
-    if kind != "Primary" {
-        return Err(ApiError::not_found());
+/// A catalog image by its Jellyfin type. Items have a single backdrop, at index 0.
+pub async fn image(
+    state: &AppState,
+    id: &str,
+    kind: &str,
+    index: Option<&str>,
+    request: Request,
+) -> Result<Response> {
+    let id = canonical(id);
+    match (kind, index) {
+        ("Primary", None) => {
+            // Artwork files are named by media ID.
+            uuid::Uuid::parse_str(&id).map_err(|_| ApiError::not_found())?;
+            let path = state.config.cache.join("artwork").join(&id);
+            if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+                serve(path, request).await
+            } else {
+                super::stills::serve(state, &id, request).await
+            }
+        }
+        ("Backdrop", None | Some("0")) => {
+            crate::managers::status::serve_title_art(state, &id, "fanart", request).await
+        }
+        ("Logo", None) => {
+            crate::managers::status::serve_title_art(state, &id, "clearlogo", request).await
+        }
+        _ => Err(ApiError::not_found()),
     }
-    let id = uuid::Uuid::parse_str(id)
+}
+
+/// Serve one cached JPEG or PNG file with its detected type.
+pub(super) async fn serve(path: std::path::PathBuf, request: Request) -> Result<Response> {
+    use tokio::io::AsyncReadExt;
+    // The type only needs the signature; the file itself streams from disk.
+    let mut signature = Vec::with_capacity(4);
+    tokio::fs::File::open(&path)
+        .await
         .map_err(|_| ApiError::not_found())?
-        .to_string();
-    let path = state.config.cache.join("artwork").join(id);
-    let bytes = tokio::fs::read(&path)
+        .take(4)
+        .read_to_end(&mut signature)
         .await
         .map_err(|_| ApiError::not_found())?;
-    let content_type = if bytes.starts_with(b"\x89PNG") {
+    let content_type = if signature.starts_with(b"\x89PNG") {
         "image/png"
     } else {
         "image/jpeg"

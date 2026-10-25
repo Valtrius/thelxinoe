@@ -33,12 +33,8 @@ pub(super) async fn configured(db: &Database) -> anyhow::Result<HashSet<String>>
     .await
 }
 
-/// Links for movies, shows, seasons and episodes, and the playable episodes of each show
-/// or season among them.
-pub(super) async fn catalog(db: &Database, ids: Vec<String>) -> anyhow::Result<Catalog> {
-    let ids = serde_json::to_string(&ids)?;
-    db.read("managers.status.catalog", move |db| {
-        let links = db.prepare(&format!("SELECT e.id,e.kind,{PRESENT},b.service_id,b.manager_entity_id,b.external_id,
+fn select_links(db: &rusqlite::Connection, ids: &str) -> rusqlite::Result<Vec<Link>> {
+    db.prepare(&format!("SELECT e.id,e.kind,{PRESENT},b.service_id,b.manager_entity_id,b.external_id,
                 CAST(json_extract(r.metadata,'$.tmdb_id') AS INTEGER),CAST(json_extract(r.metadata,'$.tvdb_id') AS INTEGER),
                 CASE e.kind WHEN 'season' THEN e.sort_number WHEN 'episode' THEN p.sort_number END,
                 CASE e.kind WHEN 'episode' THEN e.sort_number END,{MAPPED}
@@ -46,13 +42,30 @@ pub(super) async fn catalog(db: &Database, ids: Vec<String>) -> anyhow::Result<C
             LEFT JOIN media r ON r.id=CASE e.kind WHEN 'season' THEN p.id WHEN 'episode' THEN g.id ELSE e.id END
             LEFT JOIN metadata_bindings b ON b.media_id=r.id
             WHERE e.id IN (SELECT value FROM json_each(?1)) AND e.kind IN ('movie','show','season','episode')"))?
-            .query_map([&ids], |r| Ok(Link {
+            .query_map([ids], |r| Ok(Link {
                 id: r.get(0)?, kind: r.get(1)?, available: r.get(2)?, service_id: r.get(3)?, entity_id: r.get(4)?,
                 external_id: r.get(5)?, tmdb_id: r.get::<_, Option<i64>>(6)?.filter(|v| *v > 0),
                 tvdb_id: r.get::<_, Option<i64>>(7)?.filter(|v| *v > 0), season: r.get(8)?, episode: r.get(9)?,
                 mapped: mapped(r.get(10)?),
             }))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            .collect()
+}
+
+/// Links for movies, shows, seasons and episodes.
+pub(super) async fn links(db: &Database, ids: Vec<String>) -> anyhow::Result<Vec<Link>> {
+    let ids = serde_json::to_string(&ids)?;
+    db.read("managers.status.links", move |db| {
+        Ok(select_links(db, &ids)?)
+    })
+    .await
+}
+
+/// Links for movies, shows, seasons and episodes, and the playable episodes of each show
+/// or season among them.
+pub(super) async fn catalog(db: &Database, ids: Vec<String>) -> anyhow::Result<Catalog> {
+    let ids = serde_json::to_string(&ids)?;
+    db.read("managers.status.catalog", move |db| {
+        let links = select_links(db, &ids)?;
         let mut present = HashMap::<String, Vec<Present>>::new();
         let mut query = db.prepare(&format!("SELECT t.id,s.sort_number,e.sort_number,{MAPPED} FROM media t
                 JOIN media s ON s.parent_id=t.id AND s.kind='season' JOIN media e ON e.parent_id=s.id AND e.kind='episode'

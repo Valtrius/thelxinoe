@@ -10,6 +10,7 @@ mod online;
 mod playback;
 mod profile;
 pub(crate) mod quick_connect;
+mod stills;
 mod user_data;
 pub(crate) const API_VERSION: &str = "12.1.0";
 use crate::{
@@ -113,6 +114,7 @@ fn safe_route(path: &str) -> String {
         "Images",
         "Primary",
         "Backdrop",
+        "Logo",
         "Shows",
         "NextUp",
         "Episodes",
@@ -269,7 +271,7 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
             axum::Json(auth::login(&state, &headers, context.address, body).await?).into_response(),
         );
     }
-    let image_request = parts.len() == 4
+    let image_request = (4..=5).contains(&parts.len())
         && parts[0] == "Items"
         && parts[2] == "Images"
         && (method == "GET" || method == "HEAD");
@@ -456,20 +458,17 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
     if method == "GET" && (lower == "/userviews" || lower.ends_with("/views")) {
         return Ok(axum::Json(catalog::views(&state).await?).into_response());
     }
-    if parts.len() == 4
-        && parts[0] == "Items"
-        && parts[2] == "Images"
-        && (method == "GET" || method == "HEAD")
-    {
+    if image_request {
         let id = parts[1].to_owned();
         let kind = parts[3].to_owned();
+        let index = parts.get(4).map(|index| (*index).to_owned());
         if let Some(item) = online::resolve(&state, &p, &id).await? {
-            if !["Primary", "Thumb"].contains(&kind.as_str()) {
+            if !["Primary", "Thumb"].contains(&kind.as_str()) || index.is_some() {
                 return Err(ApiError::not_found());
             }
             return online::image(&state, &p, &item, method == "HEAD").await;
         }
-        return catalog::image(&state, &id, &kind, request).await;
+        return catalog::image(&state, &id, &kind, index.as_deref(), request).await;
     }
     if parts.len() == 2 && parts[0] == "DisplayPreferences" {
         let id = parts[1].to_owned();

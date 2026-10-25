@@ -2358,3 +2358,192 @@ async fn universal_audio_streams_a_local_track_and_reports_progress_per_device_s
     assert_ne!(after[1].0, playback);
     assert_eq!(after[1].1, "ready");
 }
+#[tokio::test]
+async fn catalog_items_carry_manager_metadata_chapters_and_unwatched_counts() {
+    let (_temp, state, _) = fixture().await;
+    let probe = json!({
+        "streams":[{"index":0,"codec_type":"video","codec_name":"h264","width":1920,"height":1080}],
+        "format":{"duration":"5400.0"},
+        "chapters":[
+            {"id":0,"start_time":"0.000000","end_time":"600.000000","tags":{"title":"Opening"}},
+            {"id":1,"start_time":"600.500000","end_time":"5400.000000"}
+        ]
+    })
+    .to_string();
+    state.db.write("test.fixture", move |db| {
+        db.execute_batch(r#"
+INSERT INTO library_roots(id,name,kind,path) VALUES ('movies','Movies','movies','/media/movies'),('shows','Shows','shows','/media/shows');
+INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,metadata,created_at) VALUES
+ ('movie','movies','movie',NULL,'m','Feature',NULL,'{"title":"Feature","vote_average":6.665,"critic_rating":30,"certification":"PG-13","studio":"Walt Disney Pictures","tmdb_id":166426,"imdb_id":"tt1790809","release_date":"2017-05-25T00:00:00Z"}',1),
+ ('show','shows','show',NULL,'s','Show',NULL,'{"title":"Show","vote_average":8.4,"certification":"TV-MA","studio":"HBO","tvdb_id":201,"tmdb_id":301,"first_air_date":"2016-10-02T00:00:00Z"}',1),
+ ('season1','shows','season','show','s1','Season 1',1,'{}',1),
+ ('specials','shows','season','show','s0','Specials',0,'{}',1),
+ ('e1','shows','episode','season1','e1','Pilot',1,'{"air_date":"2015-11-20","air_date_utc":"2015-11-20T08:00:00Z","tvdb_id":5311261}',1),
+ ('e2','shows','episode','season1','e2','Second',2,'{"air_date":"2015-11-27"}',1),
+ ('e3','shows','episode','season1','e3','Not downloaded',3,'{}',1),
+ ('sp1','shows','episode','specials','sp1','Special',1,'{}',1);
+INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice','e1',1,1);
+"#)?;
+        for (file, media, root) in [("fm","movie","movies"),("f1","e1","shows"),("f2","e2","shows"),("fs","sp1","shows")] {
+            db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,?2,?1,'g',1,'m',?1,?3,1)", rusqlite::params![file, root, probe])?;
+            db.execute("INSERT INTO media_sources VALUES (?1,?2)", [media, file])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let alice_token = login(&state, "alice", DEVICE).await;
+    let bob_token = login(&state, "bob", DEVICE).await;
+    let items = |query: String, token: String| {
+        let state = state.clone();
+        async move {
+            let (status, page) = call(
+                &state,
+                &format!("/Items?{query}"),
+                "GET",
+                Value::Null,
+                &[("X-Emby-Token", token.as_str())],
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{page}");
+            page["Items"].as_array().unwrap().clone()
+        }
+    };
+    let alice = |query: &str| items(query.to_owned(), alice_token.clone());
+
+    let movie = alice("Ids=movie").await.remove(0);
+    assert_eq!(movie["CommunityRating"], 6.7);
+    assert_eq!(movie["CriticRating"], 30.0);
+    assert_eq!(movie["OfficialRating"], "PG-13");
+    assert_eq!(movie["PremiereDate"], "2017-05-25T00:00:00Z");
+    assert_eq!(
+        movie["ProviderIds"],
+        json!({"Tmdb":"166426","Imdb":"tt1790809"})
+    );
+    assert_eq!(movie["Studios"][0]["Name"], "Walt Disney Pictures");
+    // A video without artwork offers a still from its file.
+    assert_eq!(movie["ImageTags"]["Primary"].as_str().unwrap().len(), 64);
+    // Lists include chapters only when asked, like Jellyfin.
+    assert!(movie.get("Chapters").is_none());
+    let movie = alice("Ids=movie&Fields=Chapters,Overview").await.remove(0);
+    assert_eq!(
+        movie["Chapters"],
+        json!([
+            {"StartPositionTicks":0,"Name":"Opening","ImageDateModified":"0001-01-01T00:00:00Z"},
+            {"StartPositionTicks":6_005_000_000_i64,"Name":null,"ImageDateModified":"0001-01-01T00:00:00Z"}
+        ])
+    );
+    let studio = movie["Studios"][0]["Id"].as_str().unwrap();
+    assert!(uuid::Uuid::parse_str(studio).is_ok());
+    let by_studio = alice(&format!("Recursive=true&StudioIds={studio}")).await;
+    assert_eq!(
+        by_studio
+            .iter()
+            .map(|i| i["Id"].clone())
+            .collect::<Vec<_>>(),
+        ["movie"]
+    );
+
+    let show = alice("Ids=show").await.remove(0);
+    assert_eq!(show["CommunityRating"], 8.4);
+    assert_eq!(show["OfficialRating"], "TV-MA");
+    assert_eq!(show["Studios"][0]["Name"], "HBO");
+    assert_eq!(show["PremiereDate"], "2016-10-02T00:00:00Z");
+    assert_eq!(show["ProviderIds"], json!({"Tmdb":"301","Tvdb":"201"}));
+    assert!(show["ImageTags"].get("Primary").is_none());
+    let episodes = alice("ParentId=season1&SortBy=IndexNumber").await;
+    assert_eq!(
+        episodes
+            .iter()
+            .map(|e| (e["PremiereDate"].clone(), e["ProviderIds"].clone()))
+            .collect::<Vec<_>>(),
+        [
+            (json!("2015-11-20T08:00:00Z"), json!({"Tvdb":"5311261"})),
+            (json!("2015-11-27T00:00:00Z"), json!({})),
+            (Value::Null, json!({}))
+        ]
+    );
+    // Playable unwatched episodes; a series leaves out its specials.
+    for (token, show, season, specials) in [(&alice_token, 1, 1, 1), (&bob_token, 2, 2, 1)] {
+        let counts = items("Ids=show,season1,specials".into(), token.clone()).await;
+        let count = |id: &str| {
+            counts.iter().find(|i| i["Id"] == id).unwrap()["UserData"]["UnplayedItemCount"].clone()
+        };
+        assert_eq!(
+            [count("show"), count("season1"), count("specials")],
+            [json!(show), json!(season), json!(specials)]
+        );
+    }
+    assert!(episodes[0]["UserData"].get("UnplayedItemCount").is_none());
+}
+#[tokio::test]
+async fn videos_without_artwork_show_a_still_from_their_file() {
+    let (temp, state, _) = fixture().await;
+    local_library(temp.path(), &state).await;
+    let token = login(&state, "alice", DEVICE).await;
+    let headers = [("X-Emby-Token", token.as_str())];
+    let mut ids = Vec::new();
+    for kind in ["Movie", "Audio"] {
+        let (status, page) = call(
+            &state,
+            &format!("/Items?IncludeItemTypes={kind}"),
+            "GET",
+            Value::Null,
+            &headers,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        ids.push(page["Items"][0].clone());
+    }
+    let (movie, track) = (&ids[0], &ids[1]);
+    let tag = movie["ImageTags"]["Primary"].as_str().unwrap();
+    assert!(track["ImageTags"].get("Primary").is_none());
+    let id = movie["Id"].as_str().unwrap();
+    // Clients that only send the image tag get the same still, extracted once.
+    for _ in 0..2 {
+        let (status, headers, body) = send(
+            &state,
+            &format!("/Items/{id}/Images/Primary?tag={tag}&fillWidth=400"),
+            "GET",
+            Value::Null,
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+        let still = image::load_from_memory(&body).unwrap();
+        assert_eq!((still.width(), still.height()), (160, 90));
+    }
+    let (status, item) = call(
+        &state,
+        &format!("/Items/{id}"),
+        "GET",
+        Value::Null,
+        &headers,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{item}");
+    let source = &item["MediaSources"][0];
+    assert_eq!(
+        std::fs::read_to_string(
+            state
+                .config
+                .cache
+                .join(format!("artwork/stills/{id}.source"))
+        )
+        .unwrap(),
+        format!(
+            "{}:{}",
+            source["Id"].as_str().unwrap(),
+            source["ETag"].as_str().unwrap()
+        )
+    );
+    let track = track["Id"].as_str().unwrap();
+    let (status, _, _) = send(
+        &state,
+        &format!("/Items/{track}/Images/Primary"),
+        "GET",
+        Value::Null,
+        &headers,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

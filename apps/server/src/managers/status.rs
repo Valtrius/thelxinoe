@@ -121,7 +121,7 @@ impl Title {
         self.overview = self.overview.filter(|v| !v.trim().is_empty());
         self.imdb_id = self.imdb_id.filter(|v| !v.is_empty());
         self.images.retain(|image| {
-            matches!(image.cover_type.as_str(), "poster" | "fanart")
+            matches!(image.cover_type.as_str(), "poster" | "fanart" | "clearlogo")
                 && image.url.as_deref().is_some_and(|url| url.starts_with('/'))
         });
         self
@@ -1090,6 +1090,56 @@ pub(crate) async fn detail(
     Ok(())
 }
 
+/// The landscape backdrop and the logo a movie or series has in its manager.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TitleArt {
+    pub(crate) backdrop: bool,
+    pub(crate) logo: bool,
+}
+
+/// The manager images of each catalog item's movie or series; seasons and episodes
+/// get their series'. Items without a manager title are left out.
+pub(crate) async fn title_art(
+    state: &AppState,
+    ids: Vec<String>,
+) -> Result<HashMap<String, TitleArt>> {
+    let snapshot = snapshot(state);
+    if snapshot.services.is_empty() || ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let links = storage::links(&state.db, ids).await?;
+    Ok(links
+        .iter()
+        .filter_map(|link| {
+            let found = find(&snapshot, manager(&link.kind)?, link)?;
+            let art = TitleArt {
+                backdrop: found.title.image("fanart").is_some(),
+                logo: found.title.image("clearlogo").is_some(),
+            };
+            (art != TitleArt::default()).then(|| (link.id.clone(), art))
+        })
+        .collect())
+}
+
+/// Serve the `fanart` or `clearlogo` of a catalog movie's or series' manager title.
+pub(crate) async fn serve_title_art(
+    state: &AppState,
+    media_id: &str,
+    kind: &str,
+    request: Request<Body>,
+) -> Result<Response> {
+    let links = storage::links(&state.db, vec![media_id.to_owned()]).await?;
+    let title = {
+        let snapshot = snapshot(state);
+        links
+            .first()
+            .and_then(|link| find(&snapshot, manager(&link.kind)?, link))
+            .map(|found| (found.inventory.service.clone(), found.title.id))
+    };
+    let (service, entity) = title.ok_or_else(ApiError::not_found)?;
+    serve_title(state, &service, entity, kind, request, None).await
+}
+
 /// Monitored manager titles that have no catalog item yet and are still wanted.
 pub(crate) async fn virtual_titles(
     state: &AppState,
@@ -1429,10 +1479,21 @@ async fn artwork(
     {
         return Err(ApiError::not_found());
     }
-    let local = snapshot(&state)
-        .service(&service_id)
+    serve_title(&state, &service_id, entity, &kind, request, query.width).await
+}
+/// One manager image of a title from the cache, downloaded from the manager when it changed.
+async fn serve_title(
+    state: &AppState,
+    service_id: &str,
+    entity: i64,
+    kind: &str,
+    request: Request<Body>,
+    width: Option<u32>,
+) -> Result<Response> {
+    let local = snapshot(state)
+        .service(service_id)
         .and_then(|inventory| inventory.titles.get(&entity))
-        .and_then(|title| title.image(&kind))
+        .and_then(|title| title.image(kind))
         .map(str::to_owned)
         .ok_or_else(ApiError::not_found)?;
     let dir = state.config.cache.join("artwork");
@@ -1444,9 +1505,9 @@ async fn artwork(
         static DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
         let _permit = DOWNLOADS.acquire().await.map_err(anyhow::Error::from)?;
         if cached(&dir, &name, &local).await {
-            return super::metadata::serve_artwork(path, request, query.width).await;
+            return super::metadata::serve_artwork(path, request, width).await;
         }
-        match download(&state, &service_id, &dir, &name, &local).await {
+        match download(state, service_id, &dir, &name, &local).await {
             Ok(true) => {}
             // A stale image is better than none while the manager is unreachable.
             Ok(false) | Err(_) if path.is_file() => {}
@@ -1457,7 +1518,7 @@ async fn artwork(
             }
         }
     }
-    super::metadata::serve_artwork(path, request, query.width).await
+    super::metadata::serve_artwork(path, request, width).await
 }
 /// What decides which cached title artwork is still wanted: each service's titles.
 fn artwork_key(snapshot: &Snapshot) -> u64 {
