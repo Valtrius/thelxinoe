@@ -42,6 +42,7 @@ export async function installUiFixture(
     managedNzbget?: boolean;
     managerKind?: 'radarr' | 'sonarr' | 'lidarr';
     managerDefaultsUnset?: boolean;
+    managerLibraryError?: string | null;
     serviceUpdateState?: string;
     /** Registered services that stay Connected instead of Owned. */
     connected?: string[];
@@ -340,6 +341,7 @@ export async function installUiFixture(
               monitored: true,
             },
             checked_at: 1789984800,
+            library_error: options.managerLibraryError ?? null,
             error: null,
           },
         ],

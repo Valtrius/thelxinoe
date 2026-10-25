@@ -56,6 +56,11 @@ async fn main() -> Result<()> {
         thelxinoe_server::library::reconcile,
     ));
     workers.spawn(supervise(
+        "library discovery",
+        state.clone(),
+        thelxinoe_server::run_library_discovery,
+    ));
+    workers.spawn(supervise(
         "playback",
         state.clone(),
         thelxinoe_server::playback::maintain,

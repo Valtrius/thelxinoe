@@ -5,6 +5,32 @@ async function installClock(page: Page) {
   await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
 }
 
+test('automatic library discovery errors stay with their service and clear after recovery', async ({
+  page,
+}) => {
+  const message = '/movies: Library folder is unavailable to Thelxinoe';
+  const options = {
+    role: 'admin' as const,
+    settingsSection: 'services',
+    connected: ['radarr'],
+    managerLibraryError: message as string | null,
+  };
+  const fixture = await installUiFixture(page, options);
+  await page.clock.install();
+  await page.goto('/');
+  const services = page.getByRole('navigation', { name: 'Select service' });
+  await services.getByRole('link', { name: 'Radarr', exact: true }).click();
+  await expect(page.getByText(message, { exact: true })).toBeVisible();
+  await services.getByRole('link', { name: 'Sonarr', exact: true }).click();
+  await expect(page.getByText(message, { exact: true })).toHaveCount(0);
+  await services.getByRole('link', { name: 'Radarr', exact: true }).click();
+  options.managerLibraryError = null;
+  await page.clock.runFor(4000);
+  await expect(page.getByText(message, { exact: true })).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 for (const setup of [false, true]) {
   test(`${setup ? 'administrator registration' : 'login'} focuses the username`, async ({
     page,

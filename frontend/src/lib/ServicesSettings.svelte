@@ -264,6 +264,9 @@
     definitions.find((entry) => entry.kind === selectedKind)!,
   );
   const connected = $derived(integration(definition));
+  const libraryError = $derived(
+    connected && 'library_error' in connected ? connected.library_error : null,
+  );
   const item = $derived(provision(selectedKind));
   const live = $derived(runtime(selectedKind));
   const selectedStage = $derived(stageOf(selectedKind));
@@ -1183,9 +1186,9 @@
           use fresh storage for both the server and its controller.
         </div>
       {/if}
-      {#if item?.error || live?.inspection_error || live?.error || live?.drift}
+      {#if item?.error || libraryError || live?.inspection_error || live?.error || live?.drift}
         <Notice class="col-span-full mb-0" tone="warning" role="status">
-          {#each [...new Set([item?.error, live?.inspection_error, live?.error].filter(Boolean))] as error (error)}<p
+          {#each [...new Set([item?.error, libraryError, live?.inspection_error, live?.error].filter(Boolean))] as error (error)}<p
               class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
             >
               {error}

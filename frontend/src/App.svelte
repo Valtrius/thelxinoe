@@ -248,7 +248,6 @@
     if (attentionUserId && !desktop) void prefetchVideoPlayer();
   });
   let accountRevision = $state(0);
-  let scans = $state<Record<string, { completed: number; total: number }>>({});
   let serverAddress = $state('');
   let updateRequired = $state('');
   async function act(fn: () => Promise<void>) {
@@ -451,8 +450,6 @@
           mediaRevision++;
         if (event.kind === 'catalog.changed') {
           catalogRevision++;
-          const root = (event.payload as { root_id?: string }).root_id;
-          if (root) delete scans[root];
         }
         if (
           ['media-state.changed', 'catalog.status.changed'].includes(
@@ -461,14 +458,6 @@
           (event.kind === 'playback.changed' && !progressReport)
         )
           catalogRevision++;
-        if (event.kind === 'catalog.scan.progress') {
-          const scan = event.payload as {
-            root_id: string;
-            completed: number;
-            total: number;
-          };
-          scans[scan.root_id] = scan;
-        }
         // Settings pages reload the data these events change instead of polling.
         if (
           [
@@ -1169,7 +1158,6 @@
             {accountRevision}
             {preferencesRevision}
             {settingsRevision}
-            {scans}
             playing={playingMedia}
             play={playMedia}
             navigate={(name) => void navigate(name)}

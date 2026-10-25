@@ -23,9 +23,9 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
   });
   const headers = { 'X-Thelxinoe-Client': '1' };
   const existing = (await (await api.get('/api/v1/catalog/roots')).json())
-    .items as { id: string; kind: string }[];
+    .items as { path: string }[];
   for (const kind of ['movies', 'shows', 'music']) {
-    if (!existing.some((root) => root.kind === kind)) {
+    if (!existing.some((root) => root.path === `/media/${kind}`)) {
       const response = await api.post('/api/v1/catalog/roots', {
         headers,
         data: { name: `Fixture ${kind}`, kind, path: `/media/${kind}` },
@@ -34,14 +34,18 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     }
   }
   await expect
-    .poll(
-      async () =>
-        (
-          (await (await api.get('/api/v1/catalog?kind=track')).json())
-            .items as unknown[]
-        ).length,
+    .poll(async () =>
+      Promise.all(
+        ['track', 'episode'].map(
+          async (kind) =>
+            (
+              (await (await api.get(`/api/v1/catalog?kind=${kind}`)).json())
+                .items as unknown[]
+            ).length,
+        ),
+      ),
     )
-    .toBe(1);
+    .toEqual([1, 3]);
   const movies = (
     await (await api.get('/api/v1/catalog?kind=movie')).json()
   ).items.filter((item: { available: boolean }) => item.available);

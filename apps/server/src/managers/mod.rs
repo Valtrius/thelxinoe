@@ -10,6 +10,7 @@ mod controls;
 mod domain;
 mod failures;
 mod indexers;
+pub(crate) mod libraries;
 mod metadata;
 mod operations;
 mod ownership;
@@ -71,6 +72,7 @@ pub(crate) struct Runtime {
     connection_wake: tokio::sync::Notify,
     recyclarr_tick: std::sync::atomic::AtomicI64,
     pub(crate) status: status::Store,
+    libraries: libraries::Store,
     #[cfg(test)]
     pub(crate) docker: std::sync::Mutex<std::collections::HashMap<String, Value>>,
 }
@@ -106,6 +108,7 @@ impl Runtime {
             connection_wake: tokio::sync::Notify::new(),
             recyclarr_tick: std::sync::atomic::AtomicI64::new(0),
             status: Default::default(),
+            libraries: Default::default(),
             #[cfg(test)]
             docker: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
@@ -537,7 +540,8 @@ async fn containers(State(state): State<AppState>, headers: HeaderMap) -> Result
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let rows = storage::list(&state.db).await?;
+    let mut rows = storage::list(&state.db).await?;
+    libraries::decorate(&state, &mut rows);
     Ok(Json(json!({"items":rows})))
 }
 #[derive(Deserialize)]
@@ -619,6 +623,7 @@ async fn register_with_actor(
             "Thelxinoe is installing, transferring or managing another {service}; finish or remove that installation first"
         )));
     }
+    state.managers.libraries.wake.notify_one();
     Ok(Json(json!({"id":returned})))
 }
 /// A connection or setup registration, with read-only evidence for later review.

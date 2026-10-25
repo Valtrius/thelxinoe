@@ -84,11 +84,16 @@ export async function existingStorageAccess(
     expect(blocked).toContain('Fresh installations require');
     f.createMappingMovie();
     await f.peer({ existingLayout: true });
-    await f.api('/catalog/roots', 'POST', {
-      name: 'Existing movies',
-      kind: 'movies',
-      path: '/media/movies',
-    });
+    await f
+      .api('/catalog/roots', 'POST', {
+        name: 'Existing movies',
+        kind: 'movies',
+        path: '/media/movies',
+      })
+      // Discovery may already have registered the standard movies folder.
+      .catch((error) => {
+        if (!error.message.includes('HTTP 409')) throw error;
+      });
     const root = (await f.api('/catalog/roots')).items.find(
       (row) => row.path === '/media/movies',
     );

@@ -95,11 +95,6 @@ export const settingsSearchIndex: Record<
       terms: 'version docker controller cache space health',
     },
     {
-      title: 'Library folders',
-      terms:
-        'library folders roots media movies shows series music path scan rescan live updates watch',
-    },
-    {
       title: 'Display defaults',
       terms: 'default timezone time zone format 12-hour 24-hour clock',
     },

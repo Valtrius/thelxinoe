@@ -57,6 +57,9 @@ pub async fn run_retention(state: AppState) -> anyhow::Result<()> {
 pub async fn run_title_status(state: AppState) -> anyhow::Result<()> {
     managers::status::run(state).await
 }
+pub async fn run_library_discovery(state: AppState) -> anyhow::Result<()> {
+    managers::libraries::run(state).await
+}
 
 use crate::{config::Config, error::Result};
 use axum::{

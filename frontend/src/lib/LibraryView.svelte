@@ -3,13 +3,7 @@
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
-  import {
-    Folder,
-    RefreshCw,
-    ArrowLeft,
-    Ellipsis,
-    FolderCog,
-  } from '@lucide/svelte';
+  import { Folder, RefreshCw, ArrowLeft, Ellipsis } from '@lucide/svelte';
   import { DropdownMenu } from 'bits-ui';
   import { api } from './api';
   import { navigationCache } from './navigation-cache';
@@ -39,7 +33,6 @@
   let {
     domain,
     admin,
-    openSettings,
     revision = 0,
     play,
     userId,
@@ -53,7 +46,6 @@
   } = $props<{
     domain: string;
     admin: boolean;
-    openSettings?: (name: string) => void;
     revision?: number;
     play: (choice: MediaChoice) => void;
     userId: string;
@@ -265,7 +257,7 @@
         title: domain,
         message: roots.length
           ? `Scanning ${roots.length} library ${roots.length === 1 ? 'folder' : 'folders'}.`
-          : 'No library folders are set up for this section.',
+          : 'No accessible media folders have been detected yet.',
       });
     } catch (e) {
       showToast({
@@ -345,11 +337,6 @@
               onSelect={() => void scanLibrary()}
               ><RefreshCw />Scan library</DropdownMenu.Item
             >
-            {#if openSettings}<DropdownMenu.Item
-                class={menuItemClass}
-                onSelect={() => openSettings('server')}
-                ><FolderCog />Library folders</DropdownMenu.Item
-              >{/if}
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>

@@ -35,6 +35,7 @@ export type ManagerService = {
   version: string;
   defaults: Partial<ManagerDefaults>;
   retention_enabled?: boolean;
+  library_error?: string | null;
   checked_at: number;
   error: string | null;
 };

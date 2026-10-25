@@ -16,7 +16,6 @@
     accountRevision,
     preferencesRevision,
     settingsRevision,
-    scans,
     playing,
     play,
     navigate,
@@ -36,7 +35,6 @@
     accountRevision: number;
     preferencesRevision: number;
     settingsRevision: number;
-    scans: Record<string, { completed: number; total: number }>;
     playing: PlayingMedia[];
     play: (choice: MediaChoice, resolveYoutube?: boolean) => Promise<void>;
     navigate: (name: string) => void;
@@ -117,8 +115,6 @@
         {preferencesRevision}
         {accountRevision}
         revision={settingsRevision}
-        {catalogRevision}
-        {scans}
         {navigate}
         {openSettings}
         {sessionEnded}
@@ -170,7 +166,6 @@
         <LibraryView
           domain={route.section}
           admin={user.role === 'admin'}
-          {openSettings}
           revision={catalogRevision}
           userId={user.id}
           timezone={user.timezone}

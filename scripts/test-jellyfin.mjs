@@ -57,14 +57,15 @@ if ((await call('/setup')).setup_required) {
   await call('/setup', 'POST', credentials);
 } else await call('/auth/login', 'POST', credentials);
 const roots = (await call('/catalog/roots')).items;
+const fixtureRoots = {};
 for (const kind of ['movies', 'shows', 'music']) {
-  const root =
-    roots.find((r) => r.kind === kind) ??
+  const root = (fixtureRoots[kind] =
+    roots.find((r) => r.path === `/media/playback/${kind}`) ??
     (await call('/catalog/roots', 'POST', {
       kind,
       name: `Compatibility ${kind}`,
       path: `/media/playback/${kind}`,
-    }));
+    })));
   const job = (await call(`/catalog/roots/${root.id}/scan`, 'POST')).job_id;
   for (let i = 0; i < 120; i++) {
     const status = (await call('/admin/jobs')).items.find((j) => j.id === job);
@@ -265,7 +266,7 @@ const itemParameters = { itemId: direct.Id, userId: login.User.Id };
 const originalData = (await userDataApi.getItemUserData(itemParameters)).data;
 const filters = (
   await getFilterApi(sdkApi).getQueryFilters({
-    parentId: views.Items.find((i) => i.CollectionType === 'movies').Id,
+    parentId: fixtureRoots.movies.id,
     includeItemTypes: ['Movie'],
     recursive: true,
   })
@@ -286,7 +287,7 @@ assert.deepEqual(
 );
 const musicFilters = (
   await getFilterApi(sdkApi).getQueryFilters({
-    parentId: views.Items.find((item) => item.CollectionType === 'music').Id,
+    parentId: fixtureRoots.music.id,
     recursive: true,
   })
 ).data;

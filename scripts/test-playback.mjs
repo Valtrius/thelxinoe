@@ -44,7 +44,7 @@ try {
   const roots = (await call('/catalog/roots')).items;
   for (const kind of ['movies', 'music']) {
     const root =
-      roots.find((r) => r.kind === kind) ??
+      roots.find((r) => r.path === `/media/playback/${kind}`) ??
       (await call('/catalog/roots', 'POST', {
         kind,
         name: `Playback ${kind}`,
