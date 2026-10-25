@@ -20,6 +20,17 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// serves bounded ranges up to this size at full speed.
 const CHUNK: u64 = 10 * 1024 * 1024;
 
+fn cdn_redirect(url: &reqwest::Url, previous: usize) -> bool {
+    previous <= 5
+        && url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port().is_none_or(|port| port == 443)
+        && url
+            .host_str()
+            .is_some_and(|host| host == "googlevideo.com" || host.ends_with(".googlevideo.com"))
+}
+
 pub(super) struct Relay {
     /// One client per egress proxy, which pins the source's address family.
     clients: Mutex<HashMap<Option<String>, reqwest::Client>>,
@@ -40,7 +51,14 @@ impl Relay {
             return Ok(client.clone());
         }
         let mut builder = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if cdn_redirect(attempt.url(), attempt.previous().len()) {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
+            .referer(false)
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(30));
         // Product tests serve fixtures from a loopback CDN with a self-signed certificate.
@@ -143,7 +161,7 @@ pub(crate) async fn stream(
     super::streams::wait_until(available_at).await;
     let head = request.method() == Method::HEAD;
     // Never forward viewer credentials, cookies or arbitrary headers. Redirects
-    // cannot escape the CDN allowlist or expose the signed address to a client.
+    // stay within the CDN allowlist and never expose signed addresses to a client.
     let (first, last) = match requested {
         Some(Range::Suffix(_)) => (None, None),
         Some(Range::From(first, last)) => (Some(first), last),
@@ -306,6 +324,31 @@ fn body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn redirects_stay_on_the_https_youtube_cdn_and_are_bounded() {
+        for address in [
+            "https://googlevideo.com/videoplayback?signature=public",
+            "https://rr4---sn-example.googlevideo.com/videoplayback?signature=public",
+        ] {
+            let url = reqwest::Url::parse(address).unwrap();
+            assert!(cdn_redirect(&url, 1));
+            assert!(cdn_redirect(&url, 5));
+            assert!(!cdn_redirect(&url, 6));
+        }
+        for address in [
+            "http://r1.googlevideo.com/video",
+            "https://googlevideo.com.attacker.test/video",
+            "https://attacker.test/googlevideo.com/video",
+            "https://127.0.0.1/video",
+            "https://[::1]/video",
+            "https://r1.googlevideo.com:444/video",
+            "https://user:password@r1.googlevideo.com/video",
+            "https://r1.ttvnw.net/video",
+        ] {
+            assert!(!cdn_redirect(&reqwest::Url::parse(address).unwrap(), 1));
+        }
+    }
+
     #[test]
     fn ranges_support_seek_and_reject_multipart_and_overflow() {
         for (value, expected) in [
