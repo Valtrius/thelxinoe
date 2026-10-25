@@ -415,7 +415,9 @@ CREATE TABLE youtube_downloads (
     downloaded_bytes INTEGER NOT NULL DEFAULT 0,
     total_bytes INTEGER,
     eta_seconds INTEGER,
-    media_kind TEXT
+    media_kind TEXT,
+    retries INTEGER NOT NULL DEFAULT 0,
+    retry_at INTEGER
 ) STRICT;
 
 CREATE TABLE youtube_media (

@@ -111,9 +111,13 @@ export function youtubeVideoPresentation(
       case 'interrupted':
         downloadLabel = 'Download paused';
         break;
-      case 'failed':
-        downloadLabel = 'Download failed';
+      case 'failed': {
+        const retryAt = activeDownload?.retryAt;
+        downloadLabel = retryAt
+          ? `Retrying at ${new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(Date.parse(retryAt))}`
+          : 'Download failed';
         break;
+      }
     }
   const readyDownloadTitle =
     downloadReady && activeDownload

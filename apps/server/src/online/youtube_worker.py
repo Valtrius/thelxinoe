@@ -25,8 +25,9 @@ class QuietLogger:
 
 def failure(error):
     text = str(error).lower()
-    # YouTube's bot check also asks to sign in, but it rejects the network.
-    if "not a bot" in text:
+    # YouTube's bot check also asks to sign in, and its rate limit calls the video
+    # unavailable, but both reject the network.
+    if any(word in text for word in ["not a bot", "captcha", "try again later", "http error 429"]):
         return "network_blocked"
     if any(word in text for word in ["sign in", "login required", "log in", "use --cookies",
                                     "members-only", "private video", "confirm your age"]):

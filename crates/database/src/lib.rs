@@ -12,7 +12,7 @@ use std::{
 /// Fresh schema identity, also used by signed releases and backups. A released
 /// schema is frozen in `schemas/<version>.sql`; changing `schema.sql` afterwards
 /// needs the next version, its upgrade in `MIGRATIONS` and a new frozen copy.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 /// The oldest released schema this build upgrades in place.
 pub const MIGRATION_BASE: u32 = 1;
 /// `MIGRATIONS[i]` upgrades schema `MIGRATION_BASE + i` to the next version. Each runs
@@ -22,6 +22,7 @@ pub const MIGRATION_BASE: u32 = 1;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/2.sql"),
     include_str!("../migrations/3.sql"),
+    include_str!("../migrations/4.sql"),
 ];
 const _: () = assert!(MIGRATIONS.len() as u32 == SCHEMA_VERSION - MIGRATION_BASE);
 const APPLICATION_ID: u32 = 0x544c584e; // TLXN

@@ -58,7 +58,7 @@ pub(super) async fn list(
     }).await
 }
 
-pub(in super::super) const VIDEO_SELECT: &str = "SELECT v.video_id,v.channel_id,v.channel_title,v.title,v.published_at,v.duration,v.broadcast,v.available,v.metadata_at,v.privacy,COALESCE(s.watched,0),COALESCE(s.position,0),COALESCE(s.pinned,0),c.thumbnail_url,v.scheduled_start,v.actual_start,v.actual_end,d.state,d.size,d.requested_at,d.error,d.downloaded_bytes,d.total_bytes,d.eta_seconds,d.media_kind,d.probe FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) LEFT JOIN youtube_subscriptions c ON c.user_id=v.user_id AND c.channel_id=v.channel_id LEFT JOIN youtube_downloads d ON d.video_id=v.video_id";
+pub(in super::super) const VIDEO_SELECT: &str = "SELECT v.video_id,v.channel_id,v.channel_title,v.title,v.published_at,v.duration,v.broadcast,v.available,v.metadata_at,v.privacy,COALESCE(s.watched,0),COALESCE(s.position,0),COALESCE(s.pinned,0),c.thumbnail_url,v.scheduled_start,v.actual_start,v.actual_end,d.state,d.size,d.requested_at,d.error,d.downloaded_bytes,d.total_bytes,d.eta_seconds,d.media_kind,d.probe,d.retry_at FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) LEFT JOIN youtube_subscriptions c ON c.user_id=v.user_id AND c.channel_id=v.channel_id LEFT JOIN youtube_downloads d ON d.video_id=v.video_id";
 
 pub(in super::super) fn video(row: &rusqlite::Row<'_>, grant: &str) -> rusqlite::Result<Value> {
     let id: String = row.get(0)?;
@@ -72,7 +72,7 @@ pub(in super::super) fn video(row: &rusqlite::Row<'_>, grant: &str) -> rusqlite:
         "videoId":id,"status":match status.as_str(){"ready"=>"ready","queued"=>"queued","waiting_for_space"=>"waiting_for_space","downloading"=>"downloading","processing"=>"processing",_=>"failed"},
         "fileSizeBytes":row.get::<_,Option<i64>>(18)?.unwrap_or(0),"pinned":row.get::<_,bool>(12)?,
         "widthPixels":format.width,"heightPixels":format.height,"frameRate":format.frame_rate,
-        "downloadedBytes":row.get::<_,Option<i64>>(21)?.unwrap_or(0),"totalBytes":row.get::<_,Option<i64>>(22)?,"etaSeconds":row.get::<_,Option<i64>>(23)?,"mediaKind":row.get::<_,Option<String>>(24)?,"requestedAt":date(row.get::<_,Option<i64>>(19)?.unwrap_or(0)),"errorMessage":row.get::<_,Option<String>>(20)?
+        "downloadedBytes":row.get::<_,Option<i64>>(21)?.unwrap_or(0),"totalBytes":row.get::<_,Option<i64>>(22)?,"etaSeconds":row.get::<_,Option<i64>>(23)?,"mediaKind":row.get::<_,Option<String>>(24)?,"requestedAt":date(row.get::<_,Option<i64>>(19)?.unwrap_or(0)),"errorMessage":row.get::<_,Option<String>>(20)?,"retryAt":row.get::<_,Option<i64>>(26)?.map(date)
     })) }).transpose()?;
     Ok(json!({
         "videoId":id,"channelId":row.get::<_,String>(1)?,"channelName":row.get::<_,String>(2)?,

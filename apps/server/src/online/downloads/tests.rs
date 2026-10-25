@@ -603,3 +603,182 @@ async fn ready_downloads_name_their_format_in_lists_status_and_progress() {
         (&json!(3840), &json!(2160), &json!(60.0))
     );
 }
+
+fn snapshot(version: &str) -> tools::OnlineSnapshot {
+    let executable = json!({"version":version,"path":"tool","digest":""});
+    serde_json::from_value(json!({"yt_dlp":executable,"module":executable,"deno":executable,"ffmpeg":executable,"ffprobe":executable,"generations":[]})).unwrap()
+}
+
+async fn attempt(state: &AppState) -> Option<(String, String, String, bool, u32)> {
+    storage::claim_download(&state.db, Vec::new(), Some(snapshot("new")))
+        .await
+        .unwrap()
+}
+
+async fn retry_state(state: &AppState, video: &'static str) -> (String, u32, Option<i64>) {
+    state
+        .db
+        .read("test.fixture", move |db| {
+            Ok(db.query_row(
+                "SELECT state,retries,retry_at FROM youtube_downloads WHERE video_id=?1",
+                [video],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?)
+        })
+        .await
+        .unwrap()
+}
+
+async fn make_due(state: &AppState, video: &'static str) {
+    state
+        .db
+        .write("test.fixture", move |db| {
+            db.execute(
+                "UPDATE youtube_downloads SET retry_at=?2 WHERE video_id=?1",
+                params![video, now() - 1],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+async fn request(state: &AppState, videos: &'static [&'static str]) {
+    state.db.write("test.fixture", move |db| {
+        for (index, video) in videos.iter().enumerate() {
+            db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES('alice',?1,'Video')", [video])?;
+            db.execute("INSERT INTO youtube_download_requests VALUES('alice',?1,1)", [video])?;
+            db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES(?1,'g','queued','{}',1,?2)", params![video, index as i64])?;
+        }
+        Ok(())
+    }).await.unwrap();
+}
+
+#[test]
+fn only_failures_the_video_does_not_explain_are_retried() {
+    assert_eq!(retry("network_blocked", 0), Some(600));
+    assert_eq!(retry("failed", 4), Some(6 * 3600));
+    assert_eq!(retry("failed", 5), None);
+    for status in [
+        "unavailable",
+        "extractor_authentication_required",
+        "waiting_for_space",
+        "ready",
+    ] {
+        assert_eq!(retry(status, 0), None, "{status}");
+    }
+}
+
+#[tokio::test]
+async fn failed_downloads_retry_when_due_with_the_current_tools() {
+    let (_temp, state, _) = fixture().await;
+    request(&state, &[VIDEO]).await;
+    let (_, generation, ..) = attempt(&state).await.unwrap();
+    storage::finish_download("failed", VIDEO.into(), generation, Some(600), &state.db)
+        .await
+        .unwrap();
+    let (status, retries, retry_at) = retry_state(&state, VIDEO).await;
+    assert_eq!((status.as_str(), retries), ("failed", 1));
+    assert!(retry_at.unwrap() > now() + 590);
+    assert!(
+        attempt(&state).await.is_none(),
+        "A retry waits for its delay"
+    );
+    make_due(&state, VIDEO).await;
+    assert!(
+        storage::claim_download(&state.db, Vec::new(), None)
+            .await
+            .unwrap()
+            .is_none(),
+        "A retry waits for tools to be ready"
+    );
+    let (_, generation, tools, _, retries) = attempt(&state).await.unwrap();
+    assert_eq!(retries, 1);
+    assert_ne!(generation, "g");
+    assert_eq!(
+        serde_json::from_str::<Value>(&tools).unwrap()["yt_dlp"]["version"],
+        "new"
+    );
+    assert_eq!(
+        retry_state(&state, VIDEO).await,
+        ("downloading".into(), 1, None)
+    );
+    storage::finish_download(
+        "network_blocked",
+        VIDEO.into(),
+        generation,
+        Some(1800),
+        &state.db,
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry_state(&state, VIDEO).await.1, 2);
+    let alice = Principal {
+        user: thelxinoe_core::User {
+            id: "alice".into(),
+            username: "alice".into(),
+            role: thelxinoe_core::Role::User,
+            timezone: "UTC".into(),
+        },
+        session_id: "session".into(),
+        transport: "web".into(),
+    };
+    storage::request_for(snapshot("new"), alice, &state.db, VIDEO.into())
+        .await
+        .unwrap();
+    assert_eq!(
+        retry_state(&state, VIDEO).await,
+        ("queued".into(), 0, None),
+        "A request starts over at once"
+    );
+}
+
+#[tokio::test]
+async fn a_download_youtube_blocked_holds_back_the_queue_until_its_retry() {
+    const OTHER: &str = "otherideo11";
+    let (_temp, state, _) = fixture().await;
+    request(&state, &[VIDEO, OTHER]).await;
+    let (video, generation, ..) = attempt(&state).await.unwrap();
+    assert_eq!(video, VIDEO);
+    storage::finish_download(
+        "network_blocked",
+        VIDEO.into(),
+        generation,
+        Some(600),
+        &state.db,
+    )
+    .await
+    .unwrap();
+    assert!(
+        attempt(&state).await.is_none(),
+        "Other downloads would meet the same block"
+    );
+    make_due(&state, VIDEO).await;
+    let (video, generation, ..) = attempt(&state).await.unwrap();
+    assert_eq!(video, VIDEO, "The blocked download is attempted first");
+    storage::finish_download("failed", VIDEO.into(), generation, Some(1800), &state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        attempt(&state).await.unwrap().0,
+        OTHER,
+        "Other failures hold back no other download"
+    );
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute(
+                "DELETE FROM youtube_download_requests WHERE video_id=?1",
+                [VIDEO],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(attempt(&state).await.is_none());
+    assert_eq!(
+        retry_state(&state, VIDEO).await,
+        ("failed".into(), 2, None),
+        "Nobody waits for a retry once its interest is gone"
+    );
+}

@@ -81,7 +81,7 @@ pub(super) async fn configure(db: &Database, enabled: bool, p: Principal) -> any
 }
 
 pub(super) async fn status(db: &Database, video: String) -> anyhow::Result<Option<Value>> {
-    db.read("online.downloads.status", move |db| Ok(db.query_row("SELECT state,size,error,downloaded_bytes,total_bytes,eta_seconds,media_kind,probe FROM youtube_downloads WHERE video_id=?1",[video],|r|{let format=super::format(r.get::<_,Option<String>>(7)?.as_deref());Ok(json!({"state":r.get::<_,String>(0)?,"size":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?,"width":format.width,"height":format.height,"frame_rate":format.frame_rate}))}).optional()?)).await
+    db.read("online.downloads.status", move |db| Ok(db.query_row("SELECT state,size,error,downloaded_bytes,total_bytes,eta_seconds,media_kind,probe,retry_at FROM youtube_downloads WHERE video_id=?1",[video],|r|{let format=super::format(r.get::<_,Option<String>>(7)?.as_deref());Ok(json!({"state":r.get::<_,String>(0)?,"size":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?,"width":format.width,"height":format.height,"frame_rate":format.frame_rate,"retry_at":r.get::<_,Option<i64>>(8)?}))}).optional()?)).await
 }
 
 pub(super) async fn request_for(
@@ -95,7 +95,7 @@ pub(super) async fn request_for(
         tx.execute("INSERT INTO youtube_download_requests(user_id,video_id,requested_at) VALUES (?1,?2,?3) ON CONFLICT(user_id,video_id) DO UPDATE SET requested_at=excluded.requested_at",params![p.user.id,video,now()])?;
         tx.execute("INSERT INTO youtube_media(video_id) VALUES (?1) ON CONFLICT DO NOTHING",[&video])?;
         tx.execute("DELETE FROM youtube_download_suppressed WHERE video_id=?1",[&video])?;
-        tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,path=NULL,size=NULL,modified=NULL,probe=NULL,completed_at=NULL,downloaded_bytes=0,total_bytes=NULL,eta_seconds=NULL,media_kind=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required','network_blocked')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
+        tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,path=NULL,size=NULL,modified=NULL,probe=NULL,completed_at=NULL,downloaded_bytes=0,total_bytes=NULL,eta_seconds=NULL,media_kind=NULL,retries=0,retry_at=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required','network_blocked')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
         tx.commit()?;Ok(true)
     }).await
 }
@@ -136,28 +136,43 @@ pub(super) async fn recover_downloads(db: &Database) -> anyhow::Result<()> {
     .await
 }
 
-/// The next download to attempt, other than the `parked` ones, and whether it was waiting
-/// for space.
+/// Whether anyone still wants the download `d`.
+const INTEREST: &str = "(EXISTS(SELECT 1 FROM youtube_video_state s WHERE s.video_id=d.video_id AND (s.watchlist=1 OR s.pinned=1)) OR EXISTS(SELECT 1 FROM youtube_download_requests r WHERE r.video_id=d.video_id))";
+
+/// The next download to attempt, other than the `parked` ones: a queued one, or a failed one
+/// whose retry is due, which then uses `tools`. While a download YouTube blocked waits to
+/// retry, none starts, as others would meet the same block. Also returns whether it was
+/// waiting for space, and its retries so far.
 pub(super) async fn claim_download(
     db: &Database,
     parked: Vec<String>,
-) -> anyhow::Result<Option<(String, String, String, bool)>> {
+    tools: Option<tools::OnlineSnapshot>,
+) -> anyhow::Result<Option<(String, String, String, bool, u32)>> {
     let parked = serde_json::to_string(&parked)?;
     db.write("online.downloads.claim_download", move |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT video_id,generation,tools,state='waiting_for_space' FROM youtube_downloads d WHERE state IN ('queued','waiting_for_space') AND video_id NOT IN (SELECT value FROM json_each(?1)) AND (EXISTS(SELECT 1 FROM youtube_video_state s WHERE s.video_id=d.video_id AND (s.watchlist=1 OR s.pinned=1)) OR EXISTS(SELECT 1 FROM youtube_download_requests r WHERE r.video_id=d.video_id)) ORDER BY updated_at LIMIT 1",[parked],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?))).optional()?;
-        if let Some((video,..))=&row {tx.execute("UPDATE youtube_downloads SET state='downloading',updated_at=?2 WHERE video_id=?1",params![video,now()])?;}
-        tx.commit()?;Ok(row)
+        tx.execute(&format!("UPDATE youtube_downloads AS d SET retry_at=NULL WHERE retry_at IS NOT NULL AND NOT {INTEREST}"),[])?;
+        let row=tx.query_row(&format!("SELECT video_id,generation,tools,state='waiting_for_space',retries,retry_at IS NOT NULL FROM youtube_downloads d WHERE (state IN ('queued','waiting_for_space') OR (retry_at<=?2 AND ?3)) AND video_id NOT IN (SELECT value FROM json_each(?1)) AND {INTEREST} AND NOT EXISTS(SELECT 1 FROM youtube_downloads b WHERE b.state='network_blocked' AND b.retry_at>?2) ORDER BY retries DESC,updated_at LIMIT 1"),params![parked,now(),tools.is_some()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?,r.get::<_,u32>(4)?,r.get::<_,bool>(5)?))).optional()?;
+        let Some((video,mut generation,mut bundle,waiting,retries,retry))=row else {tx.commit()?;return Ok(None);};
+        if retry && let Some(tools)=&tools {
+            generation=thelxinoe_core::id();
+            bundle=serde_json::to_string(tools)?;
+            tx.execute("UPDATE youtube_downloads SET generation=?2,tools=?3,error=NULL,retry_at=NULL,downloaded_bytes=0,total_bytes=NULL,eta_seconds=NULL,media_kind=NULL WHERE video_id=?1",params![video,generation,bundle])?;
+        }
+        tx.execute("UPDATE youtube_downloads SET state='downloading',updated_at=?2 WHERE video_id=?1",params![video,now()])?;
+        tx.commit()?;Ok(Some((video,generation,bundle,waiting,retries)))
     }).await
 }
 
+/// Records an attempt's outcome; a failed one retries `retry` seconds later.
 pub(super) async fn finish_download(
     status: &'static str,
     video: String,
     generation: String,
+    retry: Option<i64>,
     db: &Database,
 ) -> anyhow::Result<()> {
-    db.write("online.downloads.finish_download", move |db| {db.execute("UPDATE youtube_downloads SET state=?3,error=CASE WHEN ?3 IN ('ready','waiting_for_space') THEN NULL ELSE ?3 END,updated_at=?4 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,status,now()])?;Ok(())}).await
+    db.write("online.downloads.finish_download", move |db| {db.execute("UPDATE youtube_downloads SET state=?3,error=CASE WHEN ?3 IN ('ready','waiting_for_space') THEN NULL ELSE ?3 END,retries=retries+(?5 IS NOT NULL),retry_at=?4+?5,updated_at=?4 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,status,now(),retry])?;Ok(())}).await
 }
 
 pub(super) async fn publish_progress(
@@ -165,7 +180,7 @@ pub(super) async fn publish_progress(
     db: &Database,
 ) -> anyhow::Result<(Option<Value>, Vec<String>)> {
     db.read("online.downloads.publish_progress", move|db|{
-        let progress=db.query_row("SELECT generation,state,size,downloaded_bytes,total_bytes,eta_seconds,media_kind,probe FROM youtube_downloads WHERE video_id=?1",[&id],|r|{let format=super::format(r.get::<_,Option<String>>(7)?.as_deref());Ok(json!({"video_id":id,"generation":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"size":r.get::<_,Option<i64>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?,"width":format.width,"height":format.height,"frame_rate":format.frame_rate}))}).optional()?;
+        let progress=db.query_row("SELECT generation,state,size,downloaded_bytes,total_bytes,eta_seconds,media_kind,probe,retry_at FROM youtube_downloads WHERE video_id=?1",[&id],|r|{let format=super::format(r.get::<_,Option<String>>(7)?.as_deref());Ok(json!({"video_id":id,"generation":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"size":r.get::<_,Option<i64>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?,"width":format.width,"height":format.height,"frame_rate":format.frame_rate,"retry_at":r.get::<_,Option<i64>>(8)?}))}).optional()?;
         let users=db.prepare("SELECT user_id FROM youtube_videos WHERE video_id=?1")?.query_map([id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok((progress,users))
     }).await
@@ -184,7 +199,7 @@ pub(super) async fn publish_download(
         ensure!(db.query_row("SELECT EXISTS(SELECT 1 FROM youtube_downloads WHERE video_id=?1 AND generation=?2 AND state='downloading')",params![video,generation],|r|r.get::<_,bool>(0))?,"Download was cancelled");
         if !crate::auto_delete::make_room(db,&root,&video,metadata.len() as i64)? {return Ok(false);}
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let changed=tx.execute("UPDATE youtube_downloads SET path=?3,size=?4,modified=?5,probe=?6,state='ready',error=NULL,completed_at=?7,updated_at=?7 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,target.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),serde_json::to_string(&value)?,now()])?;
+        let changed=tx.execute("UPDATE youtube_downloads SET path=?3,size=?4,modified=?5,probe=?6,state='ready',error=NULL,retries=0,completed_at=?7,updated_at=?7 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,target.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),serde_json::to_string(&value)?,now()])?;
         ensure!(changed==1,"Download was cancelled");tx.commit()?;Ok(true)
     }).await
 }

@@ -102,6 +102,7 @@ export function downloadEvent(payload: {
   width?: number | null;
   height?: number | null;
   frame_rate?: number | null;
+  retry_at?: number | null;
 }): YoutubeDownloadEvent {
   const previous = videos.get(payload.video_id)?.download;
   return {
@@ -119,6 +120,7 @@ export function downloadEvent(payload: {
       heightPixels: payload.height,
       frameRate: payload.frame_rate,
       requestedAt: previous?.requestedAt ?? '',
+      retryAt: iso(payload.retry_at),
     },
     downloadedBytes: payload.downloaded_bytes,
     totalBytes: payload.total_bytes,
@@ -204,6 +206,7 @@ async function getDownload(videoId: string): Promise<YoutubeDownload> {
       width?: number | null;
       height?: number | null;
       frame_rate?: number | null;
+      retry_at?: number | null;
     } | null;
   }>(`/online/youtube/videos/${videoId}/download`);
   const d = result.download;
@@ -226,6 +229,7 @@ async function getDownload(videoId: string): Promise<YoutubeDownload> {
     frameRate: d.frame_rate,
     requestedAt: new Date().toISOString(),
     errorMessage: d.error,
+    retryAt: iso(d.retry_at),
   };
 }
 async function mark(videoId: string, watched: boolean) {
