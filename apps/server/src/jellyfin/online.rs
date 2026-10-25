@@ -495,11 +495,17 @@ pub async fn sources(state: &AppState, p: &Principal, item: &Identity) -> Result
     } else {
         item.media()
     };
-    Ok(crate::online::streams::variants(state, p, &key)
-        .await?
-        .iter()
-        .map(|variant| variant_dto(&dto, item, variant))
-        .collect())
+    // Extraction takes seconds, which an item's page does not wait for. Until it ends, the
+    // item offers its own source, which plays the best rendition.
+    Ok(
+        match crate::online::streams::extracted_variants(state, p, &key).await? {
+            Some(variants) => variants
+                .iter()
+                .map(|variant| variant_dto(&dto, item, variant))
+                .collect(),
+            None => vec![source_dto(&dto)],
+        },
+    )
 }
 fn variant_id(item: &Identity, variant: &Value) -> String {
     let digest = thelxinoe_auth::digest(&format!(

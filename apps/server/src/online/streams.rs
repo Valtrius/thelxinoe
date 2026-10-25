@@ -238,13 +238,36 @@ async fn describe(
         inspect_codecs(state, format).await
     }
 }
-pub(crate) async fn variants(state: &AppState, p: &Principal, video: &str) -> Result<Vec<Value>> {
+async fn authorize(state: &AppState, p: &Principal, video: &str) -> Result<()> {
     if live::domain(video) {
         live::authorize(state, p, video).await?;
     } else {
         downloads::authorize(state, p, video).await?;
     }
-    let prepared = prepare(state, video).await?;
+    Ok(())
+}
+pub(crate) async fn variants(state: &AppState, p: &Principal, video: &str) -> Result<Vec<Value>> {
+    authorize(state, p, video).await?;
+    Ok(descriptors(&prepare(state, video).await?))
+}
+/// A video's renditions once extracted. Until then, extraction runs in the background,
+/// so the playback that usually follows finds them.
+pub(crate) async fn extracted_variants(
+    state: &AppState,
+    p: &Principal,
+    video: &str,
+) -> Result<Option<Vec<Value>>> {
+    authorize(state, p, video).await?;
+    if let Some(prepared) = cached(state, video).await {
+        return Ok(Some(descriptors(&prepared)));
+    }
+    let (state, video) = (state.clone(), video.to_owned());
+    tokio::spawn(async move {
+        let _ = prepare(&state, &video).await;
+    });
+    Ok(None)
+}
+fn descriptors(prepared: &Prepared) -> Vec<Value> {
     let mut variants = Vec::new();
     // Recorded videos offer the renditions every delivery can play.
     for format in prepared
@@ -262,7 +285,7 @@ pub(crate) async fn variants(state: &AppState, p: &Principal, video: &str) -> Re
             variants.push(variant);
         }
     }
-    Ok(variants)
+    variants
 }
 
 async fn cached(state: &AppState, video: &str) -> Option<Prepared> {
@@ -423,11 +446,7 @@ fn select(metadata: &Value, proxy: Option<String>, excluded: &[&str]) -> Result<
 }
 
 pub(crate) async fn info(state: &AppState, p: &Principal, video: &str) -> Result<Value> {
-    if live::domain(video) {
-        live::authorize(state, p, video).await?;
-    } else {
-        downloads::authorize(state, p, video).await?;
-    }
+    authorize(state, p, video).await?;
     let prepared = prepare(state, video).await?;
     let owner = p.user.id.clone();
     let id = video.to_owned();
