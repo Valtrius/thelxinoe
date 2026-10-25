@@ -213,6 +213,32 @@ pub async fn recyclarr_seed() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_interfaces(root: &Path) -> anyhow::Result<()> {
+    let mut loopback = false;
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        // Synology also exposes regular files such as syno_ovs_bonds here.
+        if !std::fs::metadata(&path)?.is_dir() {
+            continue;
+        }
+        let flags = std::fs::read_to_string(path.join("flags"))?;
+        let flags = u32::from_str_radix(flags.trim().trim_start_matches("0x"), 16)?;
+        if flags & libc::IFF_LOOPBACK as u32 != 0 {
+            loopback = true;
+        } else {
+            // Kernels may create inactive fallback tunnels even with NetworkMode=none.
+            anyhow::ensure!(
+                flags & libc::IFF_UP as u32 == 0,
+                "Candidate network is not isolated: interface {} is up",
+                entry.file_name().to_string_lossy()
+            );
+        }
+    }
+    anyhow::ensure!(loopback, "Candidate loopback interface is missing");
+    Ok(())
+}
+
 pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
     let template =
         crate::templates::find(kind).ok_or_else(|| anyhow::anyhow!("Unsupported adapter"))?;
@@ -222,12 +248,7 @@ pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
         "Privileged socket exposed"
     );
     if isolated {
-        let interfaces =
-            std::fs::read_dir("/sys/class/net")?.collect::<std::io::Result<Vec<_>>>()?;
-        anyhow::ensure!(
-            interfaces.len() == 1 && interfaces[0].file_name() == "lo",
-            "Candidate network is not isolated"
-        );
+        validate_interfaces(Path::new("/sys/class/net"))?;
         for address in ["1.1.1.1:443", "169.254.169.254:80", "172.17.0.1:80"] {
             if let Ok(Ok(_)) = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
@@ -697,4 +718,63 @@ async fn evidence(kind: &str) -> anyhow::Result<Value> {
         }
         _ => json!({}),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn network(interfaces: &[(&str, &str)]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for (name, flags) in interfaces {
+            let path = root.path().join(name);
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("flags"), flags).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn isolated_network_accepts_loopback_and_synology_fallback_devices() {
+        let root = network(&[("lo", "0x9\n")]);
+        validate_interfaces(root.path()).unwrap();
+        let tunnel = root.path().join("devices/sit0");
+        std::fs::create_dir_all(&tunnel).unwrap();
+        std::fs::write(tunnel.join("flags"), "0x80\n").unwrap();
+        // Real interfaces are sysfs symlinks; Synology's bond entry is a plain file.
+        let interfaces = root.path().join("net");
+        std::fs::create_dir(&interfaces).unwrap();
+        std::os::unix::fs::symlink(root.path().join("lo"), interfaces.join("lo")).unwrap();
+        std::os::unix::fs::symlink(tunnel, interfaces.join("sit0")).unwrap();
+        std::fs::write(interfaces.join("syno_ovs_bonds"), "").unwrap();
+        std::fs::write(interfaces.join("bonding_masters"), "").unwrap();
+        validate_interfaces(&interfaces).unwrap();
+    }
+
+    #[test]
+    fn isolated_network_rejects_up_interfaces_including_tunnels() {
+        for (name, flags) in [("eth0", "0x1003"), ("sit0", "0x81")] {
+            let root = network(&[("lo", "0x9"), (name, flags)]);
+            // operstate can be down even when the interface is administratively up.
+            std::fs::write(root.path().join(name).join("operstate"), "down\n").unwrap();
+            let error = validate_interfaces(root.path()).unwrap_err().to_string();
+            assert_eq!(
+                error,
+                format!("Candidate network is not isolated: interface {name} is up")
+            );
+        }
+    }
+
+    #[test]
+    fn isolated_network_fails_closed_when_interface_state_is_unavailable() {
+        let root = network(&[("lo", "0x9"), ("sit0", "invalid")]);
+        assert!(validate_interfaces(root.path()).is_err());
+        std::fs::remove_file(root.path().join("sit0/flags")).unwrap();
+        assert!(validate_interfaces(root.path()).is_err());
+        std::fs::remove_dir(root.path().join("sit0")).unwrap();
+        std::os::unix::fs::symlink("missing", root.path().join("sit0")).unwrap();
+        assert!(validate_interfaces(root.path()).is_err());
+        let root = network(&[("sit0", "0x80")]);
+        assert!(validate_interfaces(root.path()).is_err());
+    }
 }
