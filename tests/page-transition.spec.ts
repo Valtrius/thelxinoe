@@ -192,7 +192,7 @@ test('the server settings page appears while the administration overview is stil
     ).toBeVisible();
     await expect(pageLoading(page)).toHaveCount(0);
     await expect(
-      page.getByRole('heading', { name: 'Library folders', exact: true }),
+      page.getByRole('heading', { name: 'Display defaults', exact: true }),
     ).toBeVisible();
     await page.screenshot({
       path: info.outputPath('server-overview-loading.png'),

@@ -31,7 +31,6 @@ export const settingsPages = {
   PlaybackSettings: cached(() => import('./PlaybackSettings.svelte')),
   SegmentSettings: cached(() => import('./SegmentSettings.svelte')),
   ServerDisplayDefaults: cached(() => import('./ServerDisplayDefaults.svelte')),
-  LibraryFolders: cached(() => import('./LibraryFolders.svelte')),
   ServerTranscodingSettings: cached(
     () => import('./ServerTranscodingSettings.svelte'),
   ),
@@ -86,7 +85,6 @@ const settingsModules: Record<SettingsSection, (keyof typeof settingsPages)[]> =
     mpv: ['MpvSettings'],
     connection: ['DesktopUpdatePreferences'],
     server: [
-      'LibraryFolders',
       'ServerDisplayDefaults',
       'ServerTranscodingSettings',
       'ProductVersion',

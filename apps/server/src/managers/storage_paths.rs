@@ -59,9 +59,26 @@ pub(super) async fn resolve(
     evidence: &str,
     path: &str,
 ) -> Result<Option<String>> {
+    resolve_path(state, evidence, path, false).await
+}
+
+pub(super) async fn directory(
+    state: &AppState,
+    evidence: &str,
+    path: &str,
+) -> Result<Option<String>> {
+    resolve_path(state, evidence, path, true).await
+}
+
+async fn resolve_path(
+    state: &AppState,
+    evidence: &str,
+    path: &str,
+    directory: bool,
+) -> Result<Option<String>> {
     if !clean_path(path) {
         return Err(ApiError::conflict(
-            "The manager reported an unsafe file path",
+            "The manager reported an unsafe media path",
         ));
     }
     let e: Evidence = serde_json::from_str(evidence).map_err(|_| unavailable())?;
@@ -157,13 +174,25 @@ pub(super) async fn resolve(
             ));
         }
     };
-    if !resolved.starts_with(&root) || !resolved.is_file() {
+    if !resolved.starts_with(&root)
+        || if directory {
+            !resolved.is_dir()
+        } else {
+            !resolved.is_file()
+        }
+    {
         return Err(ApiError::conflict(
-            "The mapped file escapes approved media storage",
+            "The mapped path is not an approved media location",
         ));
     }
-    tokio::fs::File::open(&resolved).await.map_err(|_| {
-        ApiError::conflict("Playback requires permission to read this media location")
-    })?;
-    Ok(Some(path.to_string_lossy().into_owned()))
+    if directory {
+        let _ = tokio::fs::read_dir(&resolved).await.map_err(|_| {
+            ApiError::conflict("The server needs permission to read this library folder")
+        })?;
+    } else {
+        tokio::fs::File::open(&resolved).await.map_err(|_| {
+            ApiError::conflict("Playback requires permission to read this media location")
+        })?;
+    }
+    Ok(Some(resolved.to_string_lossy().into_owned()))
 }

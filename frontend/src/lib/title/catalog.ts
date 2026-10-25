@@ -152,14 +152,7 @@ export type LibraryRoot = {
   scan_error: string | null;
   watching?: boolean | null;
 };
-export const loadLibraryFolders = () =>
-  api<{ items: LibraryRoot[]; media_mount: string }>('/catalog/roots');
-export const loadRoots = () => loadLibraryFolders().then((r) => r.items);
+export const loadRoots = () =>
+  api<{ items: LibraryRoot[] }>('/catalog/roots').then((r) => r.items);
 export const scanRoot = (id: string) =>
   api(`/catalog/roots/${encodeURIComponent(id)}/scan`, 'POST');
-export const addRoot = (root: { name: string; kind: string; path: string }) =>
-  api<{ id: string }>('/catalog/roots', 'POST', root);
-export const renameRoot = (id: string, name: string) =>
-  api(`/catalog/roots/${encodeURIComponent(id)}`, 'PATCH', { name });
-export const removeRoot = (id: string) =>
-  api(`/catalog/roots/${encodeURIComponent(id)}`, 'DELETE');
