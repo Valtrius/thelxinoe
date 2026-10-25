@@ -176,8 +176,9 @@ Production private keys belong in the `release-signing` environment's encrypted
 Actions secrets, with a separate secure backup. Nothing is compiled while a private key
 is present: the release verifier is built before the signing step, the manifest key is
 written to the runner's temporary directory only for signing and deleted afterward, and
-no child process inherits it. The desktop is built without its updater key; only
-`tauri signer sign` receives that key, for the finished installer. Neither private key
+no child process inherits it. The desktop is built without its updater key; a
+separate job that compiles nothing and runs no dependency scripts gives it to
+`tauri signer sign`, for the finished installer. Neither private key
 is included in images, installers or release assets. Local labs generate separate
 `signing.pem` and `updater.key` files under their ignored `.local/thelxinoe-update-*`
 directory; these are disposable test keys. Provision production keys before the
@@ -189,25 +190,30 @@ Tauri updater signing authenticates installer updates. It is separate from Windo
 Authenticode/SmartScreen signing; no Authenticode certificate is configured here.
 [Tauri signing reference](https://v2.tauri.app/plugin/updater/#signing-updates).
 
-1. Change `[workspace.package].version` in `Cargo.toml`, run
-   `pnpm run version:sync`, review the change and merge it to `develop`. Released
-   database schemas are frozen: `version:sync` pins the shipped schema's digest in
+1. On a clean checkout of the current `develop` head, run `pnpm run release X.Y.Z`.
+   It sets `[workspace.package].version` in `Cargo.toml`, runs
+   `pnpm run version:sync`, commits `chore: release X.Y.Z` and pushes it to
+   `develop` together with its `X.Y.Z` tag. Released database schemas are frozen:
+   `version:sync` pins the shipped schema's digest in
    `crates/database/schemas/SHA256SUMS`, and the release check requires it. A schema
    change ships with its migration (see `AGENTS.md`), and the manifest lets every
    schema from `MIGRATION_BASE` update.
-2. Push the `X.Y.Z` tag on that commit once **Build and verify** passed for its
-   tree: the commit's `develop` push run (pushes to `develop` are never cancelled),
-   or a manual run of a commit with the identical tree, such as an up-to-date
-   release branch before its squash merge (`gh workflow run ci.yml --ref <branch>`).
-   **Assemble release draft** refuses other trees instead of repeating the full CI.
-   It builds the Windows installer and Linux images, starts the staged images with
-   `compose.release.yaml` and requires both to become healthy and report the
-   version, verifies the installer signature/hash and image identities (version,
-   and revision equal to the tagged commit), and attaches the installer, `.sig`,
-   `windows-x64.json`, signed `latest.json`, `release.pub`, `compose.yaml`,
-   `env.example` and `SHA256SUMS` to a **draft** release. Images initially have
-   `sha-<commit>` staging tags. Inspect release notes and assets while it is a
-   draft. `SHA256SUMS` is uploaded last, so a failed upload can simply be re-run.
+2. The tag starts **Assemble release draft**. While **Build and verify** runs on the
+   tagged commit, it builds the Windows installer and Linux images, then starts the
+   staged images with `compose.release.yaml` and requires both to become healthy
+   and report the version. It signs nothing until Build and verify passed for the
+   commit's tree: its `develop` push run (never cancelled), or a manual run of a
+   commit with the identical tree, such as an up-to-date release branch before its
+   squash merge (`gh workflow run ci.yml --ref <branch>`). When Build and verify
+   fails, re-run its failed jobs, then the release's failed jobs; finished builds
+   are kept. A real failure leaves the tag on a commit that cannot ship: delete the
+   tag, fix `develop`, then tag the fix. Once signed, it verifies the installer
+   signature/hash and image identities (version, and revision equal to the tagged
+   commit), and attaches the installer, `.sig`, `windows-x64.json`, signed
+   `latest.json`, `release.pub`, `compose.yaml`, `env.example` and `SHA256SUMS` to
+   a **draft** release. Images initially have `sha-<commit>` staging tags. Inspect
+   release notes and assets while it is a draft. `SHA256SUMS` is uploaded last, so
+   a failed upload can simply be re-run.
    Another run, such as a repeated tag push, stops at its draft step instead of
    replacing a complete draft (one with `SHA256SUMS`); to rebuild it on purpose run
    `gh workflow run release.yml --ref X.Y.Z -f reassemble=true`, which replaces all

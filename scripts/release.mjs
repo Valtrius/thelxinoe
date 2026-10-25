@@ -132,8 +132,11 @@ if (command === 'check') {
 } else if (command === 'desktop') {
   if (process.platform !== 'win32')
     throw Error('Release desktop builds require Windows');
-  for (const key of ['TAURI_SIGNING_PRIVATE_KEY', 'TAURI_UPDATER_PUBLIC_KEY'])
-    if (!process.env[key]) throw Error(`Missing ${key}`);
+  if (!process.env.TAURI_UPDATER_PUBLIC_KEY)
+    throw Error('Missing TAURI_UPDATER_PUBLIC_KEY');
+  // No build script or bundler step ever runs beside the updater signing key.
+  if (process.env.TAURI_SIGNING_PRIVATE_KEY)
+    throw Error('Build the desktop without TAURI_SIGNING_PRIVATE_KEY');
   for (const key of [
     'THELXINOE_RELEASE_URL',
     'THELXINOE_RELEASE_PUBLIC_KEY',
@@ -147,31 +150,20 @@ if (command === 'check') {
     readFileSync('apps/desktop/tauri.release.conf.json', 'utf8'),
   );
   settings.plugins.updater.pubkey = process.env.TAURI_UPDATER_PUBLIC_KEY.trim();
-  // The build never sees the updater signing key: no build script or bundler step runs
-  // beside it. Only the finished installer is signed.
+  // Only the finished installer is signed, by `sign`.
   settings.bundle.createUpdaterArtifacts = false;
   writeFileSync(config, JSON.stringify(settings));
-  const {
-    TAURI_SIGNING_PRIVATE_KEY: signingKey,
-    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: signingPassword,
-    ...env
-  } = process.env;
   const cli = resolve('node_modules/@tauri-apps/cli/tauri.js');
   try {
-    run(
-      process.execPath,
-      [
-        cli,
-        'icon',
-        'frontend/public/icon.svg',
-        '--output',
-        'apps/desktop/icons',
-      ],
-      { env },
-    );
+    run(process.execPath, [
+      cli,
+      'icon',
+      'frontend/public/icon.svg',
+      '--output',
+      'apps/desktop/icons',
+    ]);
     run(process.execPath, [cli, 'build', '--config', config], {
       cwd: 'apps/desktop',
-      env,
     });
     mkdirSync('release-desktop', { recursive: true });
     const folder = 'target/release/bundle/nsis';
@@ -179,17 +171,7 @@ if (command === 'check') {
       name.endsWith(`_${version}_x64-setup.exe`),
     );
     if (!file) throw Error('Missing release installer');
-    run(process.execPath, [cli, 'signer', 'sign', resolve(folder, file)], {
-      env: {
-        ...env,
-        TAURI_SIGNING_PRIVATE_KEY: signingKey,
-        ...(signingPassword === undefined
-          ? {}
-          : { TAURI_SIGNING_PRIVATE_KEY_PASSWORD: signingPassword }),
-      },
-    });
-    for (const name of [file, `${file}.sig`])
-      copyFileSync(resolve(folder, name), resolve('release-desktop', name));
+    copyFileSync(resolve(folder, file), resolve('release-desktop', file));
     writeFileSync(
       'release-desktop/updater.pub',
       settings.plugins.updater.pubkey + '\n',
@@ -197,6 +179,20 @@ if (command === 'check') {
   } finally {
     unlinkSync(config);
   }
+} else if (command === 'sign') {
+  const [directory] = args;
+  if (!process.env.TAURI_SIGNING_PRIVATE_KEY)
+    throw Error('Missing TAURI_SIGNING_PRIVATE_KEY');
+  const file = readdirSync(directory).find((name) =>
+    name.endsWith(`_${version}_x64-setup.exe`),
+  );
+  if (!file) throw Error('Missing release installer');
+  run(process.execPath, [
+    resolve('node_modules/@tauri-apps/cli/tauri.js'),
+    'signer',
+    'sign',
+    resolve(directory, file),
+  ]);
 } else if (command === 'assemble') {
   const [
     directory,
@@ -626,5 +622,5 @@ if (command === 'check') {
   }
 } else
   throw Error(
-    'Usage: release.mjs check X.Y.Z | desktop | assemble ... | draft DIR | publish X.Y.Z DIR | monitor | smoke SERVER CONTROLLER',
+    'Usage: release.mjs check X.Y.Z | desktop | sign DIR | assemble ... | draft DIR | publish X.Y.Z DIR | monitor | smoke SERVER CONTROLLER',
   );

@@ -36,11 +36,12 @@ jobs:
           test "${RELEASE_REF#refs/tags/}" != "$RELEASE_REF"
           node scripts/release.mjs check "$RELEASE_TAG"
           echo "version=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-  # Tag a commit whose regular build already passed, instead of repeating the
-  # full verification for every release.
+  # Builds run beside the tagged commit's Build and verify run instead of
+  # repeating it; nothing is signed until it passed for this tree.
   verify:
     needs: version
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     permissions:
       actions: read
       contents: read
@@ -55,23 +56,41 @@ jobs:
           # The exact commit, or a develop push or manual run that tested the
           # identical tree (for example a release branch before its merge).
           tree=$(gh api "repos/$REPOSITORY/git/commits/$SHA" --jq .tree.sha)
-          trusted='.workflow_runs[] | select(.head_repository.full_name == .repository.full_name) | select((.event == "push" and .head_branch == "develop") or .event == "workflow_dispatch") | .head_sha'
-          runs="repos/$REPOSITORY/actions/workflows/ci.yml/runs?status=success&per_page=100"
-          runs=$({
-            gh api "$runs&head_sha=$SHA" --jq "$trusted"
-            gh api "$runs&branch=develop&event=push" --jq "$trusted"
-            gh api "$runs&event=workflow_dispatch" --jq "$trusted"
+          trusted='.workflow_runs[] | select(.head_repository.full_name == .repository.full_name) | select((.event == "push" and .head_branch == "develop") or .event == "workflow_dispatch")'
+          runs="repos/$REPOSITORY/actions/workflows/ci.yml/runs?per_page=100"
+          passed=$({
+            gh api "$runs&status=success&head_sha=$SHA" --jq "$trusted | .head_sha"
+            gh api "$runs&status=success&branch=develop&event=push" --jq "$trusted | .head_sha"
+            gh api "$runs&status=success&event=workflow_dispatch" --jq "$trusted | .head_sha"
           } | awk '!seen[$0]++')
-          for commit in $runs; do
+          for commit in $passed; do
             if [ "$commit" = "$SHA" ] || [ "$(gh api "repos/$REPOSITORY/git/commits/$commit" --jq .tree.sha)" = "$tree" ]; then
               echo "Build and verify passed on $commit with this tree."
               exit 0
             fi
           done
-          echo "::error::Tag a commit whose Build and verify run succeeded, or run it on this tag first: gh workflow run ci.yml --ref $TAG"
-          exit 1
+          # Otherwise wait for this commit's own run, such as the develop push
+          # that `pnpm run release` sends with the tag.
+          echo "Waiting for Build and verify on $SHA."
+          while :; do
+            states=$(gh api "$runs&head_sha=$SHA" --jq "$trusted | \"\(.status) \(.conclusion)\"")
+            if grep -qx 'completed success' <<<"$states"; then
+              echo "Build and verify passed on $SHA."
+              exit 0
+            fi
+            if [ -z "$states" ] && [ "$SECONDS" -gt 600 ]; then
+              echo "::error::No Build and verify run of $SHA. Start one with gh workflow run ci.yml --ref $TAG, then re-run the failed jobs here."
+              exit 1
+            fi
+            if [ -n "$states" ] && ! grep -qv '^completed ' <<<"$states"; then
+              echo "::error::Build and verify failed on $SHA. Re-run its failed jobs, then the failed jobs here; finished builds are kept."
+              exit 1
+            fi
+            sleep 30
+          done
+  # Built without the updater key; only the sign job ever receives it.
   desktop:
-    needs: verify
+    needs: version
     runs-on: windows-2025
     environment: release-signing
     steps:
@@ -85,16 +104,42 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node scripts/release.mjs desktop
         env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-desktop
+          path: release-desktop/
+          if-no-files-found: error
+  # Nothing is compiled and no dependency script runs in this job.
+  sign:
+    needs: [verify, desktop]
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-desktop
+          path: release-desktop
+      - run: node scripts/release.mjs sign release-desktop
+        env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signed-desktop
           path: release-desktop/
           if-no-files-found: error
   images:
-    needs: [version, verify]
+    needs: version
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -168,7 +213,7 @@ jobs:
           "ghcr.io/valtrius/thelxinoe-server@$SERVER_DIGEST"
           "ghcr.io/valtrius/thelxinoe-controller@$CONTROLLER_DIGEST"
   draft:
-    needs: [desktop, images, smoke]
+    needs: [verify, sign, images, smoke]
     runs-on: ubuntu-24.04
     environment: release-signing
     permissions:

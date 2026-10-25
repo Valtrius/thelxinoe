@@ -34,6 +34,7 @@
     "format:check": "prettier --check frontend scripts tests package.json .github README.md docs pnpm-workspace.yaml playwright*.config.ts",
     "version:sync": "node scripts/version.mjs --write",
     "version:check": "node scripts/version.mjs",
+    "release": "node scripts/cut-release.mjs",
     "updates:lab": "node scripts/updates/lab.mjs",
     "validate": "pnpm run check && pnpm test && pnpm run build:web",
     "validate:web": "pnpm run format:check && pnpm run lint && pnpm run check:web && pnpm run test:web && pnpm run build:web",
