@@ -123,5 +123,5 @@ Each release upgrades databases from earlier released [schemas](../crates/databa
 
 See [release workflows, signing setup and local update qualification](UPDATES.md).
 GitHub Releases supplies signed Windows artifacts and publisher metadata; GHCR
-supplies immutable server/controller images. Assembly creates a draft; publication
-is a separate manual workflow.
+supplies immutable server/controller images. `pnpm run release X.Y.Z` starts a
+release; publication waits for a reviewer to approve its draft.
