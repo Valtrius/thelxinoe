@@ -347,7 +347,11 @@ pub fn negotiate_online(
         .into_iter()
         .min_by_key(score)
         .unwrap();
-    if score(&declared) < 2 {
+    let declared_score = score(&declared);
+    // Recorded originals are MP4 files, whose own fragments reach a fragmented MP4 HLS client
+    // without FFmpeg.
+    let fragments = source.path.extension().is_some_and(|e| e == "mp4");
+    if declared_score < 2 && (!fragments || declared.hls_container.as_deref() == Some("mp4")) {
         return declared;
     }
     // A client that plays a codec from MP4 files also plays it as fragmented MP4 HLS, which
@@ -361,7 +365,8 @@ pub fn negotiate_online(
         .map(|p| json!({"Type":p["Type"],"Protocol":"hls","Container":"mp4","VideoCodec":p["VideoCodec"],"AudioCodec":p["AudioCodec"]}))
         .collect();
     let fragmented = negotiate(&files, "mp4");
-    if score(&fragmented) < 2 {
+    let fragmented_score = score(&fragmented);
+    if fragmented_score < 2 && fragmented_score <= declared_score {
         fragmented
     } else {
         declared
@@ -675,6 +680,24 @@ mod tests {
         assert!(caps.containers.is_empty());
         let conversion = caps.conversion.unwrap();
         assert_eq!((conversion.width, conversion.height), (160, 90));
+    }
+    #[test]
+    fn mp4_originals_reach_clients_that_play_mp4_files_as_fragments() {
+        let (mut source, _) = fixture();
+        source.path = "public.mp4".into();
+        source.probe["streams"][0] = json!({"index":0,"codec_type":"video","codec_name":"h264","profile":"High","level":40,"width":1920,"height":1080,"avg_frame_rate":"30/1","bits_per_raw_sample":"8"});
+        source.probe["streams"][1]["channels"] = json!(2);
+        // Wholphin streams MPEG-TS HLS and plays MP4 files.
+        let mut profile = json!({"TranscodingProfiles":[{"Type":"Video","Container":"ts","Protocol":"hls","VideoCodec":"h264","AudioCodec":"aac"}],"DirectPlayProfiles":[{"Type":"Video","Container":"mkv,mp4","VideoCodec":"h264","AudioCodec":"aac"}]});
+        let container = |source: &Source, profile: &Value| {
+            negotiate_online(source, None, profile, false, true, None).hls_container
+        };
+        assert_eq!(container(&source, &profile).as_deref(), Some("mp4"));
+        let mut live = source.clone();
+        live.path = "public.ts".into();
+        assert_eq!(container(&live, &profile).as_deref(), Some("ts"));
+        profile["DirectPlayProfiles"][0]["Container"] = json!("mkv");
+        assert_eq!(container(&source, &profile).as_deref(), Some("ts"));
     }
     #[test]
     fn conversions_stay_within_the_client_bitrate_limit_even_from_a_smaller_source() {

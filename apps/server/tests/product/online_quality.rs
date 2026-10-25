@@ -747,31 +747,13 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
     let mut decodes_av1 = streaming.clone();
     decodes_av1["CodecProfiles"] = json!([]);
     let path = format!("/Items/{item}/PlaybackInfo");
-    for (profile, selected, delivered, mode, container) in [
-        // The selected picture, in a codec the client streams.
-        (
-            &streaming,
-            rendition("av1", 180),
-            rendition("h264", 180),
-            "remux",
-            "ts",
-        ),
+    for (profile, selected, delivered) in [
+        // The selected picture, in a codec the client decodes.
+        (&streaming, rendition("av1", 180), rendition("h264", 180)),
         // The largest picture the client takes without converting video.
-        (
-            &streaming,
-            rendition("av1", 360),
-            rendition("h264", 180),
-            "remux",
-            "ts",
-        ),
-        // The original, for a client that plays it from MP4 files.
-        (
-            &decodes_av1,
-            rendition("av1", 360),
-            rendition("av1", 360),
-            "direct",
-            "mp4",
-        ),
+        (&streaming, rendition("av1", 360), rendition("h264", 180)),
+        // The original, for a client that decodes it.
+        (&decodes_av1, rendition("av1", 360), rendition("av1", 360)),
     ] {
         let (status, bytes) = api(&state, &token, &path, Some(json!({
             "MediaSourceId":selected,"MaxStreamingBitrate":104_857_600,"EnableDirectPlay":true,"EnableDirectStream":true,"EnableTranscoding":true,
@@ -786,7 +768,9 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
         let response: Value = serde_json::from_slice(&bytes).unwrap();
         let source = &response["MediaSources"][0];
         assert_eq!(source["Id"], delivered);
-        assert_eq!(source["TranscodingContainer"], container);
+        // A client that plays MP4 files receives the provider's own fragments, without FFmpeg.
+        assert_eq!(source["TranscodingContainer"], "mp4");
+        assert!(state.playback.runs().await.is_empty());
         let sid = response["PlaySessionId"].as_str().unwrap().to_owned();
         let session: String = state
             .db
@@ -799,7 +783,7 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
             })
             .await
             .unwrap();
-        assert_eq!(session, mode);
+        assert_eq!(session, "direct");
         let (status, _) = get(source["TranscodingUrl"].as_str().unwrap(), None).await;
         assert_eq!(status, StatusCode::OK);
         let stopped =
@@ -814,4 +798,57 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
         .await;
     }
     task.abort();
+}
+
+#[tokio::test]
+async fn item_pages_do_not_wait_for_extraction() {
+    let (_temp, state, _) = crate::test_support::fixture().await;
+    let video = "pending0001";
+    state.db.write("test.fixture",move|db|{db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES ('alice','pending-channel','Pending channel','s',1)",[])?;db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,privacy,duration) VALUES ('alice',?1,'pending-channel','Pending fixture','public',3)",[video])?;Ok(())}).await.unwrap();
+    let token = crate::test_support::issue_session(
+        &state.db,
+        "alice".into(),
+        "jellyfin".into(),
+        "Pending TV".into(),
+    )
+    .await
+    .unwrap();
+    let get = async |path: &str| {
+        let (status, bytes) = api(&state, &token, path, None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        serde_json::from_slice::<Value>(&bytes).unwrap()
+    };
+    let items = get("/Items?ParentId=d7df0f21-caa6-45a0-9798-267150600001").await;
+    let item = items["Items"][0]["Id"].as_str().unwrap();
+    let turn = state
+        .online
+        .streams
+        .pending
+        .lock()
+        .unwrap()
+        .entry(video.into())
+        .or_default()
+        .clone();
+    let held = turn.lock_owned().await;
+    let page = tokio::time::timeout(Duration::from_secs(5), get(&format!("/Items/{item}")))
+        .await
+        .expect("the page does not wait for the extraction");
+    assert_eq!(page["MediaSources"].as_array().unwrap().len(), 1);
+    assert_eq!(page["MediaSources"][0]["Id"], item);
+    // Once the extraction ends, pages offer its renditions.
+    let metadata = json!({"duration":3,"is_live":false,"formats":[
+        {"format_id":"140","url":"https://r1.googlevideo.com/audio.m4a","vcodec":"none","acodec":"mp4a.40.2","protocol":"https","ext":"m4a","abr":128},
+        {"url":"https://r1.googlevideo.com/720.mp4","height":720,"width":1280,"fps":30,"vcodec":"avc1.64001F","acodec":"none","protocol":"https","ext":"mp4","tbr":2000},
+        {"url":"https://r1.googlevideo.com/1080.mp4","height":1080,"width":1920,"fps":30,"vcodec":"avc1.640028","acodec":"none","protocol":"https","ext":"mp4","tbr":4000}
+    ]});
+    remember(&state, video, &select(&metadata, None, &[]).unwrap()).await;
+    drop(held);
+    let page = get(&format!("/Items/{item}")).await;
+    let heights = page["MediaSources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|source| source["MediaStreams"][0]["Height"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(heights, [1080, 720]);
 }
