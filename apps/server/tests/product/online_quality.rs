@@ -126,6 +126,12 @@ pub(super) fn fixture_audio(directory: &Path, seconds: &str) -> std::path::PathB
 fn proxy(
     files: std::collections::HashMap<String, Vec<u8>>,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    proxy_with_redirects(files, std::collections::HashMap::new())
+}
+fn proxy_with_redirects(
+    files: std::collections::HashMap<String, Vec<u8>>,
+    redirects: std::collections::HashMap<String, String>,
+) -> (String, tokio::task::JoinHandle<()>) {
     let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
     let mut name = X509NameBuilder::new().unwrap();
     name.append_entry_by_text("CN", "r1.googlevideo.com")
@@ -149,12 +155,14 @@ fn proxy(
     listener.set_nonblocking(true).unwrap();
     let address = format!("http://{}/", listener.local_addr().unwrap());
     let files = Arc::new(files);
+    let redirects = Arc::new(redirects);
     let task = tokio::spawn(async move {
         loop {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let tls = tls.clone();
                     let files = files.clone();
+                    let redirects = redirects.clone();
                     tokio::task::spawn_blocking(move || {
                         stream
                             .set_read_timeout(Some(Duration::from_secs(10)))
@@ -183,6 +191,10 @@ fn proxy(
                             .nth(1)
                             .unwrap_or("")
                             .trim_start_matches('/');
+                        if let Some(location) = redirects.get(path) {
+                            let _ = stream.write_all(format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+                            return;
+                        }
                         let Some(bytes) = files.get(path) else { return };
                         let range = request.lines().find_map(|line| {
                             let (start, end) = line
@@ -697,14 +709,23 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
     }
     let audio = fixture_audio(temp.path(), "3");
     files.insert("audio.m4a".into(), std::fs::read(audio).unwrap());
-    let (proxy, task) = proxy(files);
+    let originals = files.clone();
+    let redirects = ["av1-360.mp4", "av1-180.mp4", "h264-180.mp4", "audio.m4a"]
+        .map(|name| {
+            (
+                format!("redirect/{name}"),
+                format!("https://r2.googlevideo.com/{name}"),
+            )
+        })
+        .into();
+    let (proxy, task) = proxy_with_redirects(files, redirects);
     let video = "pictures001";
     state.db.write("test.fixture",move|db|{db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES ('alice','picture-channel','Picture channel','s',1)",[])?;db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,privacy,duration) VALUES ('alice',?1,'picture-channel','Picture fixture','public',3)",[video])?;Ok(())}).await.unwrap();
     let metadata = json!({"duration":3,"is_live":false,"formats":[
-        {"format_id":"140","url":"https://r1.googlevideo.com/audio.m4a","vcodec":"none","acodec":"mp4a.40.2","protocol":"https","ext":"m4a","abr":128,"asr":48000,"audio_channels":1},
-        {"url":"https://r1.googlevideo.com/av1-360.mp4","height":360,"width":640,"fps":30,"vcodec":"av01.0.04M.08","acodec":"none","protocol":"https","ext":"mp4","tbr":300},
-        {"url":"https://r1.googlevideo.com/av1-180.mp4","height":180,"width":320,"fps":30,"vcodec":"av01.0.00M.08","acodec":"none","protocol":"https","ext":"mp4","tbr":150},
-        {"url":"https://r1.googlevideo.com/h264-180.mp4","height":180,"width":320,"fps":30,"vcodec":"avc1.64000D","acodec":"none","protocol":"https","ext":"mp4","tbr":200}
+        {"format_id":"140","url":"https://r1.googlevideo.com/redirect/audio.m4a","vcodec":"none","acodec":"mp4a.40.2","protocol":"https","ext":"m4a","abr":128,"asr":48000,"audio_channels":1},
+        {"url":"https://r1.googlevideo.com/redirect/av1-360.mp4","height":360,"width":640,"fps":30,"vcodec":"av01.0.04M.08","acodec":"none","protocol":"https","ext":"mp4","tbr":300},
+        {"url":"https://r1.googlevideo.com/redirect/av1-180.mp4","height":180,"width":320,"fps":30,"vcodec":"av01.0.00M.08","acodec":"none","protocol":"https","ext":"mp4","tbr":150},
+        {"url":"https://r1.googlevideo.com/redirect/h264-180.mp4","height":180,"width":320,"fps":30,"vcodec":"avc1.64000D","acodec":"none","protocol":"https","ext":"mp4","tbr":200}
     ]});
     state
         .online
@@ -746,6 +767,10 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
     });
     let mut decodes_av1 = streaming.clone();
     decodes_av1["CodecProfiles"] = json!([]);
+    *state.transcoding.write().await = crate::transcoding::Policy {
+        video_transcoding: false,
+        audio_transcoding: false,
+    };
     let path = format!("/Items/{item}/PlaybackInfo");
     for (profile, selected, delivered) in [
         // The selected picture, in a codec the client decodes.
@@ -756,7 +781,7 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
         (&decodes_av1, rendition("av1", 360), rendition("av1", 360)),
     ] {
         let (status, bytes) = api(&state, &token, &path, Some(json!({
-            "MediaSourceId":selected,"MaxStreamingBitrate":104_857_600,"EnableDirectPlay":true,"EnableDirectStream":true,"EnableTranscoding":true,
+            "MediaSourceId":selected,"MaxStreamingBitrate":104_857_600,"EnableDirectPlay":true,"EnableDirectStream":true,"EnableTranscoding":false,
             "DeviceProfile":profile
         })), None).await;
         assert_eq!(
@@ -784,8 +809,33 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
             .await
             .unwrap();
         assert_eq!(session, "direct");
-        let (status, _) = get(source["TranscodingUrl"].as_str().unwrap(), None).await;
+        let url = source["TranscodingUrl"].as_str().unwrap();
+        let (status, bytes) = get(url, None).await;
         assert_eq!(status, StatusCode::OK);
+        let master = String::from_utf8(bytes).unwrap();
+        assert!(!master.contains("googlevideo.com"));
+        for (track, name) in [
+            (
+                "video",
+                if source["MediaStreams"][0]["Codec"] == "av1" {
+                    "av1-360.mp4"
+                } else {
+                    "h264-180.mp4"
+                },
+            ),
+            ("audio", "audio.m4a"),
+        ] {
+            let (bytes, fragments) = assemble(
+                &get,
+                &resolve(
+                    url,
+                    &format!("{track}.m3u8?{}", url.split_once('?').unwrap().1),
+                ),
+            )
+            .await;
+            assert!(fragments > 0);
+            identical(&bytes, &without_index(&originals[name]));
+        }
         let stopped =
             json!({"ItemId":item,"PlaySessionId":response["PlaySessionId"],"PositionTicks":0});
         let _ = api(
