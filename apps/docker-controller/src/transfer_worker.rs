@@ -1008,38 +1008,28 @@ pub fn fixture() -> anyhow::Result<()> {
 
 // ---------- Target-identity access ----------
 
-struct Who {
-    uid: u32,
-    groups: Vec<u32>,
-}
-impl Who {
-    fn allows(&self, meta: &fs::Metadata, want: u32) -> bool {
-        let mode = meta.mode();
-        let bits = if meta.uid() == self.uid {
-            (mode >> 6) & 7
-        } else if self.groups.contains(&meta.gid()) {
-            (mode >> 3) & 7
-        } else {
-            mode & 7
-        };
-        bits & want == want
-    }
+/// Whether the kernel grants this process `mode` on `path`, ACLs included (a Synology share
+/// can grant everything through ACLs while its mode bits grant nothing). Every mount is
+/// read-only here, so a write the permissions allow reports a read-only file system.
+fn permits(path: &Path, mode: libc::c_int) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is a NUL-terminated string that outlives the call.
+    let granted = unsafe { libc::access(path.as_ptr(), mode) } == 0;
+    granted || std::io::Error::last_os_error().raw_os_error() == Some(libc::EROFS)
 }
 
 /// Media and download access for the target identity, computed without writing anything.
+/// The controller runs this worker as that identity.
 pub fn access() -> anyhow::Result<()> {
     reported(|| {
+        // SAFETY: geteuid has no preconditions.
+        let uid = unsafe { libc::geteuid() };
+        // Root passes every check, so its answers would be meaningless.
+        anyhow::ensure!(uid != 0, "The access check must run as the target identity");
         let input = input()?;
-        let who = Who {
-            uid: input["uid"].as_u64().unwrap_or(0) as u32,
-            groups: input["groups"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|g| g.as_u64())
-                .map(|g| g as u32)
-                .collect(),
-        };
         let mut problems = Vec::new();
         let mut missing = Vec::new();
         let mut roots = Vec::new();
@@ -1054,51 +1044,56 @@ pub fn access() -> anyhow::Result<()> {
             }
             checked += 1;
             let mut target = Path::new(path);
+            let mut found = fs::metadata(target);
+            let denied = |found: &std::io::Result<fs::Metadata>| {
+                found
+                    .as_ref()
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+            };
             // A directory created on demand only needs a writable existing parent.
-            if reference["create"] == true && fs::metadata(target).is_err() {
+            if reference["create"] == true && found.is_err() && !denied(&found) {
                 match target.ancestors().skip(1).find(|a| a.is_dir()) {
-                    Some(parent) if parent != Path::new("/") => target = parent,
+                    Some(parent) if parent != Path::new("/") => {
+                        target = parent;
+                        found = fs::metadata(target);
+                    }
                     _ => {
                         missing.push(format!("{label} {path}"));
                         continue;
                     }
                 }
             }
-            let meta = match fs::metadata(target) {
-                Ok(meta) => meta,
-                Err(_) => {
-                    missing.push(format!("{label} {path}"));
-                    continue;
-                }
-            };
-            // Every ancestor must be searchable by the target identity.
-            let mut ancestors = target.ancestors().skip(1).collect::<Vec<_>>();
-            ancestors.reverse();
-            if let Some(blocked) = ancestors
-                .iter()
-                .find(|a| fs::metadata(a).is_ok_and(|m| !who.allows(&m, 1)))
-            {
+            // Resolving a path needs every ancestor searchable by the target identity.
+            if denied(&found) {
+                let mut ancestors = target.ancestors().skip(1).collect::<Vec<_>>();
+                ancestors.reverse();
+                let blocked = ancestors
+                    .into_iter()
+                    .find(|a| !permits(a, libc::X_OK))
+                    .unwrap_or(target);
                 problems.push(format!(
-                    "{label} {} isn't reachable by {}: {} doesn't allow it to enter",
+                    "{label} {} isn't reachable by {uid}: {} doesn't allow it to enter",
                     target.display(),
-                    who.uid,
                     blocked.display()
                 ));
                 continue;
             }
-            let want = match reference["access"].as_str() {
-                Some("rw") if meta.is_dir() => 7,
-                Some("rw") => 6,
-                Some("x") => 5,
-                _ if meta.is_dir() => 5,
-                _ => 4,
+            let Ok(meta) = found else {
+                missing.push(format!("{label} {path}"));
+                continue;
             };
-            if !who.allows(&meta, want) {
+            let want = match reference["access"].as_str() {
+                Some("rw") if meta.is_dir() => libc::R_OK | libc::W_OK | libc::X_OK,
+                Some("rw") => libc::R_OK | libc::W_OK,
+                Some("x") => libc::R_OK | libc::X_OK,
+                _ if meta.is_dir() => libc::R_OK | libc::X_OK,
+                _ => libc::R_OK,
+            };
+            if !permits(target, want) {
                 problems.push(format!(
-                    "{label} {} isn't {} by the target identity {}; adjust its permissions without moving the files",
+                    "{label} {} isn't {} by the target identity {uid}; adjust its permissions without moving the files",
                     target.display(),
-                    if want & 2 != 0 { "writable" } else { "readable" },
-                    who.uid
+                    if want & libc::W_OK != 0 { "writable" } else { "readable" },
                 ));
             }
             if reference["kind"] == "dir" {
@@ -1414,27 +1409,13 @@ mod tests {
     }
 
     #[test]
-    fn access_uses_owner_group_and_other_bits() {
+    fn access_is_the_kernel_decision() {
         let directory = tempfile::tempdir().unwrap();
         use std::os::unix::fs::PermissionsExt;
         let file = directory.path().join("movie.mkv");
         fs::write(&file, "x").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
-        let meta = fs::metadata(&file).unwrap();
-        let owner = Who {
-            uid: meta.uid(),
-            groups: vec![],
-        };
-        let group = Who {
-            uid: u32::MAX,
-            groups: vec![meta.gid()],
-        };
-        let other = Who {
-            uid: u32::MAX,
-            groups: vec![],
-        };
-        assert!(owner.allows(&meta, 6));
-        assert!(group.allows(&meta, 4) && !group.allows(&meta, 2));
-        assert!(!other.allows(&meta, 4));
+        assert!(permits(&file, libc::R_OK | libc::W_OK));
+        assert!(!permits(&directory.path().join("missing"), libc::R_OK));
     }
 }

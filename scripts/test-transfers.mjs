@@ -602,6 +602,72 @@ try {
         (current) => stepIndex(current.step) >= stepIndex(step),
       );
     }
+    // Before the recovery scenarios take Radarr over in this pass.
+    if (scenarios.includes('storage'))
+      await scenario(
+        'media reachable only through an ACL passes the access review',
+        async () => {
+          const source = await f.attach(
+            'radarr',
+            '',
+            imageManifest.services.radarr,
+          );
+          await source.direct('rootfolder', 'POST', { path: '/media/movies' });
+          // As on a Synology share: root's group owns the folder, the mode bits grant
+          // nothing beyond the owner and an ACL grants the deployment's group.
+          const acl = f.compose(
+            'exec',
+            '-T',
+            '-u',
+            '0',
+            'server',
+            'python3',
+            '-c',
+            `import errno, os, struct
+entries = [(1, 7, -1), (4, 0, -1), (8, 7, 10001), (16, 7, -1), (32, 0, -1)]
+value = struct.pack('<I', 2) + b''.join(struct.pack('<HHI', tag, perm, id & 0xFFFFFFFF) for tag, perm, id in entries)
+try:
+    os.setxattr('/media', 'system.posix_acl_access', value)
+    os.chown('/media', -1, 0)
+except OSError as error:
+    if error.errno != errno.ENOTSUP:
+        raise
+    print('unsupported')`,
+          );
+          try {
+            // Docker Desktop's Windows folders have no POSIX ACLs; CI's always do.
+            if (acl.includes('unsupported') && !process.env.CI)
+              console.log('SKIP the media folder has no POSIX ACL support');
+            else {
+              expect(acl).not.toContain('unsupported');
+              const { review } = await f.transfer(source.id, {
+                approve: false,
+              });
+              expect(
+                review.review.blockers.filter((blocker) =>
+                  /isn't (writable|readable|reachable) by/.test(blocker),
+                ),
+              ).toEqual([]);
+            }
+          } finally {
+            f.compose(
+              'exec',
+              '-T',
+              '-u',
+              '0',
+              'server',
+              'python3',
+              '-c',
+              `import os
+if 'system.posix_acl_access' in os.listxattr('/media'):
+    os.removexattr('/media', 'system.posix_acl_access')
+os.chmod('/media', 0o777)`,
+            );
+          }
+          await f.api(`/admin/services/${source.id}/forget`, 'POST');
+          docker('rm', '-f', source.container);
+        },
+      );
     if (scenarios.includes('interruption'))
       for (const [kind, step, component] of [
         ['sonarr', 'copy', 'controller'],

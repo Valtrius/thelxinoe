@@ -842,6 +842,7 @@ async fn run_worker(
             command,
             env,
             user,
+            groups: vec![],
             caps,
             mounts,
             idle_seconds,
@@ -857,6 +858,8 @@ struct Job<'a> {
     command: Vec<String>,
     env: Vec<String>,
     user: Option<String>,
+    /// Supplementary groups beside the user's own.
+    groups: Vec<u32>,
     caps: &'a [&'a str],
     mounts: Vec<Value>,
     idle_seconds: u64,
@@ -869,6 +872,7 @@ async fn run_job(d: &Deployment, key: &str, job: Job<'_>) -> Result<Value> {
         command,
         env,
         user,
+        groups,
         caps,
         mut mounts,
         idle_seconds,
@@ -903,6 +907,10 @@ async fn run_job(d: &Deployment, key: &str, job: Job<'_>) -> Result<Value> {
     crate::docker::limit(&mut spec, 1 << 30, 1, 64);
     if let Some(user) = user {
         spec["User"] = json!(user);
+    }
+    if !groups.is_empty() {
+        spec["HostConfig"]["GroupAdd"] =
+            json!(groups.iter().map(u32::to_string).collect::<Vec<_>>());
     }
     let container = request(
         Method::POST,
@@ -989,10 +997,10 @@ async fn access_check(
         .map(|m| m.destination.as_str())
         .collect();
     let groups = if matches!(kind, "seerr" | "recyclarr") {
-        vec![identity.1]
+        vec![]
     } else {
         // LinuxServer images add their runtime user to the `users` group.
-        vec![identity.1, 100]
+        vec![100]
     };
     run_job(
         d,
@@ -1001,15 +1009,14 @@ async fn access_check(
             label: "access",
             command: vec!["transfer-access".into()],
             env: vec![],
-            user: None,
-            caps: &["DAC_READ_SEARCH"],
+            // The replacement's identity, so the kernel applies the same permissions and ACLs.
+            user: Some(format!("{}:{}", identity.0, identity.1)),
+            groups,
+            caps: &[],
             mounts,
             idle_seconds: 300,
             network: "none".into(),
-            input: Some(
-                json!({"references":references,"uid":identity.0,"gid":identity.1,"groups":groups,
-                    "supplementary":destinations}),
-            ),
+            input: Some(json!({"references":references,"supplementary":destinations})),
         },
     )
     .await
@@ -1744,6 +1751,7 @@ async fn qualify_service(
             command: vec!["transfer-fixture".into()],
             env: vec![],
             user: None,
+            groups: vec![],
             caps: &["CHOWN", "FOWNER", "DAC_OVERRIDE"],
             mounts: vec![json!({"Type":"bind","Source":media,"Target":"/fixture"})],
             idle_seconds: 600,
@@ -1785,6 +1793,7 @@ async fn qualify_service(
                     command: vec!["transfer-contract".into(), t.kind.clone(), pass.into()],
                     env: vec![],
                     user: Some(format!("{}:{}", identity.0, identity.1)),
+                    groups: vec![],
                     caps: &[],
                     mounts: vec![
                         json!({"Type":"bind","Source":appdata,"Target":"/config","ReadOnly":true}),
