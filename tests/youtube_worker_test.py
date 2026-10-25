@@ -27,6 +27,7 @@ class YoutubeDL:
         video = address.split('=')[-1]
         if video == 'private0000': raise RuntimeError('Sign in secret-token')
         if video == 'botcheck000': raise RuntimeError('Sign in to confirm you\\u2019re not a bot secret-ip')
+        if video == 'ratelimit00': raise RuntimeError("Video unavailable. This content isn't available, try again later. secret-ip")
         if video == 'removed0000': raise RuntimeError('Video unavailable secret-url')
         if video == 'failure0000': raise RuntimeError('Internal error secret-cookie')
         if video == 'bigdata0000': return {'id': video, 'large': 'x' * (8 * 1024 * 1024)}
@@ -73,11 +74,11 @@ class WorkerProtocol(unittest.TestCase):
             {"error": "extraction_failed"}, {"error": "extraction_failed"}])
 
     def test_errors_and_oversized_metadata_are_redacted(self):
-        result, frames = self.run_worker([{"id": video} for video in ["botcheck000", "removed0000", "failure0000", "bigdata0000", "invalid&url"]])
+        result, frames = self.run_worker([{"id": video} for video in ["botcheck000", "ratelimit00", "removed0000", "failure0000", "bigdata0000", "invalid&url"]])
         self.assertEqual(result.returncode, 0)
         self.assertNotIn("secret", result.stdout + result.stderr)
         self.assertEqual([frame["error"] for frame in frames[1:]],
-                         ["network_blocked", "unavailable", "extraction_failed", "extraction_failed", "extraction_failed"])
+                         ["network_blocked", "network_blocked", "unavailable", "extraction_failed", "extraction_failed", "extraction_failed"])
 
     def test_version_mismatch_never_reports_ready(self):
         result, frames = self.run_worker([], version="new")

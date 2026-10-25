@@ -54,3 +54,18 @@ describe('YouTube download format', () => {
     expect(downloaded({}).downloadFormatLabel).toBeNull();
   });
 });
+
+describe('YouTube download retry', () => {
+  it('names when a failed download is attempted again', () => {
+    const retryAt = '2026-10-25T14:32:00Z';
+    const time = new Intl.DateTimeFormat(undefined, {
+      timeStyle: 'short',
+    }).format(Date.parse(retryAt));
+    expect(downloaded({ status: 'failed', retryAt }).downloadLabel).toBe(
+      `Retrying at ${time}`,
+    );
+    expect(downloaded({ status: 'failed' }).downloadLabel).toBe(
+      'Download failed',
+    );
+  });
+});

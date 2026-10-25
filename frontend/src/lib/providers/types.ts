@@ -202,6 +202,7 @@ export interface YoutubeDownload {
   lastPlayedAt?: string | null;
   errorCode?: string | null;
   errorMessage?: string | null;
+  retryAt?: string | null;
 }
 
 export interface YoutubeDownloadEvent {

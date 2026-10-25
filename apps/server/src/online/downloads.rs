@@ -223,6 +223,9 @@ const STALLED: Duration = Duration::from_secs(300);
 /// A download waiting for space is tried again after this long even when its capacity looks
 /// unchanged, for changes `capacity` can't see.
 const RECHECK: Duration = Duration::from_secs(300);
+/// A failed download is attempted again after each of these delays in turn, in seconds.
+/// YouTube's rate limit lasts up to an hour; its bot check can last longer.
+const RETRIES: [i64; 5] = [600, 1800, 3600, 3 * 3600, 6 * 3600];
 /// Downloads waiting for space, by video: the capacity they last waited at, and when to try
 /// them again regardless.
 type Parked = HashMap<String, (Capacity, Instant)>;
@@ -242,8 +245,9 @@ async fn next(state: &AppState, parked: &mut Parked) -> anyhow::Result<()> {
         let current = capacity(state).await?;
         parked.retain(|_, (seen, until)| *seen == current && Instant::now() < *until);
     }
-    let job = storage::claim_download(&state.db, parked.keys().cloned().collect()).await?;
-    let Some((video, generation, bundle, waiting)) = job else {
+    let latest = tools::ready(state).await.ok();
+    let job = storage::claim_download(&state.db, parked.keys().cloned().collect(), latest).await?;
+    let Some((video, generation, bundle, waiting, retries)) = job else {
         return Ok(());
     };
     let admitted = crate::auto_delete::admit(state, &video, &generation).await;
@@ -269,7 +273,14 @@ async fn next(state: &AppState, parked: &mut Parked) -> anyhow::Result<()> {
             }
         }
     }
-    storage::finish_download(status, video.clone(), generation, &state.db).await?;
+    storage::finish_download(
+        status,
+        video.clone(),
+        generation,
+        retry(status, retries),
+        &state.db,
+    )
+    .await?;
     if status == "waiting_for_space" {
         parked.insert(
             video.clone(),
@@ -285,6 +296,15 @@ async fn next(state: &AppState, parked: &mut Parked) -> anyhow::Result<()> {
         .emit(None, "online.download.changed", json!({}))
         .await?;
     Ok(())
+}
+
+/// The delay before a download that ended with `status`, after `retries` retries, is attempted
+/// again. A video that is unavailable or needs an account would fail the same way.
+fn retry(status: &str, retries: u32) -> Option<i64> {
+    match status {
+        "failed" | "network_blocked" => RETRIES.get(retries as usize).copied(),
+        _ => None,
+    }
 }
 
 /// Download qualities: the best picture, or the best within a resolution.

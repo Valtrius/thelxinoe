@@ -303,7 +303,7 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         db.execute("UPDATE youtube_downloads SET state='queued',path=NULL,size=NULL,modified=NULL,probe=NULL,completed_at=NULL WHERE video_id='waiting0001'", [])?;
         Ok(())
     }).await.unwrap();
-    let (waiting_id, waiting_generation, _, _) = storage::claim_download(&state.db, Vec::new())
+    let (waiting_id, waiting_generation, ..) = storage::claim_download(&state.db, Vec::new(), None)
         .await
         .unwrap()
         .unwrap();
@@ -321,6 +321,7 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         "waiting_for_space",
         waiting_id.clone(),
         waiting_generation.clone(),
+        None,
         &state.db,
     )
     .await
@@ -356,7 +357,7 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
     )
     .await;
     assert!(!playing.exists());
-    let (_, generation, _, waiting) = storage::claim_download(&state.db, Vec::new())
+    let (_, generation, _, waiting, _) = storage::claim_download(&state.db, Vec::new(), None)
         .await
         .unwrap()
         .unwrap();

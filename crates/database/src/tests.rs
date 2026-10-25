@@ -518,6 +518,22 @@ fn schema_3_starts_every_youtube_channel_without_a_backfill() -> Result<()> {
     Ok(())
 }
 
+// Downloads that failed before the upgrade stay failed until requested again.
+#[test]
+fn schema_4_schedules_no_retry_for_earlier_failures() -> Result<()> {
+    let (_temp, conn) = upgraded(
+        3,
+        "INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES ('failed','g','network_blocked','{}',1,1);",
+    )?;
+    let retry: (i64, Option<i64>) = conn.query_row(
+        "SELECT retries,retry_at FROM youtube_downloads WHERE video_id='failed'",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    assert_eq!(retry, (0, None));
+    Ok(())
+}
+
 #[test]
 fn upgrades_run_in_order_from_the_stored_version() -> Result<()> {
     let conn = Connection::open_in_memory()?;

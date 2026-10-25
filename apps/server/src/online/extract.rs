@@ -148,8 +148,12 @@ pub(super) fn arguments(bundle: &tools::OnlineSnapshot, id: &str, family: Family
 }
 pub(super) fn failure(stderr: &[u8]) -> &'static str {
     let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
-    // YouTube's bot check also asks to sign in, but it rejects the network.
-    if text.contains("not a bot") {
+    // YouTube's bot check also asks to sign in, and its rate limit calls the video
+    // unavailable, but both reject the network.
+    if ["not a bot", "captcha", "try again later", "http error 429"]
+        .iter()
+        .any(|s| text.contains(s))
+    {
         "network_blocked"
     } else if [
         "sign in",
@@ -192,6 +196,14 @@ mod tests {
                 "ERROR: [youtube] abc: Sign in to confirm you\u{2019}re not a bot. Use --cookies"
                     .as_bytes()
             ),
+            "network_blocked"
+        );
+        assert_eq!(
+            failure(b"ERROR: [youtube] abc: Video unavailable. This content isn't available, try again later. The current session has been rate-limited by YouTube for up to an hour."),
+            "network_blocked"
+        );
+        assert_eq!(
+            failure(b"ERROR: unable to download video data: HTTP Error 429: Too Many Requests"),
             "network_blocked"
         );
         assert_eq!(failure(b"ERROR: Video unavailable"), "unavailable");

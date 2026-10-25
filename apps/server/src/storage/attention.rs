@@ -210,8 +210,8 @@ fn collect_activity(
             });
         }
     }
-    let sql = "SELECT 'download:'||d.video_id,CASE WHEN d.state IN ('queued','waiting_for_space') THEN 'queued' ELSE 'running' END,CASE d.state WHEN 'waiting_for_space' THEN 'Video download waiting for space' WHEN 'queued' THEN 'Video download queued' ELSE 'Downloading video' END
-      FROM youtube_downloads d JOIN youtube_download_requests r ON r.video_id=d.video_id WHERE r.user_id=?1 AND d.state IN ('queued','waiting_for_space','downloading')
+    let sql = "SELECT 'download:'||d.video_id,CASE WHEN d.state='downloading' THEN 'running' ELSE 'queued' END,CASE WHEN d.retry_at IS NOT NULL THEN 'Video download waiting to retry' WHEN d.state='waiting_for_space' THEN 'Video download waiting for space' WHEN d.state='queued' THEN 'Video download queued' ELSE 'Downloading video' END
+      FROM youtube_downloads d JOIN youtube_download_requests r ON r.video_id=d.video_id WHERE r.user_id=?1 AND (d.state IN ('queued','waiting_for_space','downloading') OR d.retry_at IS NOT NULL)
       AND NOT EXISTS(SELECT 1 FROM settings WHERE key='online.youtube.enabled' AND value='false')
       UNION ALL SELECT 'account:twitch',CASE WHEN phase='connecting' THEN 'running' ELSE 'queued' END,CASE WHEN phase='connecting' THEN 'Connecting Twitch account' ELSE 'Waiting for Twitch authorization' END FROM twitch_attempts WHERE user_id=?1 AND expires_at>?2
       UNION ALL SELECT 'sync:youtube',CASE WHEN y.failures>0 OR y.last_turn<=json_extract(s.value,'$.last_turn') THEN 'queued' ELSE 'running' END,CASE WHEN y.failures>0 THEN 'YouTube synchronization waiting to retry' ELSE 'Synchronizing YouTube' END

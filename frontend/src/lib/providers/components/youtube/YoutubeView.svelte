@@ -394,7 +394,7 @@
         });
       }
       const videoId = event.download.videoId;
-      if (event.download.status === 'failed') {
+      if (event.download.status === 'failed' && !event.download.retryAt) {
         const openSettings =
           event.download.errorCode === 'youtube_cookie_browser_missing' ||
           event.download.errorCode === 'youtube_cookie_browser_locked';
