@@ -87,6 +87,17 @@ async fn invalid_or_unwritable_cache_falls_back_and_orphans_are_pruned() {
         std::fs::read_dir(originals.join("cards")).unwrap().count(),
         0
     );
+    // Video stills go after 30 days, to be taken again if still shown.
+    let stills = originals.join("stills");
+    std::fs::create_dir_all(&stills).unwrap();
+    for (name, age) in [("recent", 29), ("old", 31)] {
+        let file = std::fs::File::create(stills.join(name)).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(age * 86400))
+            .unwrap();
+    }
+    prune(dir.path()).await.unwrap();
+    assert!(stills.join("recent").exists());
+    assert!(!stills.join("old").exists());
 }
 
 #[tokio::test]

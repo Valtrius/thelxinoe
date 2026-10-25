@@ -175,3 +175,44 @@ async fn a_new_generation_keeps_manual_episode_mappings() {
     assert_eq!(stale, 0);
     server.abort();
 }
+
+#[test]
+fn titles_keep_their_ratings_certification_and_studio() {
+    let movie = normalize(
+        "movie",
+        &json!({"title":"Feature","certification":"PG-13","studio":"Walt Disney Pictures",
+            "ratings":{"tmdb":{"value":6.665},"rottenTomatoes":{"value":30}}}),
+    );
+    assert_eq!(
+        [
+            &movie["certification"],
+            &movie["studio"],
+            &movie["vote_average"],
+            &movie["critic_rating"]
+        ],
+        [
+            &json!("PG-13"),
+            &json!("Walt Disney Pictures"),
+            &json!(6.665),
+            &json!(30.0)
+        ]
+    );
+    // Sonarr names the network that first aired a series.
+    let show = normalize(
+        "show",
+        &json!({"title":"Show","certification":"TV-MA","network":"HBO","ratings":{"value":8.4}}),
+    );
+    assert_eq!(show["studio"], "HBO");
+    assert_eq!(show["vote_average"], 8.4);
+    let unrated = normalize(
+        "movie",
+        &json!({"title":"Plain","ratings":{"rottenTomatoes":{"value":0}}}),
+    );
+    assert_eq!(unrated["studio"], Value::Null);
+    assert!(unrated.get("critic_rating").is_none());
+    assert!(
+        normalize("album", &json!({"title":"Album"}))
+            .get("studio")
+            .is_none()
+    );
+}

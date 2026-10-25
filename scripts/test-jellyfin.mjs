@@ -318,6 +318,11 @@ assert.equal(
   (await compat.get(`/Items/${direct.Id}`, { headers })).status(),
   200,
 );
+const still = await compat.get(`/Items/${direct.Id}/Images/Primary`, {
+  headers,
+});
+assert.equal(still.status(), 200, 'A movie without artwork shows a still');
+assert.equal(still.headers()['content-type'], 'image/jpeg');
 assert.equal(
   (
     await compat.get(

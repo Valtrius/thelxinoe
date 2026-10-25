@@ -141,37 +141,43 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 pub(crate) async fn prune(cache: &Path) -> anyhow::Result<()> {
     let originals = cache.join("artwork");
     tokio::task::spawn_blocking(move || {
-        let dir = originals.join("cards");
-        if !dir.is_dir() {
-            return Ok(());
-        }
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let base = name.strip_suffix(".source").unwrap_or(&name);
+        remove_files(&originals.join("cards"), |name, old| {
+            let base = name.strip_suffix(".source").unwrap_or(name);
             let source = base
                 .rsplit_once('.')
                 .filter(|(_, size)| matches!(*size, "500" | "1000"))
                 .map(|(name, _)| originals.join(name));
-            let old = SystemTime::now()
-                .duration_since(entry.metadata()?.modified()?)
-                .unwrap_or_default()
-                >= Duration::from_secs(30 * 86400);
-            if old || source.is_some_and(|source| !source.is_file()) {
-                match std::fs::remove_file(entry.path()) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-        }
-        Ok(())
+            old || source.is_some_and(|source| !source.is_file())
+        })?;
+        // Video stills are taken again when next shown, so old ones of removed media go.
+        remove_files(&originals.join("stills"), |_, old| old)
     })
     .await?
+}
+
+/// Delete the files of a cache directory chosen by name and by being 30 days old.
+fn remove_files(dir: &Path, unwanted: impl Fn(&str, bool) -> bool) -> anyhow::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let old = SystemTime::now()
+            .duration_since(entry.metadata()?.modified()?)
+            .unwrap_or_default()
+            >= Duration::from_secs(30 * 86400);
+        if unwanted(&entry.file_name().to_string_lossy(), old) {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

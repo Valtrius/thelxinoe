@@ -63,7 +63,7 @@ fn radarr() -> Inventory {
         "radarr",
         json!([
             {"id":1,"tmdbId":101,"title":"Owned","monitored":true,"hasFile":true,"isAvailable":true,
-             "images":[{"coverType":"poster","url":"/MediaCover/1/poster.jpg?lastWrite=1"},{"coverType":"fanart","url":"/MediaCover/1/fanart.jpg"},{"coverType":"banner","url":"/MediaCover/1/banner.jpg"},{"coverType":"poster","remoteUrl":"https://image.tmdb.org/x.jpg"}]},
+             "images":[{"coverType":"poster","url":"/MediaCover/1/poster.jpg?lastWrite=1"},{"coverType":"fanart","url":"/MediaCover/1/fanart.jpg"},{"coverType":"banner","url":"/MediaCover/1/banner.jpg"},{"coverType":"poster","remoteUrl":"https://image.tmdb.org/x.jpg"},{"coverType":"clearlogo","url":"/MediaCover/1/clearlogo.png"}]},
             {"id":2,"tmdbId":102,"title":"Fetching","monitored":true,"hasFile":false,"isAvailable":true},
             {"id":3,"tmdbId":103,"title":"Soon","monitored":true,"hasFile":false,"isAvailable":false,
              "inCinemas":PAST,"digitalRelease":FUTURE,"physicalRelease":"2036-01-01T00:00:00Z"},
@@ -187,13 +187,17 @@ fn movies_follow_file_queue_release_and_monitoring_precedence() {
         shown(movie(3, false), false),
         json!({"state":"upcoming","release":FUTURE_DAY})
     );
-    // Only manager-local poster and fanart paths are kept.
+    // Only manager-local poster, fanart and logo paths are kept.
     let owned = &inventory.titles[&1];
     assert_eq!(
         owned.image("poster"),
         Some("/MediaCover/1/poster.jpg?lastWrite=1")
     );
-    assert_eq!(owned.images.len(), 2);
+    assert_eq!(
+        owned.image("clearlogo"),
+        Some("/MediaCover/1/clearlogo.png")
+    );
+    assert_eq!(owned.images.len(), 3);
     assert_eq!(inventory.titles[&7].tmdb_id, None);
 }
 
@@ -1096,4 +1100,117 @@ async fn manager_artwork_is_proxied_from_the_cache_with_a_grant() {
         &Snapshot::default(),
         &HashSet::new()
     ));
+}
+
+#[tokio::test]
+async fn jellyfin_items_show_their_title_backdrop_and_logo() {
+    let (_temp, state, _, _) = api_fixture().await;
+    let shows = inventory(
+        "sonarr",
+        json!([{"id":10,"tvdbId":201,"title":"Series","monitored":true,"images":[
+            {"coverType":"fanart","url":"/MediaCover/10/fanart.jpg"},
+            {"coverType":"clearlogo","url":"/MediaCover/10/clearlogo.png"}]}]),
+        json!({}),
+        json!([]),
+    );
+    replace(&state, snapshot(vec![("sonarr", shows)]));
+    let token = crate::test_support::issue_session(
+        &state.db,
+        "alice".into(),
+        "jellyfin".into(),
+        "TV".into(),
+    )
+    .await
+    .unwrap();
+    // Listed, as the fixture's files do not exist for a single item's media sources.
+    let item = |id: &str| {
+        let (state, path) = (state.clone(), format!("/Items?Ids={id}&api_key={token}"));
+        async move {
+            let (status, _, page) = call(&state, &path, "GET", Value::Null, "").await;
+            assert_eq!(status, StatusCode::OK, "{page}");
+            page["Items"][0].clone()
+        }
+    };
+    let show = item("show").await;
+    let grant = show["BackdropImageTags"][0].as_str().unwrap().to_owned();
+    assert_eq!(grant.len(), 64);
+    assert_eq!(show["ImageTags"]["Logo"], grant);
+    // Episodes and seasons point at their series' images.
+    for id in ["e1", "season1"] {
+        let child = item(id).await;
+        assert_eq!(child["BackdropImageTags"], json!([]));
+        assert_eq!(child["ParentBackdropItemId"], "show");
+        assert_eq!(child["ParentBackdropImageTags"], json!([grant]));
+        assert_eq!(child["ParentLogoItemId"], "show");
+        assert_eq!(child["ParentLogoImageTag"], grant);
+    }
+    let plain = item("movie-plain").await;
+    assert_eq!(plain["BackdropImageTags"], json!([]));
+    assert!(plain["ImageTags"].get("Logo").is_none());
+    assert!(plain.get("ParentBackdropItemId").is_none());
+
+    let image = |path: String| {
+        let state = state.clone();
+        async move {
+            let (status, headers, _) = call(&state, &path, "GET", Value::Null, "").await;
+            (status, headers)
+        }
+    };
+    // Nothing is cached and the manager is unreachable.
+    assert_eq!(
+        image(format!("/Items/show/Images/Backdrop?tag={grant}"))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let dir = state.config.cache.join("artwork");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (kind, bytes) in [
+        ("fanart.jpg", &b"\xff\xd8\xff\xe0fixture"[..]),
+        ("clearlogo.png", &b"\x89PNG\r\n\x1a\nfixture"[..]),
+    ] {
+        let (name, _) = kind.split_once('.').unwrap();
+        std::fs::write(dir.join(format!("title-sonarr-1-10-{name}")), bytes).unwrap();
+        std::fs::write(
+            dir.join(format!("title-sonarr-1-10-{name}.source")),
+            format!("/MediaCover/10/{kind}"),
+        )
+        .unwrap();
+    }
+    for (path, kind) in [
+        (
+            format!("/Items/show/Images/Backdrop?tag={grant}"),
+            "image/jpeg",
+        ),
+        (
+            format!("/Items/show/Images/Backdrop/0?tag={grant}"),
+            "image/jpeg",
+        ),
+        (
+            format!("/Items/e1/Images/Backdrop?api_key={token}"),
+            "image/jpeg",
+        ),
+        (format!("/Items/show/Images/Logo?tag={grant}"), "image/png"),
+    ] {
+        let (status, headers) = image(path.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(headers["content-type"], kind, "{path}");
+    }
+    for path in [
+        format!("/Items/show/Images/Backdrop/1?tag={grant}"),
+        format!("/Items/show/Images/Banner?tag={grant}"),
+        format!("/Items/movie-plain/Images/Backdrop?tag={grant}"),
+        "/Items/show/Images/Backdrop".to_owned(),
+    ] {
+        let status = image(path.clone()).await.0;
+        assert!(
+            matches!(status, StatusCode::NOT_FOUND | StatusCode::UNAUTHORIZED),
+            "{path}: {status}"
+        );
+    }
+    // Cleanup keeps the logo the series still has.
+    prune_artwork(&state, &super::snapshot(&state))
+        .await
+        .unwrap();
+    assert!(dir.join("title-sonarr-1-10-clearlogo").is_file());
 }
