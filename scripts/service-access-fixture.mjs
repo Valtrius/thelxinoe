@@ -346,9 +346,10 @@ export async function fixture({
         { length: 6 },
         (_, index) => `Category${index + 1}.Name=existing-${index + 1}\n`,
       ).join('');
+      // Like NZBGet's own default, the queue and history sit beside the downloads.
       writeFileSync(
         `${directory}/nzbget.conf`,
-        `MainDir=/media/downloads\nDestDir=\${MainDir}/completed\nInterDir=\${MainDir}/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nWebDir=\${AppDir}/webui\nConfigTemplate=\${AppDir}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=fixture\nControlPassword=${key}\nWriteLog=${nzbgetWarnings ? 'append' : 'rotate'}\nRotateLog=3\nCertCheck=no\nCertStore=\n${categories}Category7.Name=custom\nCategory7.DestDir=\${MainDir}/custom\n`,
+        `MainDir=/media/downloads\nDestDir=\${MainDir}/completed\nInterDir=\${MainDir}/intermediate\nNzbDir=/config/nzb\nQueueDir=\${MainDir}/queue\nTempDir=/config/tmp\nWebDir=\${AppDir}/webui\nConfigTemplate=\${AppDir}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=fixture\nControlPassword=${key}\nWriteLog=${nzbgetWarnings ? 'append' : 'rotate'}\nRotateLog=3\nCertCheck=no\nCertStore=\n${categories}Category7.Name=custom\nCategory7.DestDir=\${MainDir}/custom\n`,
       );
     } else
       writeFileSync(

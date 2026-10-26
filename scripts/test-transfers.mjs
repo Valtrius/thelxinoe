@@ -437,6 +437,22 @@ async function matrix(source, records, storage) {
     );
     expect(replacement?.running).toBe(true);
     expect(replacement.container_id).not.toBe(source.container);
+    // NZBGet's queue moves from beside the downloads into the managed configuration.
+    if (kind === 'nzbget') {
+      expect(plan.settings).toContainEqual(
+        expect.objectContaining({
+          setting: 'Queue folder',
+          before: '/media/downloads/queue',
+          after: '/config/queue',
+        }),
+      );
+      expect(f.readAppdata(source.appdata, 'nzbget.conf')).toContain(
+        'QueueDir=${MainDir}/queue',
+      );
+      expect(
+        docker('exec', replacement.container_id, 'cat', '/config/nzbget.conf'),
+      ).toContain('QueueDir=/config/queue');
+    }
     // Library, profile and client identities are the same records in the replacement.
     for (const [path, rows] of Object.entries(records ?? {})) {
       const response = replacementApi(

@@ -127,6 +127,65 @@ async fn an_interrupted_start_copies_the_stopped_original_and_returns_it_on_fail
     );
 }
 
+// NZBGet's queue in its download mount is copied beside the snapshot and verified; one it
+// never created is left for NZBGet to create. The original's queue is only read.
+#[tokio::test]
+async fn an_external_nzbget_queue_is_copied_with_the_snapshot() {
+    for existing in [true, false] {
+        let docker = Docker::new();
+        docker.insert("original", original(true, REVIEWED));
+        let root = docker.root().to_owned();
+        std::fs::write(root.join("appdata/marker"), "original-state").unwrap();
+        let downloads = root.join("downloads");
+        std::fs::create_dir(&downloads).unwrap();
+        if existing {
+            std::fs::create_dir(downloads.join("queue")).unwrap();
+            std::fs::write(downloads.join("queue/marker"), "queue-state").unwrap();
+        }
+        docker
+            .scope(async {
+                let d: Deployment =
+                    serde_json::from_value(json!({"id":"deployment","generation":1,
+                    "version":"test","server":{},"controller":{},"network":"media",
+                    "media_source":"/media","appdata_source":root}))
+                    .unwrap();
+                let mut t = journal("stopping", false);
+                t.review.layout.appdata.source = root.join("appdata").to_string_lossy().into();
+                t.review.queue = Some(plan::Queue {
+                    path: "/downloads/queue".into(),
+                    mount: plan::Mount {
+                        kind: "bind".into(),
+                        source: downloads.to_string_lossy().into(),
+                        destination: "/downloads".into(),
+                        writable: true,
+                        role: "media".into(),
+                        file: false,
+                    },
+                    subpath: "queue".into(),
+                });
+                write(&mut t).unwrap();
+                docker.fault(Fault::JournalBefore("validating"));
+                run(&d, &mut t).await;
+                assert_eq!(t.stage, "returned", "{:?}", t.error);
+                let queue = &t.snapshot.as_ref().unwrap()["queue"];
+                if existing {
+                    assert_eq!(queue["files"], 1);
+                } else {
+                    assert!(queue.is_null());
+                }
+                assert!(!directory(KEY).join(QUEUE).exists());
+            })
+            .await;
+        assert_eq!(docker.copies(), if existing { 2 } else { 1 });
+        if existing {
+            assert_eq!(
+                std::fs::read_to_string(downloads.join("queue/marker")).unwrap(),
+                "queue-state"
+            );
+        }
+    }
+}
+
 // Before the boundary a refused transfer gives the original back as reviewed: its restart
 // policy returns, and it runs again if it was running, whoever started it meanwhile.
 #[tokio::test]

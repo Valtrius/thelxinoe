@@ -534,8 +534,20 @@ pub fn inspect(kind: &str, mode: &str) -> anyhow::Result<()> {
                         .replace("${MainDir}", &main)
                         .replace("${AppDir}", "/app/nzbget")
                 };
+                let queue = resolve(
+                    &get("QueueDir")
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or_else(|| "${MainDir}/queue".into()),
+                );
+                // A queue outside the configuration is copied into `transfer_plan::NZBGET_QUEUE`.
+                let moved = !within(&queue, "/config");
+                if moved && review && fs::symlink_metadata(root.join("queue")).is_ok() {
+                    blockers.push(format!(
+                        "NZBGet keeps its queue and history at {queue}, and its configuration folder also has a queue folder it doesn't use. Remove or rename that folder, then review again"
+                    ));
+                }
                 config = json!({"port":get("ControlPort").and_then(|p| p.parse::<u16>().ok()),"address":get("ControlIP"),
-                    "username":get("ControlUsername"),"secure":get("SecureControl")});
+                    "username":get("ControlUsername"),"secure":get("SecureControl"),"queue":queue});
                 for (key, kind, access) in [
                     ("MainDir", "dir", "rw"),
                     ("DestDir", "dir", "rw"),
@@ -550,10 +562,8 @@ pub fn inspect(kind: &str, mode: &str) -> anyhow::Result<()> {
                     let Some(path) = get(key).map(|v| resolve(&v)).filter(|v| !v.is_empty()) else {
                         continue;
                     };
-                    if key == "QueueDir" && !within(&path, "/config") {
-                        blockers.push(format!(
-                            "NZBGet keeps its queue and history at {path}, outside its configuration folder. Set QueueDir to ${{MainDir}}/queue with MainDir inside /config, then review again"
-                        ));
+                    if key == "QueueDir" && moved {
+                        continue;
                     }
                     if key.starts_with("Secure") && get("SecureControl").as_deref() != Some("yes") {
                         continue;
@@ -596,13 +606,11 @@ pub fn inspect(kind: &str, mode: &str) -> anyhow::Result<()> {
                 };
                 tables.insert("categories".into(), json!({"count":categories.len(),"digest":digest(&categories),"strict":true,"ids":categories.iter().map(|c| c[0].clone()).collect::<Vec<_>>()}));
                 tables.insert("servers".into(), json!({"count":servers.len(),"digest":digest(&servers),"strict":true,"ids":servers.iter().map(|c| c[0].clone()).collect::<Vec<_>>()}));
-                let queue = PathBuf::from(resolve(
-                    &get("QueueDir").unwrap_or_else(|| "${MainDir}/queue".into()),
-                ));
-                let local = queue
-                    .strip_prefix("/config")
-                    .map(|q| root.join(q))
-                    .unwrap_or_default();
+                let local = if moved {
+                    root.join("queue")
+                } else {
+                    root.join(Path::new(&queue).strip_prefix("/config")?)
+                };
                 let version = fs::read_to_string(local.join("queue"))
                     .ok()
                     .and_then(|t| t.lines().next().map(str::to_owned));
@@ -769,6 +777,34 @@ fn set_xml(text: &str, field: &str, value: &str) -> String {
     )
 }
 
+/// Replace each active `key=value` line of an NZBGet configuration, or append it.
+fn set_conf(text: &str, settings: &[(&str, &str)]) -> String {
+    let mut seen = vec![false; settings.len()];
+    let mut lines: Vec<String> = text
+        .lines()
+        .map(|line| {
+            let found = line.split_once('=').and_then(|(key, _)| {
+                settings
+                    .iter()
+                    .position(|(name, _)| key.trim().eq_ignore_ascii_case(name))
+            });
+            match found {
+                Some(index) => {
+                    seen[index] = true;
+                    format!("{}={}", settings[index].0, settings[index].1)
+                }
+                None => line.to_owned(),
+            }
+        })
+        .collect();
+    for (index, (key, value)) in settings.iter().enumerate() {
+        if !seen[index] {
+            lines.push(format!("{key}={value}"));
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
 /// Apply the reviewed changes to a copied configuration and give it to the target identity.
 pub fn prepare(kind: &str, mode: &str) -> anyhow::Result<()> {
     reported(|| {
@@ -823,31 +859,14 @@ pub fn prepare(kind: &str, mode: &str) -> anyhow::Result<()> {
             }
             "nzbget" => {
                 let path = root.join("nzbget.conf");
-                let text = fs::read_to_string(&path)?;
-                let port = plan["port"].as_u64().unwrap_or(6789);
-                let mut seen = (false, false);
-                let mut lines: Vec<String> = text
-                    .lines()
-                    .map(|line| match line.split_once('=') {
-                        Some((key, _)) if key.trim().eq_ignore_ascii_case("ControlPort") => {
-                            seen.0 = true;
-                            format!("ControlPort={port}")
-                        }
-                        Some((key, _)) if key.trim().eq_ignore_ascii_case("ControlIP") => {
-                            seen.1 = true;
-                            "ControlIP=0.0.0.0".into()
-                        }
-                        _ => line.to_owned(),
-                    })
-                    .collect();
-                if !seen.0 {
-                    lines.push(format!("ControlPort={port}"));
+                let port = plan["port"].as_u64().unwrap_or(6789).to_string();
+                let mut settings = vec![("ControlPort", port.as_str()), ("ControlIP", "0.0.0.0")];
+                // The transfer copied an external queue here; NZBGet follows it.
+                if let Some(queue) = plan["queue"].as_str() {
+                    settings.push(("QueueDir", queue));
                 }
-                if !seen.1 {
-                    lines.push("ControlIP=0.0.0.0".into());
-                }
-                fs::write(&path, lines.join("\n") + "\n")?;
-                applied.extend(["ControlPort", "ControlIP"]);
+                fs::write(&path, set_conf(&fs::read_to_string(&path)?, &settings))?;
+                applied.extend(settings.iter().map(|(key, _)| *key));
             }
             "seerr" => {}
             "recyclarr" => {
@@ -1195,8 +1214,15 @@ fn tree(root: &Path) -> anyhow::Result<Value> {
     Ok(json!({"digest":hex(&hasher.finalize()),"files":files,"bytes":bytes}))
 }
 
+/// A folder inside the mount that doesn't exist is reported missing rather than failing.
 pub fn digest() -> anyhow::Result<()> {
-    reported(|| tree(Path::new("/state")))
+    reported(|| {
+        let root = crate::state_copy::source_root(Path::new("/state"))?;
+        if fs::symlink_metadata(&root).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+            return Ok(json!({"digest":null,"files":0,"bytes":0,"missing":true}));
+        }
+        tree(&root)
+    })
 }
 
 // ---------- Live effects after the production boundary ----------
@@ -1352,6 +1378,22 @@ mod tests {
         assert!(text.contains("<ApiKey>keep</ApiKey>"));
         assert!(text.contains("<EnableSsl>False</EnableSsl>"));
         assert!(text.contains("<LaunchBrowser>False</LaunchBrowser>\n</Config>"));
+    }
+
+    #[test]
+    fn nzbget_settings_are_replaced_or_added_without_touching_others() {
+        let text = "# QueueDir=${MainDir}/queue\nMainDir=/media/downloads\nQueueDir=${MainDir}/queue\ncontrolport=7000\n";
+        assert_eq!(
+            set_conf(
+                text,
+                &[
+                    ("ControlPort", "6789"),
+                    ("ControlIP", "0.0.0.0"),
+                    ("QueueDir", "/config/queue")
+                ]
+            ),
+            "# QueueDir=${MainDir}/queue\nMainDir=/media/downloads\nQueueDir=/config/queue\nControlPort=6789\nControlIP=0.0.0.0\n"
+        );
     }
 
     #[test]

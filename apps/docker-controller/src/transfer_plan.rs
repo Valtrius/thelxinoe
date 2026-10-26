@@ -283,8 +283,51 @@ fn mount_of(m: &Value) -> Result<Mount, String> {
     })
 }
 
-fn within(path: &str, root: &str) -> bool {
+pub fn within(path: &str, root: &str) -> bool {
     path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))
+}
+
+/// Where the managed copy keeps NZBGet's queue and history, as fresh installations do.
+pub const NZBGET_QUEUE: &str = "/config/queue";
+
+/// NZBGet's queue folder inside a download mount, copied into the managed configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Queue {
+    /// The queue's container path in the original.
+    pub path: String,
+    pub mount: Mount,
+    /// The queue's path inside `mount`.
+    pub subpath: String,
+}
+
+/// Locate a queue kept outside the configuration, in the deepest media mount that holds it.
+pub fn queue(layout: &Layout, path: &str) -> Result<Queue, String> {
+    let path = path.trim_end_matches('/');
+    let mount = layout
+        .retained
+        .iter()
+        .filter(|m| m.role == "media" && within(path, &m.destination))
+        .max_by_key(|m| m.destination.len())
+        .ok_or_else(|| {
+            format!(
+                "NZBGet keeps its queue and history at {path}, inside the container's writable layer. Set QueueDir to {NZBGET_QUEUE}, move the queue folder there, then review again"
+            )
+        })?;
+    let subpath = path[mount.destination.len()..].trim_start_matches('/');
+    if subpath.is_empty()
+        || subpath
+            .split('/')
+            .any(|part| matches!(part, "" | "." | ".."))
+    {
+        return Err(format!(
+            "NZBGet keeps its queue and history directly in {path}, beside other downloads. Set QueueDir to {NZBGET_QUEUE}, move the queue files there, then review again"
+        ));
+    }
+    Ok(Queue {
+        path: path.into(),
+        mount: mount.clone(),
+        subpath: subpath.into(),
+    })
 }
 
 /// Classify the source container's storage. Every rejection names the mount and why.
@@ -1136,5 +1179,29 @@ mod tests {
         let (published, changes) = ports(&raw, Some(7878));
         assert_eq!(published, Some(7878));
         assert_eq!(changes.len(), 2);
+    }
+
+    #[test]
+    fn an_external_nzbget_queue_is_found_in_its_deepest_download_mount() {
+        let raw = json!({"Id":"a","Config":{"Env":[]},"Mounts":[bind("/srv/nzbget","/config",true),
+            bind("/srv/media","/media",true), bind("/srv/media/downloads","/media/downloads",true),
+            bind("/etc/localtime","/etc/localtime",false)]});
+        let layout = layout("nzbget", &raw, &context()).unwrap();
+        let found = queue(&layout, "/media/downloads/queue/").unwrap();
+        assert_eq!(
+            (found.mount.source.as_str(), found.subpath.as_str()),
+            ("/srv/media/downloads", "queue")
+        );
+        assert_eq!(found.path, "/media/downloads/queue");
+        for (path, problem) in [
+            ("/media/downloads", "beside other downloads"),
+            ("/media/downloads/../queue", "beside other downloads"),
+            ("/var/lib/nzbget/queue", "writable layer"),
+            ("/etc/localtime/queue", "writable layer"),
+        ] {
+            let error = queue(&layout, path).unwrap_err();
+            assert!(error.contains(problem), "{path}: {error}");
+            assert!(error.contains(NZBGET_QUEUE), "{path}: {error}");
+        }
     }
 }

@@ -20,20 +20,51 @@ const SWAPPED: &str = "swapped";
 
 /// Copy or restore a snapshot, reporting progress and failures to the controller.
 pub fn snapshot(restore: bool) -> anyhow::Result<()> {
-    let source = Path::new("/source");
-    let filter = Filter::parse(
-        source,
-        &std::env::var("THELXINOE_SNAPSHOT_DISPOSABLE").unwrap_or_default(),
-    );
     reported(|progress| {
+        let source = source_root(Path::new("/source"))?;
+        let filter = Filter::parse(
+            &source,
+            &std::env::var("THELXINOE_SNAPSHOT_DISPOSABLE").unwrap_or_default(),
+        );
         copy_tree(
-            source,
+            &source,
             Path::new("/destination"),
             restore,
             &filter,
             progress,
         )
     })
+}
+
+/// The mount, or the folder inside it that `THELXINOE_SOURCE_SUBPATH` names.
+pub fn source_root(mount: &Path) -> anyhow::Result<PathBuf> {
+    match std::env::var("THELXINOE_SOURCE_SUBPATH") {
+        Ok(relative) => subpath(mount, &relative),
+        Err(_) => Ok(mount.to_path_buf()),
+    }
+}
+
+/// A path below `root` that never leaves it: plain names only, and no link on the way.
+/// The path may not exist yet.
+pub fn subpath(root: &Path, relative: &str) -> anyhow::Result<PathBuf> {
+    let mut path = root.to_path_buf();
+    let mut parts = Path::new(relative).components().peekable();
+    anyhow::ensure!(parts.peek().is_some(), "Missing source folder");
+    for part in parts {
+        let Component::Normal(name) = part else {
+            anyhow::bail!("Invalid source folder {relative}");
+        };
+        path.push(name);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) => anyhow::ensure!(
+                !meta.file_type().is_symlink(),
+                "{relative} goes through a link"
+            ),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(path)
 }
 
 /// Paths their owner deletes at startup, such as interrupted tool installs. A stopped
@@ -666,6 +697,31 @@ mod tests {
             fs::remove_file(source.join("invalid")).unwrap();
         }
     }
+    #[test]
+    fn source_folders_stay_inside_their_mount() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        tree(root, &[("downloads/queue/queue", "4")]);
+        assert_eq!(
+            subpath(root, "downloads/queue").unwrap(),
+            root.join("downloads/queue")
+        );
+        assert_eq!(
+            subpath(root, "downloads/missing/queue").unwrap(),
+            root.join("downloads/missing/queue")
+        );
+        std::os::unix::fs::symlink("/etc", root.join("downloads/escape")).unwrap();
+        for relative in [
+            "",
+            "/etc",
+            "../etc",
+            "downloads/../..",
+            "downloads/escape/x",
+        ] {
+            assert!(subpath(root, relative).is_err(), "accepted {relative}");
+        }
+    }
+
     #[test]
     fn restore_replaces_live_state_and_leaves_no_workspace() {
         let directory = tempfile::tempdir().unwrap();
