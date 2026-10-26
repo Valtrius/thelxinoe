@@ -33,6 +33,8 @@ fn terminal(stage: &str) -> bool {
 }
 /// Supplementary single files are copied into a folder under this name and mounted from there.
 const SUPPLEMENTARY_FILE: &str = "file";
+/// NZBGet's copied queue, beside the snapshot and in the managed configuration (`plan::NZBGET_QUEUE`).
+const QUEUE: &str = "queue";
 fn digest(value: &Value) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
@@ -60,6 +62,9 @@ pub(super) struct Review {
     /// Other containers mounting the configuration, which the administrator declares don't write it.
     #[serde(default)]
     shared: Vec<String>,
+    /// NZBGet's queue outside its configuration, copied in beside the snapshot.
+    #[serde(default)]
+    queue: Option<plan::Queue>,
     compose: Option<Value>,
     /// Read-only inspection of the live configuration at review time.
     inspection: Value,
@@ -505,6 +510,15 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
     for problem in inspection["blockers"].as_array().into_iter().flatten() {
         blockers.extend(problem.as_str().map(str::to_owned));
     }
+    // NZBGet's default keeps the queue beside the downloads; the managed copy keeps it in /config.
+    let queue = match inspection["config"]["queue"].as_str() {
+        Some(path) if kind == "nzbget" && !plan::within(path, "/config") => {
+            plan::queue(&layout, path)
+                .map_err(|reason| blockers.push(reason))
+                .ok()
+        }
+        _ => None,
+    };
     // Supplementary mounts join the access namespace, so references into them resolve and
     // each is probed as a folder or a single file before anything stops.
     let access = if inspection["references"].is_array() || !layout.supplementary.is_empty() {
@@ -625,6 +639,7 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
         published,
         automation,
         shared,
+        queue,
         compose,
         inspection,
         access,
@@ -674,6 +689,9 @@ fn settings(
 ) -> (Value, Vec<Value>) {
     let config = &inspection["config"];
     let allowed_hosts = allowed_hosts(&config["allowed_hosts"], hosts);
+    let queue = config["queue"]
+        .as_str()
+        .filter(|path| kind == "nzbget" && !plan::within(path, "/config"));
     let mut changes = Vec::new();
     let mut change = |setting: &str, before: Value, after: Value, reason: &str| {
         if before != after {
@@ -755,6 +773,14 @@ fn settings(
                 json!("0.0.0.0"),
                 "The replacement listens on Thelxinoe's private network",
             );
+            if let Some(queue) = queue {
+                change(
+                    "Queue folder",
+                    json!(queue),
+                    json!(plan::NZBGET_QUEUE),
+                    "The queue and history are copied into the managed configuration; the original keeps its own",
+                );
+            }
         }
         "seerr" => {
             change(
@@ -784,9 +810,12 @@ fn settings(
         }
         _ => {}
     }
-    let plan = json!({"kind":kind,"url_base":base,"port":t.port,"identity":[identity.0,identity.1],
+    let mut transformations = json!({"kind":kind,"url_base":base,"port":t.port,"identity":[identity.0,identity.1],
         "allowed_hosts":allowed_hosts});
-    (plan, changes)
+    if queue.is_some() {
+        transformations["queue"] = json!(plan::NZBGET_QUEUE);
+    }
+    (transformations, changes)
 }
 
 /// Servarr's host filter admits only listed names; keep them and add the managed ones.
@@ -1367,7 +1396,7 @@ async fn clear(d: &Deployment, t: &Transfer, leaf: &str) -> Result<()> {
 /// Nothing uses the snapshot once a transfer ended, and it can hold gigabytes. Preserved
 /// generations stay: they are the only copy of what a replacement wrote.
 async fn discard_snapshot(d: &Deployment, t: &Transfer) {
-    for leaf in ["snapshot", "supplementary"] {
+    for leaf in ["snapshot", "supplementary", QUEUE] {
         if let Err(error) = discard(d, t, leaf).await {
             eprintln!("Transfer {} kept its {leaf} copy: {}", t.id, error.1);
         }
@@ -1381,6 +1410,16 @@ async fn copy(
     source: Value,
     destination: String,
 ) -> Result<()> {
+    copy_with(d, t, label, source, destination, vec![]).await
+}
+async fn copy_with(
+    d: &Deployment,
+    t: &mut Transfer,
+    label: &str,
+    source: Value,
+    destination: String,
+    env: Vec<String>,
+) -> Result<()> {
     t.worker = Some(format!("thelxinoe-transfer-{}-{label}", &t.id[..8]));
     write(t)?;
     run_worker(
@@ -1388,7 +1427,7 @@ async fn copy(
         &t.id,
         label,
         vec!["snapshot-copy".into()],
-        vec![],
+        env,
         None,
         &["CHOWN", "FOWNER", "DAC_OVERRIDE"],
         vec![
@@ -1436,9 +1475,34 @@ async fn snapshot(d: &Deployment, t: &mut Transfer) -> Result<()> {
         source_mount(&appdata, "/state", true),
     )
     .await?;
+    let queue = match t.review.queue.clone() {
+        Some(queue) => {
+            let env = vec![format!("THELXINOE_SOURCE_SUBPATH={}", queue.subpath)];
+            let measured = run_worker(
+                d,
+                &t.id,
+                "queue-digest",
+                vec!["transfer-digest".into()],
+                env.clone(),
+                None,
+                &["DAC_READ_SEARCH"],
+                vec![source_mount(&queue.mount, "/state", true)],
+                600,
+            )
+            .await?;
+            // NZBGet creates a queue it never had at its first start.
+            (measured["missing"] != true).then_some((queue, measured, env))
+        }
+        None => None,
+    };
     let needed = measured["bytes"]
         .as_u64()
         .unwrap_or(0)
+        .saturating_add(
+            queue
+                .as_ref()
+                .map_or(0, |q| q.1["bytes"].as_u64().unwrap_or(0)),
+        )
         .saturating_mul(3)
         .saturating_add(64 << 20);
     persisted(std::fs::create_dir_all(directory(&t.id)).map_err(Into::into))?;
@@ -1492,15 +1556,81 @@ async fn snapshot(d: &Deployment, t: &mut Transfer) -> Result<()> {
         .await?;
         supplementary.push(json!({"destination":mount.destination,"digest":copied["digest"]}));
     }
+    let queue = match queue {
+        Some((queue, measured, env)) => {
+            clear(d, t, QUEUE).await?;
+            copy_with(
+                d,
+                t,
+                "queue",
+                source_mount(&queue.mount, "/source", true),
+                host(d, &t.id, QUEUE),
+                env,
+            )
+            .await?;
+            let copied = tree_digest(
+                d,
+                t,
+                "queue-copy-digest",
+                json!({"Type":"bind","Source":host(d,&t.id,QUEUE)}),
+            )
+            .await?;
+            if copied["digest"] != measured["digest"] || copied["digest"].is_null() {
+                return Err(conflict(
+                    "The copy of NZBGet's queue is incomplete; the original is unchanged",
+                ));
+            }
+            json!({"digest":copied["digest"],"bytes":copied["bytes"],"files":copied["files"]})
+        }
+        None => Value::Null,
+    };
     // Revalidate that the original stayed stopped through the copy.
     if source(t).await?["State"]["Running"] != false {
         return Err(conflict("The original restarted during the copy"));
     }
     t.snapshot = Some(
         json!({"digest":copied["digest"],"bytes":copied["bytes"],"files":copied["files"],
-        "supplementary":supplementary,"at":thelxinoe_core::now()}),
+        "supplementary":supplementary,"queue":queue,"at":thelxinoe_core::now()}),
     );
     Ok(())
+}
+
+/// Install NZBGet's copied queue at `plan::NZBGET_QUEUE` in an appdata tree built from the snapshot.
+async fn install_queue(
+    d: &Deployment,
+    t: &mut Transfer,
+    appdata_host: &str,
+    appdata_local: &std::path::Path,
+) -> Result<()> {
+    let Some(expected) = t
+        .snapshot
+        .as_ref()
+        .map(|s| s["queue"]["digest"].clone())
+        .filter(|digest| !digest.is_null())
+    else {
+        return Ok(());
+    };
+    let copied = tree_digest(
+        d,
+        t,
+        "queue-verify",
+        json!({"Type":"bind","Source":host(d,&t.id,QUEUE)}),
+    )
+    .await?;
+    if copied["digest"] != expected {
+        return Err(conflict(
+            "The copy of NZBGet's queue changed after it was made; the transfer can't use it",
+        ));
+    }
+    persisted(std::fs::create_dir_all(appdata_local.join(QUEUE)).map_err(Into::into))?;
+    copy(
+        d,
+        t,
+        "queue-install",
+        json!({"Type":"bind","Source":host(d,&t.id,QUEUE),"Target":"/source","ReadOnly":true}),
+        format!("{appdata_host}/{QUEUE}"),
+    )
+    .await
 }
 
 fn target_env(r: &Review, identity: (u32, u32)) -> Vec<String> {
@@ -1679,6 +1809,7 @@ async fn validate(d: &Deployment, t: &mut Transfer) -> Result<()> {
         appdata.clone(),
     )
     .await?;
+    install_queue(d, t, &appdata, &directory(&t.id).join("validation/appdata")).await?;
     let before = inspect_state(d, t, "inspect-before", &appdata).await?;
     if let Some(problem) = before["blockers"].as_array().and_then(|b| b.first()) {
         return Err(conflict(
@@ -1967,6 +2098,7 @@ async fn build(d: &Deployment, t: &mut Transfer) -> Result<()> {
         appdata.clone(),
     )
     .await?;
+    install_queue(d, t, &appdata, &local).await?;
     let prepared = prepare(d, t, &appdata, &local, "production").await?;
     let produced = tree_digest(
         d,
@@ -3102,5 +3234,28 @@ mod tests {
         assert_eq!(allowed_hosts(&json!(""), &hosts), None);
         assert_eq!(allowed_hosts(&json!("*"), &hosts), None);
         assert_eq!(allowed_hosts(&Value::Null, &hosts), None);
+    }
+
+    #[test]
+    fn an_external_nzbget_queue_moves_into_the_managed_configuration() {
+        let template = templates::find("nzbget").unwrap();
+        let review = |queue: &str| {
+            let inspection = json!({"config":{"port":6789,"address":"0.0.0.0","queue":queue}});
+            settings("nzbget", &inspection, template, (1000, 1000), &[])
+        };
+        let (transformations, changes) = review("/media/downloads/queue");
+        assert_eq!(transformations["queue"], plan::NZBGET_QUEUE);
+        assert_eq!(
+            changes,
+            [
+                json!({"setting":"Queue folder","before":"/media/downloads/queue","after":plan::NZBGET_QUEUE,
+                "reason":"The queue and history are copied into the managed configuration; the original keeps its own"})
+            ]
+        );
+        for queue in ["/config/queue", "/config/state/queue"] {
+            let (transformations, changes) = review(queue);
+            assert!(transformations.get("queue").is_none(), "{queue}");
+            assert!(changes.is_empty(), "{queue}");
+        }
     }
 }

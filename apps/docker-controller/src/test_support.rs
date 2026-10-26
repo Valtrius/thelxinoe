@@ -310,12 +310,22 @@ impl DockerContext {
                 }
             }
             let raw = e.containers[id].clone();
+            // Like the workers, a subpath selects a folder inside the source mount.
+            let subpath = raw["Config"]["Env"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .find_map(|v| v.strip_prefix("THELXINOE_SOURCE_SUBPATH="))
+                .unwrap_or("")
+                .to_owned();
             if raw["Config"]["Cmd"][0]
                 .as_str()
                 .is_some_and(|c| c.starts_with("snapshot-"))
             {
                 let mounts = raw["HostConfig"]["Mounts"].as_array().unwrap();
-                let source = std::path::Path::new(mounts[0]["Source"].as_str().unwrap());
+                let source =
+                    std::path::Path::new(mounts[0]["Source"].as_str().unwrap()).join(&subpath);
                 let destination = std::path::Path::new(mounts[1]["Source"].as_str().unwrap());
                 assert!(source.starts_with(&self.root) && destination.starts_with(&self.root));
                 std::fs::create_dir_all(destination).unwrap();
@@ -330,9 +340,15 @@ impl DockerContext {
                     let mount = mounts.iter().find(|m| m["Target"] == target).unwrap();
                     std::path::PathBuf::from(mount["Source"].as_str().unwrap())
                 };
+                let state = source("/state").join(&subpath);
+                let report = if state.exists() {
+                    tree_digest(&state)
+                } else {
+                    json!({"digest":null,"files":0,"bytes":0,"missing":true})
+                };
                 std::fs::write(
                     source("/progress").join("report.json"),
-                    serde_json::to_vec(&tree_digest(&source("/state"))).unwrap(),
+                    serde_json::to_vec(&report).unwrap(),
                 )
                 .unwrap();
                 e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(false);
