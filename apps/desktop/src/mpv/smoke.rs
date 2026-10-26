@@ -76,6 +76,7 @@ fn entry(path: std::path::PathBuf, data: Value) -> Prepared {
         position: 7.0,
         sequence: 0,
         finished: false,
+        stopping: false,
         activity: Default::default(),
     }
 }

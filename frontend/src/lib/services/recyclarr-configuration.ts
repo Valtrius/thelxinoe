@@ -15,6 +15,8 @@ export type RecyclarrBundle = {
 export type RecyclarrConfiguration = {
   revision: string;
   mode: 'defaults' | 'customized';
+  /** A sync holds Recyclarr; this is the configuration it started from. */
+  busy?: boolean;
   image: string;
   files: YamlFiles;
   defaults: RecyclarrBundle;

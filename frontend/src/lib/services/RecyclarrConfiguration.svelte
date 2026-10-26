@@ -106,20 +106,26 @@
       {#if configuration?.candidate}<Button
           size="form"
           variant="secondary"
+          disabled={configuration.busy}
           onclick={() => void open('candidate')}
           >Review update configuration</Button
         >{/if}{#if configuration?.mode === 'customized'}<Button
           size="form"
           variant="secondary"
+          disabled={configuration.busy}
           onclick={() => void open('defaults')}>Review defaults</Button
         >{/if}<Button
         size="form"
         loading={opening}
+        disabled={configuration?.busy}
         onclick={() => void open('editor')}
         ><FileCode size={14} />Edit YAML</Button
       >
     </div>
   </div>
+  {#if configuration?.busy}<p class="text-[11px] text-muted" role="status">
+      Sync in progress. Editing is available when it finishes.
+    </p>{/if}
   {#if configuration?.mode === 'defaults'}<p class="text-[11px] text-muted">
       Defaults update with Recyclarr upgrades.
     </p>{/if}

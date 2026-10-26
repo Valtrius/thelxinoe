@@ -1,6 +1,19 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde_json::Value;
 use std::time::Duration;
+
+/// A response the server refused; its status says whether repeating the request can help.
+#[derive(Debug)]
+pub struct Rejected {
+    pub status: reqwest::StatusCode,
+    pub(super) message: String,
+}
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for Rejected {}
 
 // Capture one server and device credential for the entire MPV run. A change-server
 // operation cannot accidentally report this run's progress to a different server.
@@ -46,12 +59,14 @@ impl Backend {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
-                bail!(
-                    "{}",
-                    value["error"]["message"]
+                return Err(Rejected {
+                    status,
+                    message: value["error"]["message"]
                         .as_str()
                         .unwrap_or("The server rejected the playback request")
-                );
+                        .into(),
+                }
+                .into());
             }
             return Ok(value);
         }

@@ -141,7 +141,9 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
     ) {
         return Ok(true);
     }
-    let _maintenance = state.managers.maintenance(state).await;
+    // A sync changes Arr settings through their APIs and never stops a service, so it
+    // takes no media lease: playback keeps reporting while Recyclarr runs. Requests,
+    // media operations and bindings that also change Radarr or Sonarr wait on these locks.
     let _services = state
         .managers
         .guard

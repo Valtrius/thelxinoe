@@ -118,6 +118,43 @@ async fn retry_policy_uses_failure_kind_and_preserves_actor_authority() {
 }
 
 #[tokio::test]
+async fn a_running_sync_shows_the_saved_configuration_without_waiting() {
+    let (_temp, state, cookie, _job) = queued(json!({})).await;
+    state.managers.docker.lock().unwrap().insert(
+        "stack/recyclarr/recyclarr/configuration".into(),
+        json!({"initialized":true,"revision":"config-v1","mode":"defaults"}),
+    );
+    let read = || async {
+        let (status, _, body) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            call(
+                &state,
+                "/api/v1/admin/recyclarr/configuration",
+                "GET",
+                Value::Null,
+                &cookie,
+            ),
+        )
+        .await
+        .expect("the configuration waited for the sync");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    };
+    let sync = state
+        .managers
+        .guard
+        .services(&["recyclarr", "radarr", "sonarr"])
+        .await;
+    let saved = read().await;
+    assert_eq!(
+        (saved["revision"].as_str(), saved["busy"].as_bool()),
+        (Some("config-v1"), Some(true))
+    );
+    drop(sync);
+    assert_eq!(read().await["busy"], false);
+}
+
+#[tokio::test]
 async fn partial_controller_result_remains_terminal_when_arr_cannot_be_read_afterward() {
     let (_temp, state, cookie, job) = queued(json!({})).await;
     let requests = Arc::new(AtomicUsize::new(0));
@@ -178,7 +215,15 @@ async fn partial_controller_result_remains_terminal_when_arr_cannot_be_read_afte
         })
         .await
         .unwrap();
-    assert!(run_job(&state, &job).await.is_err());
+    // Playback holds the media lease throughout; a sync never waits for it.
+    let playback = state.media_operations.read().await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(30), run_job(&state, &job))
+            .await
+            .expect("the sync waited for playback")
+            .is_err()
+    );
+    drop(playback);
     let path = format!(
         "/api/v1/admin/recyclarr/runs/{}",
         job.payload["id"].as_str().unwrap()

@@ -1,4 +1,7 @@
-use super::{backend::Backend, ipc::Ipc};
+use super::{
+    backend::{Backend, Rejected},
+    ipc::Ipc,
+};
 use crate::tools::{LaunchTools, ToolManager, models::ToolId, process::ProcessJob};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -296,6 +299,8 @@ struct Prepared {
     position: f64,
     sequence: i64,
     finished: bool,
+    /// Its stop was reported but not acknowledged yet; the next report repeats it.
+    stopping: bool,
     activity: thelxinoe_core::activity::ActivityClock,
 }
 fn capabilities() -> Value {
@@ -328,6 +333,7 @@ async fn prepare_quality(
         data,
         sequence: 0,
         finished: false,
+        stopping: false,
         activity: Default::default(),
     })
 }
@@ -387,10 +393,48 @@ async fn load(ipc: &mut Ipc, entry: &mut Prepared, title: &str, mode: &str) -> R
         .context("MPV playlist entry is missing")?;
     Ok(())
 }
+/// How long one progress report may wait before the next one replaces it.
+const REPORT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Report progress during playback. A failed or stalled report is repeated by the next
+/// one, so a busy or restarting server never stops MPV; only a session the server no
+/// longer accepts ends playback.
+async fn progress(backend: &Backend, entry: &mut Prepared, state: &str) -> Result<()> {
+    let result = match tokio::time::timeout(REPORT_TIMEOUT, report(backend, entry, state)).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("The server did not answer in time")),
+    };
+    keep_playing(result)
+}
+async fn keepalive(backend: &Backend, entry: &Prepared) -> Result<()> {
+    let path = format!("/playback/{}/keepalive", entry.id);
+    let result = match tokio::time::timeout(REPORT_TIMEOUT, backend.call(&path, "POST", None)).await
+    {
+        Ok(result) => result.map(|_| ()),
+        Err(_) => Err(anyhow::anyhow!("The server did not answer in time")),
+    };
+    keep_playing(result)
+}
+fn keep_playing(result: Result<()>) -> Result<()> {
+    match result {
+        Err(error) if session_ended(&error) => Err(error),
+        Err(error) => {
+            tracing::warn!(%error, "Playback progress report failed; the next report repeats it");
+            Ok(())
+        }
+        ok => ok,
+    }
+}
+/// The session is gone or this device was signed out; reporting again cannot help.
+fn session_ended(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<Rejected>()
+        .is_some_and(|rejected| matches!(rejected.status.as_u16(), 401 | 403 | 404))
+}
 async fn report(backend: &Backend, entry: &mut Prepared, state: &str) -> Result<()> {
     if entry.finished {
         return Ok(());
     }
+    entry.stopping |= state == "stopped";
     backend
         .call(
             &format!("/playback/{}/progress", entry.id),
@@ -535,7 +579,7 @@ async fn run(
                             Ok(mut replacement) => {
                                 match load(&mut ipc, &mut replacement, &choice.title, "replace").await {
                                     Ok(()) => {
-                                        report(&backend, entry, "stopped").await?;
+                                        progress(&backend, entry, "stopped").await?;
                                         *entry = replacement;
                                         loaded = false;
                                         video_ready = false;
@@ -563,7 +607,7 @@ async fn run(
                             if let Some((index, _)) = prepared.iter().find(|(_, e)| Some(e.playlist_id) == message["playlist_entry_id"].as_i64()) {
                                 let index = *index;
                                 if index != current && let Some(previous) = prepared.get_mut(&current) {
-                                    report(&backend, previous, "stopped").await?;
+                                    progress(&backend, previous, "stopped").await?;
                                 }
                                 current = index;
                                 loaded = false;
@@ -583,7 +627,7 @@ async fn run(
                                 else { idle=message["data"].as_bool().unwrap_or(true); }
                                 if let Some(entry)=prepared.get_mut(&current)
                                     && !entry.finished && entry.activity.set_active(loaded && !paused && !idle) {
-                                    report(&backend,entry,if paused || idle {"paused"}else{"playing"}).await?;
+                                    progress(&backend,entry,if paused || idle {"paused"}else{"playing"}).await?;
                                 }
                             }
                             Some("video-out-params") => { video_ready = message["data"]["w"].as_u64().unwrap_or(0) > 0; }
@@ -612,7 +656,7 @@ async fn run(
                             }
                             if let Some(entry) = prepared.get_mut(&current) {
                                 entry.activity.set_active(!paused && !idle);
-                                report(&backend, entry, if paused || idle { "paused" } else { "playing" }).await?;
+                                progress(&backend, entry, if paused || idle { "paused" } else { "playing" }).await?;
                                 if let Some(sub) = entry.data["selected_subtitle"].as_str().filter(|s| s.starts_with("sidecar-") || (entry.data["mode"] != "direct" && *s != "off"))
                                     && let Some(url) = entry.data["subtitles"].as_array().into_iter().flatten().find(|s| s["id"].as_str() == Some(sub)).and_then(|s| s["url"].as_str())
                                 { ipc.call(json!(["sub-add", format!("{}{url}", backend.origin), "select"])).await?; }
@@ -646,7 +690,7 @@ async fn run(
                                 }
                                 if message["reason"] == "error" { anyhow::bail!("MPV could not decode or retrieve this media"); }
                                 if message["reason"] == "eof" && entry.data["live"]!=true { entry.position = entry.data["duration"].as_f64().unwrap_or(entry.position); }
-                                report(&backend, entry, "stopped").await?;
+                                progress(&backend, entry, "stopped").await?;
                                 if index == current { loaded = false; }
                                 if index + 1 >= choices.len() { break; }
                             }
@@ -669,8 +713,9 @@ async fn run(
                     if last_report.elapsed() >= Duration::from_secs(5) {
                         for (index, entry) in &mut prepared {
                             if entry.finished { continue; }
-                            if *index == current && loaded { report(&backend, entry, if paused || idle { "paused" } else { "playing" }).await?; }
-                            else { backend.call(&format!("/playback/{}/keepalive", entry.id), "POST", None).await?; }
+                            if entry.stopping { progress(&backend, entry, "stopped").await?; }
+                            else if *index == current && loaded { progress(&backend, entry, if paused || idle { "paused" } else { "playing" }).await?; }
+                            else { keepalive(&backend, entry).await?; }
                         }
                         last_report = Instant::now();
                     }
@@ -696,7 +741,7 @@ async fn run(
         if entry.finished {
             continue;
         }
-        if *index == current && started {
+        if (*index == current && started) || entry.stopping {
             let _ = report(&backend, entry, "stopped").await;
         } else {
             let _ = backend
@@ -781,6 +826,34 @@ fn reload_event(message: &Value) -> bool {
 #[cfg(test)]
 #[path = "smoke.rs"]
 mod smoke;
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+    #[test]
+    fn only_a_session_the_server_no_longer_accepts_ends_playback() {
+        let rejected = |status: u16| -> anyhow::Error {
+            Rejected {
+                status: reqwest::StatusCode::from_u16(status).unwrap(),
+                message: "rejected".into(),
+            }
+            .into()
+        };
+        for status in [401, 403, 404] {
+            assert!(keep_playing(Err(rejected(status))).is_err(), "{status}");
+        }
+        for status in [409, 500, 502, 503] {
+            assert!(keep_playing(Err(rejected(status))).is_ok(), "{status}");
+        }
+        assert!(
+            keep_playing(Err(anyhow::anyhow!(
+                "The server connection was interrupted"
+            )))
+            .is_ok()
+        );
+        assert!(keep_playing(Ok(())).is_ok());
+    }
+}
 
 #[cfg(test)]
 mod capability_tests {

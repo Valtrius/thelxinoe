@@ -143,9 +143,27 @@ pub(super) async fn configuration_get(
     headers: HeaderMap,
 ) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let _guard = state.managers.guard.service("recyclarr").await;
+    let guard = state.managers.guard.try_service("recyclarr").ok();
     let key = provision(&state).await?;
-    let mut configuration = current_configuration(&state, &key).await?;
+    // A sync holds Recyclarr for minutes. Show the configuration it started from instead
+    // of waiting; only an uninitialized configuration needs the service.
+    let saved = match guard {
+        Some(_) => None,
+        None => Some(
+            controller_request(&state, &format!("/{key}/recyclarr/configuration"), None).await?,
+        ),
+    };
+    let (mut configuration, busy) = match saved {
+        Some(saved) if saved["initialized"] == true => (saved, true),
+        _ => {
+            let _guard = match guard {
+                Some(guard) => guard,
+                None => state.managers.guard.service("recyclarr").await,
+            };
+            (current_configuration(&state, &key).await?, false)
+        }
+    };
+    configuration["busy"] = json!(busy);
     let mut bindings = std::collections::BTreeMap::new();
     for target in storage::targets(&state.db, key).await? {
         let instance = format!("managed_{}", target.service_id.replace('-', ""));
