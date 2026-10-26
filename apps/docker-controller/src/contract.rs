@@ -1,4 +1,5 @@
 //! Runs inside the candidate's loopback-only network namespace, without Docker access.
+use anyhow::Context as _;
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -350,10 +351,12 @@ pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
     let mut ready = false;
     for _ in 0..60 {
         let request = if kind == "nzbget" {
+            // NZBGet answers `version` before it has loaded its queue and history; `status`
+            // waits for them, as every later request does.
             client
                 .post(format!("{base}/jsonrpc"))
                 .basic_auth(&username, Some(&secret))
-                .json(&json!({"method":"version","params":[],"id":1}))
+                .json(&json!({"method":"status","params":[],"id":1}))
         } else {
             client
                 .get(format!("{base}/{}", paths[0].0))
@@ -373,8 +376,11 @@ pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
             .get(format!("{base}/{path}"))
             .header("X-Api-Key", &secret)
             .send()
-            .await?;
-        let value = bounded(response).await?;
+            .await
+            .with_context(|| format!("The {path} request failed"))?;
+        let value = bounded(response)
+            .await
+            .with_context(|| format!("The {path} response failed"))?;
         anyhow::ensure!(
             if *array {
                 value.is_array()
@@ -395,9 +401,11 @@ pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
                     .basic_auth(&username, Some(&secret))
                     .json(&json!({"method":method,"params":[],"id":1}))
                     .send()
-                    .await?,
+                    .await
+                    .with_context(|| format!("NZBGet's {method} request failed"))?,
             )
-            .await?;
+            .await
+            .with_context(|| format!("NZBGet's {method} response failed"))?;
             anyhow::ensure!(
                 value["error"].is_null()
                     && if array {
@@ -705,11 +713,12 @@ async fn evidence(kind: &str) -> anyhow::Result<Value> {
             json!({"requests":get("api/v1/request?take=1".into()).await?["pageInfo"]["results"]})
         }
         "nzbget" => {
+            // Hidden duplicate records can outnumber visible history by millions.
             let history = bounded(
                 client
                     .post(format!("{base}/jsonrpc"))
                     .basic_auth(&username, Some(&secret))
-                    .json(&json!({"method":"history","params":[true],"id":1}))
+                    .json(&json!({"method":"history","params":[false],"id":1}))
                     .send()
                     .await?,
             )

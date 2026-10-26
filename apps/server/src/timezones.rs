@@ -13,7 +13,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-pub(crate) use storage::server_zone;
+pub(crate) use storage::{server_zone, server_zone_name};
 
 pub(crate) use storage::maintenance_window;
 

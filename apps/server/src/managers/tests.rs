@@ -753,6 +753,99 @@ async fn nzbget_login_is_available_to_admins_only_for_an_owned_service() {
 }
 
 #[tokio::test]
+async fn owned_nzbget_without_a_control_password_gets_a_generated_one() {
+    use axum::response::IntoResponse;
+    use base64::Engine as _;
+    let (_temp, mut state, _alice) = fixture().await;
+    Arc::get_mut(&mut state.config).unwrap().media = "/media".into();
+    let config = Arc::new(std::sync::Mutex::new(vec![
+        json!({"Name":"ControlUsername","Value":"valtrius"}),
+        json!({"Name":"ControlPassword","Value":""}),
+    ]));
+    let setting = |config: &[Value], name: &str| {
+        config.iter().find(|r| r["Name"] == name).unwrap()["Value"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let served = config.clone();
+    // Like NZBGet, it accepts any credentials until a control password is set.
+    let stub = Router::new().route(
+        "/jsonrpc",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let config = served.clone();
+            async move {
+                let password = setting(&config.lock().unwrap(), "ControlPassword");
+                let expected = format!("valtrius:{password}");
+                let sent = headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.strip_prefix("Basic "))
+                    .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).ok());
+                if !password.is_empty() && sent.as_deref() != Some(expected.as_bytes()) {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                let result = match body["method"].as_str().unwrap() {
+                    "version" => json!("26.3"),
+                    "status" => json!({"DownloadRate":0,"DownloadLimit":0,"DownloadPaused":false}),
+                    "listgroups" => json!([]),
+                    "loadconfig" => json!(*config.lock().unwrap()),
+                    "saveconfig" => {
+                        *config.lock().unwrap() = body["params"][0].as_array().unwrap().clone();
+                        json!(true)
+                    }
+                    "reload" => json!(true),
+                    method => panic!("Unexpected RPC method {method}"),
+                };
+                Json(json!({"result":result,"id":1})).into_response()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
+    let container = "d".repeat(64);
+    let inspection = json!({"id":container,"name":"/thelxinoe-nzbget","running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+    let media_source =
+        crate::managers::storage_paths::evidence(&inspection, &inspection, "/media").unwrap();
+    state.managers.docker.lock().unwrap().extend([
+        ("containers/self".to_owned(), inspection.clone()),
+        (format!("containers/{container}"), inspection),
+    ]);
+    let credential = state
+        .secrets
+        .encrypt("support:nzbget", br#"{"username":"valtrius","secret":""}"#)
+        .unwrap();
+    state.db.write("test.fixture", move |db| {
+        db.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('nzbget','NZBGet','nzbget',?1,?2,'g',?3,?4,'26.3',1)", params![container, port, credential, media_source])?;
+        Ok(())
+    }).await.unwrap();
+    crate::test_support::own_services(&state).await;
+    // The periodic health check secures it; repeating it changes nothing.
+    crate::managers::operational_health(&state).await.unwrap();
+    let password = setting(&config.lock().unwrap(), "ControlPassword");
+    assert_eq!(password.len(), 64);
+    assert_eq!(
+        setting(&config.lock().unwrap(), "ControlUsername"),
+        "valtrius"
+    );
+    let stored = support::load(&state, "nzbget").await.unwrap().credentials;
+    assert_eq!(
+        (stored.username.as_str(), stored.secret.as_str()),
+        ("valtrius", password.as_str())
+    );
+    assert_eq!(
+        support::ensure_password(&state, "nzbget").await.unwrap()["changed"],
+        false
+    );
+    assert_eq!(
+        setting(&config.lock().unwrap(), "ControlPassword"),
+        password
+    );
+    task.abort();
+}
+
+#[tokio::test]
 async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs() {
     let (_temp, state, alice) = fixture().await;
     state

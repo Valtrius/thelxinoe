@@ -67,6 +67,8 @@ pub(super) struct Reach {
     names: Vec<String>,
     internal: u16,
     published: Vec<u16>,
+    /// Published ports bound beyond loopback, which other containers can use.
+    exposed: Vec<u16>,
 }
 impl Reach {
     fn of(target: &Value, internal: u16) -> Self {
@@ -101,20 +103,26 @@ impl Reach {
                     .map(str::to_owned),
             );
         }
-        let published = target["ports"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|p| p["private"] == internal)
-            .filter_map(|p| u16::try_from(p["public"].as_u64()?).ok())
-            .collect();
+        let ports = || {
+            target["ports"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|p| p["private"] == internal)
+        };
+        let public = |p: &Value| u16::try_from(p["public"].as_u64()?).ok();
         Self {
             names,
             internal,
-            published,
+            published: ports().filter_map(public).collect(),
+            exposed: ports()
+                .filter(|p| p["loopback"] != true)
+                .filter_map(public)
+                .collect(),
         }
     }
-    /// Whether an address written in another service reaches this target.
+    /// Whether an address written in another service designates this target. A port
+    /// published only on loopback still designates it, though other containers can't use it.
     pub(super) fn reaches(&self, host: &str, port: Option<u16>) -> bool {
         let host = host.trim().trim_start_matches('[').trim_end_matches(']');
         if self
@@ -127,10 +135,26 @@ impl Reach {
         let Some(port) = port else {
             return false;
         };
-        // Docker forwards a published port on every address of this host.
+        // Docker forwards a published port on the addresses it is bound to.
         (self.published.contains(&port) && host_address(host))
             // Containers sharing a network namespace, as with a VPN, use loopback.
             || (port == self.internal && loopback(host))
+    }
+    /// Whether the address designates this target only through a port published on
+    /// loopback: one written before Thelxinoe took the target over, which no longer works.
+    pub(super) fn stale(&self, host: &str, port: Option<u16>) -> bool {
+        let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+        let Some(port) = port else {
+            return false;
+        };
+        !self
+            .names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(host))
+            && !(port == self.internal && loopback(host))
+            && self.published.contains(&port)
+            && !self.exposed.contains(&port)
+            && host_address(host)
     }
 }
 fn loopback(host: &str) -> bool {
@@ -353,13 +377,18 @@ async fn refuse_unmanaged(
         link.candidate = Some(
             json!({"id":record["id"],"name":record["name"],"address":address,"hash":digest(&fields(record))}),
         );
-        return Err(Failure::conflict(format!(
-            "{} already connects to {} as \"{}\" ({address}); review it in {} before adding another",
-            source.name,
-            target.name,
-            record["name"].as_str().unwrap_or("unnamed"),
-            source.name
-        )));
+        let name = record["name"].as_str().unwrap_or("unnamed");
+        return Err(Failure::conflict(if reach.stale(&host, port) {
+            format!(
+                "{} connects to {} as \"{name}\" at {address}, which no longer reaches it; import it to point it at {}",
+                source.name, target.name, target.name
+            )
+        } else {
+            format!(
+                "{} already connects to {} as \"{name}\" ({address}); review it in {} before adding another",
+                source.name, target.name, source.name
+            )
+        }));
     }
     Ok(())
 }
@@ -787,6 +816,24 @@ mod reach_tests {
             ("192.168.1.50", None),
         ] {
             assert!(!reach.reaches(host, port), "{host}:{port:?}");
+        }
+        assert!(!reach.stale("192.168.1.50", Some(16789)));
+    }
+    #[test]
+    fn addresses_through_a_loopback_port_designate_the_target_but_are_stale() {
+        let target = json!({"id":"abcdef1234567890","name":"/thelxinoe-nzbget",
+            "ports":[{"private":6789,"public":6789,"loopback":true}],
+            "networks":[{"address":"172.20.0.8","aliases":["nzbget"]}]});
+        let reach = Reach::of(&target, 6789);
+        assert!(reach.reaches("192.168.1.200", Some(6789)));
+        assert!(reach.stale("192.168.1.200", Some(6789)));
+        for (host, port) in [
+            ("nzbget", Some(6789)),
+            ("172.20.0.8", Some(6789)),
+            ("127.0.0.1", Some(6789)),
+        ] {
+            assert!(reach.reaches(host, port), "{host}:{port:?}");
+            assert!(!reach.stale(host, port), "{host}:{port:?}");
         }
     }
     #[test]

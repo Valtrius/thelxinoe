@@ -293,7 +293,12 @@ async fn run_locked(state: &AppState, key: &str, action: &str) -> Result<()> {
         } else {
             format!("/updates/{key}/{action}")
         };
-        controller(state, &path, Some(json!({"operation_id":key}))).await?;
+        let mut body = json!({ "operation_id": key });
+        if action == "preflight" {
+            // The replacement is built later from this preflight's journal.
+            body["timezone"] = json!(crate::timezones::server_zone_name(&state.db).await?);
+        }
+        controller(state, &path, Some(body)).await?;
     }
     loop {
         let items = controller(state, "/updates", None).await?;

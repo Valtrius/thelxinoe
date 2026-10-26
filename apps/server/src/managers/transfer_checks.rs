@@ -13,6 +13,9 @@ pub(super) fn setup_actions(kind: &str) -> Vec<Value> {
         "prowlarr" => vec![
             json!({"action":"prowlarr.hosts","label":"Allow Thelxinoe's managed route in Prowlarr's host list"}),
         ],
+        "nzbget" => vec![
+            json!({"action":"nzbget.credentials","label":"Generate NZBGet's control password if it has none"}),
+        ],
         "recyclarr" => vec![
             json!({"action":"recyclarr.schedule","label":"Create a paused Thelxinoe schedule bound to Owned Radarr and Sonarr"}),
             json!({"action":"recyclarr.state","label":"Bind preserved synchronization state to those targets"}),
@@ -194,6 +197,7 @@ async fn apply(state: &AppState, t: &storage::Row, action: &str) -> Result<Value
             super::indexers::ensure_hosts(state, &t.service_id).await?;
             Ok(json!({"applied":true}))
         }
+        "nzbget.credentials" => super::support::ensure_password(state, &t.service_id).await,
         "recyclarr.schedule" => {
             let targets = t.review["recyclarr_targets"].clone();
             storage::recyclarr_schedule(
@@ -502,7 +506,8 @@ async fn support_checks(
                 let idle = status["PostJobCount"].as_u64() == Some(0) && queue.as_array().is_some_and(Vec::is_empty);
                 set(checks, "queue_idle", if idle {"passed"} else {"failed"}, if idle {Value::Null} else {json!("NZBGet has queued or post-processing downloads")},
                     json!({"queued":queue.as_array().map(Vec::len),"post_jobs":status["PostJobCount"]}));
-                let history = support::rpc(&c, &s.credentials, "history", json!([true])).await?;
+                // Hidden duplicate records can outnumber visible history by millions.
+                let history = support::rpc(&c, &s.credentials, "history", json!([false])).await?;
                 let config = support::rpc(&c, &s.credentials, "config", json!([])).await?;
                 let categories: Vec<Value> = config.as_array().into_iter().flatten()
                     .filter(|r| r["Name"].as_str().is_some_and(|n| n.starts_with("Category")))

@@ -83,6 +83,33 @@ pub(super) async fn test(
     .await
 }
 
+/// Replace the credential of the exact connection `revision`; an edit in between wins.
+pub(super) async fn replace_credential(
+    db: &Database,
+    key: String,
+    container: String,
+    revision: String,
+    credential: Vec<u8>,
+) -> anyhow::Result<bool> {
+    db.write("managers.support.replace_credential", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let updated = tx.execute(
+            "UPDATE support_services SET credential=?1,access_revision=?2 WHERE id=?3 AND container_id=?4 AND access_revision=?5",
+            params![credential, thelxinoe_core::id(), key, container, revision],
+        )?;
+        if updated != 1 {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO audit(actor_id,action,target,created_at) VALUES (NULL,'connection.credential_generated',?1,?2)",
+            params![key, now()],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    })
+    .await
+}
+
 pub(super) async fn operational_health_read_support_services(
     db: &Database,
 ) -> anyhow::Result<Vec<(String, String)>> {

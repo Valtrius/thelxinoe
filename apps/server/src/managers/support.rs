@@ -234,6 +234,95 @@ pub(super) async fn version(c: &Connection<'_>, credentials: &Credentials) -> Re
         .map(str::to_owned)
         .ok_or_else(|| failures::identity(&c.kind, &Value::Null))
 }
+/// Owned NZBGet always has a control password, as fresh installations do. A missing one is
+/// generated and recorded before NZBGet applies it: NZBGet without a password accepts any.
+pub(super) async fn ensure_password(state: &AppState, key: &str) -> Result<Value> {
+    let mut s = load(state, key).await?;
+    if s.kind != "nzbget" || !super::owned_here(state, key).await? {
+        return Ok(json!({"changed":false}));
+    }
+    let c = connect(state, &s).await?;
+    let mutex = super::connections::lock(state, &format!("nzbget-config:{key}"));
+    let _guard = mutex.lock().await;
+    let mut config = rpc(&c, &s.credentials, "loadconfig", json!([])).await?;
+    let rows = config
+        .as_array_mut()
+        .ok_or_else(|| ApiError::conflict("NZBGet configuration is unavailable"))?;
+    let value = |rows: &[Value], name: &str| {
+        rows.iter()
+            .rev()
+            .find(|r| {
+                r["Name"]
+                    .as_str()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(name))
+            })
+            .and_then(|r| r["Value"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    if !value(rows, "ControlPassword").is_empty() {
+        return Ok(json!({"changed":false}));
+    }
+    if s.credentials.secret.is_empty() {
+        let username = value(rows, "ControlUsername");
+        s.credentials = Credentials {
+            username: if username.is_empty() {
+                "thelxinoe".into()
+            } else {
+                username
+            },
+            secret: thelxinoe_auth::token(),
+        };
+        let encrypted = state.secrets.encrypt(
+            &format!("support:{key}"),
+            &serde_json::to_vec(&s.credentials).map_err(|_| unavailable())?,
+        )?;
+        if !storage::replace_credential(
+            &state.db,
+            key.to_owned(),
+            s.container.clone(),
+            s.access_revision.clone(),
+            encrypted,
+        )
+        .await?
+        {
+            return Err(ApiError::conflict(
+                "NZBGet's connection changed while Thelxinoe secured it; it will retry",
+            ));
+        }
+    }
+    for (name, setting) in [
+        ("ControlUsername", s.credentials.username.clone()),
+        ("ControlPassword", s.credentials.secret.clone()),
+    ] {
+        rows.retain(|r| {
+            !r["Name"]
+                .as_str()
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+        });
+        rows.push(json!({"Name":name,"Value":setting}));
+    }
+    if rpc(&c, &s.credentials, "saveconfig", json!([config])).await? != true {
+        return Err(ApiError::conflict(
+            "NZBGet did not save its control password",
+        ));
+    }
+    rpc(&c, &s.credentials, "reload", json!([])).await?;
+    let ready = async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if version(&c, &s.credentials).await.is_ok() {
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(40), ready)
+        .await
+        .map_err(|_| ApiError::conflict("NZBGet is restarting with its new control password"))?;
+    // Linked Radarr, Sonarr and Lidarr clients receive the new credentials.
+    state.managers.connection_wake.notify_one();
+    Ok(json!({"changed":true,"username":s.credentials.username}))
+}
 pub(super) fn native_url(value: &str) -> bool {
     value.is_empty()
         || url::Url::parse(value).is_ok_and(|u| {
@@ -395,7 +484,8 @@ async fn wanted(c: &Connection<'_>, domain: &str) -> Result<Value> {
     )
     .await
 }
-async fn snapshot(c: &Connection<'_>, s: &Support) -> Result<Value> {
+/// The service's live state; `history` adds NZBGet's history, which health checks don't use.
+async fn snapshot(c: &Connection<'_>, s: &Support, history: bool) -> Result<Value> {
     match s.kind.as_str() {
         "seerr" => {
             Ok(json!({"initialized":c.get("settings/public").await?["initialized"],"health":[]}))
@@ -403,7 +493,11 @@ async fn snapshot(c: &Connection<'_>, s: &Support) -> Result<Value> {
         "nzbget" => {
             let status = rpc(c, &s.credentials, "status", json!([])).await?;
             let queue = rpc(c, &s.credentials, "listgroups", json!([0])).await?;
-            let history = rpc(c, &s.credentials, "history", json!([true])).await?;
+            let history = if history {
+                rpc(c, &s.credentials, "history", json!([true])).await?
+            } else {
+                json!([])
+            };
             let summarize = |rows: &Value| {
                 rows.as_array().into_iter().flatten().take(200).map(|r|json!({"id":r["NZBID"],"title":text(r.get("NZBName").unwrap_or(&r["Name"]),&c.key),"status":r["Status"],"category":r["Category"],"size_mb":r["FileSizeMB"],"remaining_mb":r["RemainingSizeMB"],"paused_mb":r["PausedSizeMB"],"downloaded_mb":r["DownloadedSizeMB"],"history_time":r["HistoryTime"]})).collect::<Vec<_>>()
             };
@@ -441,9 +535,17 @@ pub(crate) async fn operational_health(state: &AppState) -> anyhow::Result<()> {
     let mut items = Vec::new();
     for (key, kind) in rows {
         let result = async {
-            let service = load(state, &key).await?;
+            let mut service = load(state, &key).await?;
+            if kind == "nzbget" && service.credentials.secret.is_empty() {
+                match ensure_password(state, &key).await {
+                    Ok(_) => service = load(state, &key).await?,
+                    Err(error) => {
+                        tracing::warn!(error = %error.2, "NZBGet's control password is not set yet");
+                    }
+                }
+            }
             let c = connect(state, &service).await?;
-            snapshot(&c, &service).await
+            snapshot(&c, &service, false).await
         }
         .await;
         let value = match result {
@@ -478,7 +580,7 @@ async fn inspect(
     }
     let result = async {
         let c = connect(&state, &s).await?;
-        snapshot(&c, &s).await
+        snapshot(&c, &s, true).await
     }
     .await;
     let error = result.as_ref().err().map(|e| e.2.clone());

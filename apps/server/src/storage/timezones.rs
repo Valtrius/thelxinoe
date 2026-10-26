@@ -20,6 +20,14 @@ pub(super) async fn opened_server_window(
     .await
 }
 
+/// The server's time zone, the `TZ` of the containers Thelxinoe creates.
+pub(crate) async fn server_zone_name(db: &Database) -> anyhow::Result<String> {
+    db.read("timezones.server_zone_name", |db| {
+        Ok(server_zone(db)?.name().to_owned())
+    })
+    .await
+}
+
 pub(super) async fn get(db: &Database, p: thelxinoe_core::Principal) -> anyhow::Result<Value> {
     db.read("timezones.get", move |db| read(db, &p.user.id))
         .await

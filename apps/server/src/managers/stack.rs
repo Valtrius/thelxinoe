@@ -511,7 +511,8 @@ async fn setup(state: &AppState, key: &str, row: &storage::Provision) -> Result<
             ));
         }
         progress(state, key, "installing", None, None).await?;
-        controller(state,"/install",Some(json!({"operation_id":key,"kind":row.kind,"host_port":row.host_port,"username":"thelxinoe","secret":credentials.secret}))).await?
+        let timezone = crate::timezones::server_zone_name(&state.db).await?;
+        controller(state,"/install",Some(json!({"operation_id":key,"kind":row.kind,"host_port":row.host_port,"username":"thelxinoe","secret":credentials.secret,"timezone":timezone}))).await?
     };
     let container = installed["container_id"]
         .as_str()

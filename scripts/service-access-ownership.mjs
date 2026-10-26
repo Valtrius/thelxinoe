@@ -184,8 +184,9 @@ export async function ownershipAccess({ f, scenario, output }) {
             `/admin/stack/${replacement.id}/login`,
             'POST',
           );
+          // The original had no control password; Owned NZBGet always has one.
           expect(login.username).toBe('fixture');
-          expect(login.password).toBe('');
+          expect(login.password).toMatch(/^[0-9a-f]{64}$/);
         }
         writeFileSync(
           output + '/ownership-' + kind + '.json',

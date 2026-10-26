@@ -119,6 +119,9 @@ pub(super) struct Transfer {
     original_removed: bool,
     #[serde(default)]
     worker: Option<String>,
+    /// The server's time zone when the transfer started; journals from earlier releases have none.
+    #[serde(default)]
+    timezone: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -1056,6 +1059,8 @@ pub(super) struct StartInput {
     revision: String,
     #[serde(default)]
     compose_mode: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
 }
 /// Persist transfer intent, recheck the reviewed source, then run the transfer in the background.
 pub(super) async fn start(
@@ -1157,6 +1162,7 @@ pub(super) async fn start(
         generations: vec![],
         original_removed: false,
         worker: None,
+        timezone: input.timezone.clone(),
         created_at: now,
         updated_at: now,
     };
@@ -1393,10 +1399,11 @@ async fn clear(d: &Deployment, t: &Transfer, leaf: &str) -> Result<()> {
     discard(d, t, leaf).await?;
     persisted(std::fs::create_dir_all(directory(&t.id).join(leaf)).map_err(Into::into))
 }
-/// Nothing uses the snapshot once a transfer ended, and it can hold gigabytes. Preserved
-/// generations stay: they are the only copy of what a replacement wrote.
+/// Nothing uses the snapshot or a failed validation's copy once a transfer ended, and they
+/// can hold gigabytes. Preserved generations stay: they are the only copy of what a
+/// replacement wrote.
 async fn discard_snapshot(d: &Deployment, t: &Transfer) {
-    for leaf in ["snapshot", "supplementary", QUEUE] {
+    for leaf in ["snapshot", "supplementary", QUEUE, "validation"] {
         if let Err(error) = discard(d, t, leaf).await {
             eprintln!("Transfer {} kept its {leaf} copy: {}", t.id, error.1);
         }
@@ -1633,7 +1640,7 @@ async fn install_queue(
     .await
 }
 
-fn target_env(r: &Review, identity: (u32, u32)) -> Vec<String> {
+fn target_env(r: &Review, identity: (u32, u32), zone: Option<&str>) -> Vec<String> {
     let source = plan::env(&r.original);
     let keep = |name: &str| {
         source
@@ -1641,7 +1648,7 @@ fn target_env(r: &Review, identity: (u32, u32)) -> Vec<String> {
             .find(|(k, _)| k == name)
             .map(|(_, v)| format!("{name}={v}"))
     };
-    let tz = keep("TZ").unwrap_or_else(|| "TZ=UTC".into());
+    let tz = keep("TZ").unwrap_or_else(|| zone_env(zone));
     match r.kind.as_str() {
         "seerr" => [
             Some("CONFIG_DIRECTORY=/config".into()),
@@ -1891,7 +1898,7 @@ async fn qualify_service(
         },
     )
     .await?;
-    let mut spec = json!({"Image":image,"Env":target_env(&t.review, identity),
+    let mut spec = json!({"Image":image,"Env":target_env(&t.review, identity, t.timezone.as_deref()),
         "Labels":{"app.thelxinoe.transfer":t.id,"app.thelxinoe.deployment":d.id,"app.thelxinoe.role":"candidate"},
         "Healthcheck":{"Test":["NONE"]},
         "HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","SETUID","SETGID","KILL"],
@@ -2142,7 +2149,7 @@ fn target_spec(d: &Deployment, t: &Transfer) -> Result<Value> {
     let template = templates::find(&t.kind).ok_or_else(unavailable)?;
     let identity = t.review.target_identity;
     let appdata = format!("{}/services/{}/appdata", d.appdata_source, t.id);
-    let mut spec = json!({"Image":t.review.decision.image(),"Env":target_env(&t.review, identity),
+    let mut spec = json!({"Image":t.review.decision.image(),"Env":target_env(&t.review, identity, t.timezone.as_deref()),
         "Labels":{"app.thelxinoe.managed-id":t.id,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind,"app.thelxinoe.transfer":t.id},
         "HostConfig":{"Mounts":mounts(t,&appdata,None),"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"}},
         "NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":t.review.aliases}}}});
@@ -2300,7 +2307,10 @@ async fn restore_original(d: &Deployment, t: &mut Transfer) -> Result<()> {
         }
         updates::remove(&container).await?;
     }
-    if let Ok(mut s) = load(&t.id) {
+    // Before creation there is no service record; reading it would log a storage failure.
+    if service_path(&t.id).exists()
+        && let Ok(mut s) = load(&t.id)
+    {
         s.phase = "returned".into();
         s.hold = None;
         save(&s)?;
@@ -3032,6 +3042,26 @@ mod recovery_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacements_keep_the_original_zone_and_otherwise_follow_the_server() {
+        let mut review = journal("complete").review;
+        let zone = |r: &Review, server| {
+            target_env(r, (1000, 100), server)
+                .into_iter()
+                .find(|v| v.starts_with("TZ="))
+        };
+        assert_eq!(
+            zone(&review, Some("Europe/Paris")).as_deref(),
+            Some("TZ=Europe/Paris")
+        );
+        assert_eq!(zone(&review, None).as_deref(), Some("TZ=UTC"));
+        review.original = json!({"Config":{"Env":["TZ=Asia/Tokyo"]}});
+        assert_eq!(
+            zone(&review, Some("Europe/Paris")).as_deref(),
+            Some("TZ=Asia/Tokyo")
+        );
+    }
 
     #[test]
     fn a_stale_start_names_the_changed_review_components() {

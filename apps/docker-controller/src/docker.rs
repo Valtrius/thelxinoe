@@ -472,6 +472,7 @@ fn redact(c: &Value) -> Result<Value> {
     )
 }
 /// Host ports published for TCP; a stopped container reports only its configuration.
+/// `loopback` says every binding of the port is on loopback, out of other containers' reach.
 fn published(c: &Value) -> Vec<Value> {
     let live = &c["NetworkSettings"]["Ports"];
     let bindings = if live.as_object().is_some_and(|ports| !ports.is_empty()) {
@@ -479,18 +480,30 @@ fn published(c: &Value) -> Vec<Value> {
     } else {
         &c["HostConfig"]["PortBindings"]
     };
-    let mut ports = Vec::new();
+    let mut ports: Vec<Value> = Vec::new();
     for (key, hosts) in bindings.as_object().into_iter().flatten() {
         let Some((private, "tcp")) = key.split_once('/') else {
             continue;
         };
         for host in hosts.as_array().into_iter().flatten() {
-            if let (Ok(private), Some(Ok(public))) = (
+            let (Ok(private), Some(Ok(public))) = (
                 private.parse::<u16>(),
                 host["HostPort"].as_str().map(str::parse::<u16>),
-            ) && !ports.contains(&json!({"private":private,"public":public}))
+            ) else {
+                continue;
+            };
+            // Docker reports an empty HostIp for every address.
+            let loopback = host["HostIp"]
+                .as_str()
+                .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+                .is_some_and(|ip| ip.is_loopback());
+            match ports
+                .iter_mut()
+                .find(|p| p["private"] == private && p["public"] == public)
             {
-                ports.push(json!({"private":private,"public":public}));
+                Some(port) if !loopback => port["loopback"] = json!(false),
+                Some(_) => {}
+                None => ports.push(json!({"private":private,"public":public,"loopback":loopback})),
             }
         }
     }
@@ -511,10 +524,16 @@ mod tests {
     fn inspection_reports_published_tcp_ports_live_or_configured() {
         let live = json!({"NetworkSettings":{"Ports":{"6789/tcp":[{"HostIp":"0.0.0.0","HostPort":"16789"},{"HostIp":"::","HostPort":"16789"}],"7359/udp":[{"HostPort":"7359"}],"8080/tcp":null}},
             "HostConfig":{"PortBindings":{"6789/tcp":[{"HostPort":"1"}]}}});
-        assert_eq!(published(&live), [json!({"private":6789,"public":16789})]);
+        assert_eq!(
+            published(&live),
+            [json!({"private":6789,"public":16789,"loopback":false})]
+        );
         let stopped = json!({"NetworkSettings":{"Ports":{}},
             "HostConfig":{"PortBindings":{"6789/tcp":[{"HostIp":"127.0.0.1","HostPort":"6789"}]}}});
-        assert_eq!(published(&stopped), [json!({"private":6789,"public":6789})]);
+        assert_eq!(
+            published(&stopped),
+            [json!({"private":6789,"public":6789,"loopback":true})]
+        );
     }
     #[test]
     fn engine_failures_name_the_conflicting_resource() {

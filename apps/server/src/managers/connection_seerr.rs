@@ -118,13 +118,20 @@ pub(super) async fn apply(
             link.candidate = Some(json!({"id":record["id"],"name":record["name"],
                 "address":format!("{}:{}",record["hostname"].as_str().unwrap_or_default(),record["port"]),
                 "hash":digest(&evidence(record))}));
-            return Err(Failure::conflict(format!(
-                "Seerr already connects to {} as \"{}\" ({}:{}); review it in Seerr before adding another",
-                target.name,
-                record["name"].as_str().unwrap_or("unnamed"),
-                record["hostname"].as_str().unwrap_or_default(),
-                record["port"]
-            )));
+            let name = record["name"].as_str().unwrap_or("unnamed");
+            let host = record["hostname"].as_str().unwrap_or_default();
+            let port = record["port"].as_u64().and_then(|p| u16::try_from(p).ok());
+            return Err(Failure::conflict(if reach.stale(host, port) {
+                format!(
+                    "Seerr connects to {} as \"{name}\" at {host}:{}, which no longer reaches it; import it to point it at {}",
+                    target.name, record["port"], target.name
+                )
+            } else {
+                format!(
+                    "Seerr already connects to {} as \"{name}\" ({host}:{}); review it in Seerr before adding another",
+                    target.name, record["port"]
+                )
+            }));
         }
     }
     if previous
