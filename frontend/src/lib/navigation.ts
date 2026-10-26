@@ -26,6 +26,7 @@ export const adminSettings = [
   'analysis',
   'providers',
   'services',
+  'jellyfin-import',
   'retention',
   'backups',
   'people',

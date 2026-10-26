@@ -57,6 +57,7 @@ export const settingsPages = {
   ServicesSettings: cached(() => import('./ServicesSettings.svelte')),
   ManagerOwnership: cached(() => import('./ManagerOwnership.svelte')),
   RetentionSettings: cached(() => import('./RetentionSettings.svelte')),
+  JellyfinImport: cached(() => import('./JellyfinImport.svelte')),
 };
 
 export const players = {
@@ -96,6 +97,7 @@ const settingsModules: Record<SettingsSection, (keyof typeof settingsPages)[]> =
     analysis: ['SegmentSettings'],
     providers: ['OnlineSettings'],
     services: ['ServicesSettings'],
+    'jellyfin-import': ['JellyfinImport'],
     retention: ['RetentionSettings', 'ManagerOwnership'],
     backups: ['BackupSettings'],
     people: ['UserAdministration'],

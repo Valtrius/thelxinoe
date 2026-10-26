@@ -28,6 +28,11 @@ pub(super) fn router() -> Router<AppState> {
 #[cfg(test)]
 use storage::eligibility;
 
+/// Whether watched-state auto-delete would schedule this movie or season now.
+pub(crate) fn eligible(db: &rusqlite::Connection, media: &str) -> anyhow::Result<bool> {
+    Ok(storage::eligibility(db, media)?.is_some())
+}
+
 pub(super) async fn revalidate_operation(
     state: &AppState,
     operation: &str,

@@ -30,6 +30,7 @@ pub(crate) use connections::run as run_connections;
 pub(crate) use support::operational_health;
 pub(crate) use transfers::{connected_health, run_job as transfer};
 mod updates;
+pub(crate) use retention::eligible as retention_eligible;
 pub(crate) use retention::run as run_retention;
 pub(crate) use stack::controller as controller_request;
 pub(crate) use stack::message as controller_message;

@@ -1,4 +1,12 @@
-import { admin, definitions, label, now, protection, viewer } from './data.mjs';
+import {
+  admin,
+  definitions,
+  label,
+  member,
+  now,
+  protection,
+  viewer,
+} from './data.mjs';
 import { checkConnection, connectionFailure, stagesApi } from './transfers.mjs';
 import { readFileSync } from 'node:fs';
 
@@ -231,6 +239,7 @@ export function settingsSeed() {
       ],
     },
     skipping: { Intro: 'Ask', Recap: 'Ask', Credits: 'Ask', Preview: 'Ignore' },
+    jellyfinImport: { server: null, last: null },
     retention: {
       policies: ['movies', 'shows', 'videos'].map((domain) => ({
         domain,
@@ -637,6 +646,7 @@ export async function settingsApi(s, c) {
     c.emit('product.update', {});
     return json({ saved: true });
   }
+  if (path.startsWith('/admin/jellyfin-import')) return jellyfinImportApi(s, c);
   if (path === '/admin/retention')
     return json({ ...s.retention, users: s.users });
   const policy = path.match(/^\/admin\/retention\/policy\/([^/]+)$/);
@@ -779,6 +789,174 @@ export async function settingsApi(s, c) {
     });
   }
   return false;
+}
+
+// A Jellyfin with four accounts; the first two match people here by name.
+function jellyfinImportApi(s, c) {
+  const { path, method, body, json, fail } = c;
+  const state = s.jellyfinImport;
+  const counts = (watched, already, resume, favorites, missing) => ({
+    watched,
+    already_watched: already,
+    resume,
+    favorites,
+    not_found: missing,
+  });
+  const report = (mapped) => {
+    const named = (id) => s.users.find((user) => user.id === id)?.username;
+    const rows = [
+      ['jf-admin', 'Preview admin', counts(828, 212, 6, 31, 12)],
+      ['jf-alex', 'Alex', counts(2401, 0, 3, 12, 17)],
+      ['jf-kids', 'Enfants', counts(612, 0, 1, 4, 28)],
+      ['jf-guest', 'Invité', counts(3, 0, 0, 0, 0)],
+    ];
+    return {
+      at: now(),
+      server: state.server.name,
+      accounts: rows
+        .filter(([id]) => mapped[id])
+        .map(([id, name, value]) => ({
+          jellyfin_id: id,
+          name,
+          user_id: mapped[id],
+          username: named(mapped[id]),
+          ...value,
+        })),
+      not_found: [
+        ['Preview admin', 'The Matrix Reloaded', 2003, null, 1, 0, 0, null],
+        ['Preview admin', 'Oppenheimer', 2023, null, 0, 1, 0, 4360],
+        ['Preview admin', 'Dune: Part Two', 2024, null, 0, 0, 1, null],
+        ['Alex', 'Severance', null, 10, 10, 0, 0, null],
+        ['Alex', 'Arcane', null, 6, 5, 1, 0, null],
+        ['Alex', 'The Bear', null, 1, 1, 0, 1, null],
+      ]
+        .filter(([account]) =>
+          rows.some(([id, name]) => name === account && mapped[id]),
+        )
+        .map(
+          ([
+            account,
+            title,
+            year,
+            episodes,
+            watched,
+            resume,
+            favorite,
+            position,
+          ]) => ({
+            account,
+            title,
+            year,
+            episodes,
+            watched,
+            resume,
+            favorite,
+            position,
+          }),
+        ),
+      retention: 214,
+    };
+  };
+  const groups = (mapped) => {
+    const share = (value) =>
+      Object.keys(mapped).map((_, index) =>
+        counts(index === 0 ? value : 0, 0, 0, 0, 0),
+      );
+    return [
+      [
+        'movie:spider',
+        'Spider-Man: Into the Spider-Verse (2018)',
+        'Spider-Man Into the Spider-Verse (2018)',
+        false,
+        1,
+      ],
+      ['series:office', 'The Office (US) (2005)', 'The Office (US)', true, 64],
+      ['series:who', 'Doctor Who (2005)', 'Doctor Who (2005)', true, 46],
+    ].map(([key, jellyfin, title, series, items]) => ({
+      key,
+      jellyfin,
+      title,
+      series,
+      items,
+      accounts: share(items),
+    }));
+  };
+  const mapped = () =>
+    Object.fromEntries(
+      (body?.accounts ?? []).map((entry) => [entry.jellyfin_id, entry.user_id]),
+    );
+  if (path === '/admin/jellyfin-import' && method === 'GET')
+    return json({
+      server: state.server,
+      last: state.last,
+      library: {
+        movies: 1284,
+        episodes: 9873,
+        scanned_at: now() - 720,
+        radarr: { connected: true, titles: 1290, identified: 1203 },
+        sonarr: { connected: false, titles: 152, identified: 0 },
+      },
+    });
+  if (path === '/admin/jellyfin-import/server') {
+    if (method === 'DELETE') {
+      state.server = null;
+      return json({ saved: true });
+    }
+    if (body.api_key === 'wrong')
+      return fail(
+        409,
+        'Jellyfin refused the API key. Create one under Dashboard → API Keys.',
+      );
+    state.server = {
+      url: body.url.replace(/\/+$/, ''),
+      name: 'Maison',
+      version: '10.11.3',
+    };
+    return json(state.server);
+  }
+  if (!state.server) return fail(409, 'Connect a Jellyfin server first');
+  if (path === '/admin/jellyfin-import/accounts')
+    return json({
+      accounts: [
+        ['jf-admin', 'Preview admin', true, false, 1052, 6, 31, admin.id],
+        ['jf-alex', 'Alex', false, false, 2418, 3, 12, member.id],
+        ['jf-kids', 'Enfants', false, false, 640, 1, 4, null],
+        ['jf-guest', 'Invité', false, true, 3, 0, 0, null],
+      ]
+        .filter(([, , , , , , , suggested]) =>
+          suggested ? s.users.some((user) => user.id === suggested) : true,
+        )
+        .map(
+          ([
+            id,
+            name,
+            administrator,
+            disabled,
+            played,
+            progress,
+            favorites,
+            suggested,
+          ]) => ({
+            id,
+            name,
+            administrator,
+            disabled,
+            played,
+            in_progress: progress,
+            favorites,
+            suggested,
+          }),
+        ),
+      people: s.users.map((user) => ({ id: user.id, username: user.username })),
+    });
+  if (path === '/admin/jellyfin-import/preview')
+    return json({ ...report(mapped()), groups: groups(mapped()) });
+  if (path === '/admin/jellyfin-import' && method === 'POST') {
+    state.last = report(mapped());
+    c.emit('media-state.changed', {});
+    return json(state.last);
+  }
+  return fail(404, 'Unknown Jellyfin import endpoint');
 }
 
 export async function servicesApi(s, c) {

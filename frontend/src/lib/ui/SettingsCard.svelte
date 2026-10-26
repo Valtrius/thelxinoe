@@ -5,8 +5,8 @@
   import { twMerge } from 'tailwind-merge';
   import { settingsCardFilter } from './settings-card-filter';
 
-  // A settings card: header (title, description, status, actions), a body of
-  // SettingRow children or padded content, and an optional footer bar.
+  // A settings card: header (title, description, status, actions), an optional
+  // body of SettingRow children or padded content, and an optional footer bar.
   let {
     title,
     description,
@@ -24,7 +24,7 @@
   }: Omit<HTMLAttributes<HTMLElement>, 'children' | 'class' | 'title'> & {
     title?: string;
     description?: string | Snippet;
-    children: Snippet;
+    children?: Snippet;
     actions?: Snippet;
     footer?: Snippet;
     badge?: Snippet;
@@ -103,15 +103,17 @@
       {/if}
     </header>
   {/if}
-  <div
-    class={[
-      'settings-card-body min-w-0',
-      hasHeader && 'border-t border-line',
-      padded ? 'px-5.5 py-4 compact:px-4' : 'divide-y divide-line',
-    ]}
-  >
-    {@render children()}
-  </div>
+  {#if children}
+    <div
+      class={[
+        'settings-card-body min-w-0',
+        hasHeader && 'border-t border-line',
+        padded ? 'px-5.5 py-4 compact:px-4' : 'divide-y divide-line',
+      ]}
+    >
+      {@render children()}
+    </div>
+  {/if}
   {#if footer}
     <footer
       class="settings-card-foot flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface-soft px-5.5 py-3 compact:px-4"
