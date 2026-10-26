@@ -34,7 +34,7 @@ function yearIn(date: Date, timezone: string) {
   }).format(date);
 }
 
-function day(seconds: number, timezone: string, now: number) {
+export function day(seconds: number, timezone: string, now: number) {
   const date = new Date(seconds * 1000);
   return new Intl.DateTimeFormat(undefined, {
     timeZone: timezone,

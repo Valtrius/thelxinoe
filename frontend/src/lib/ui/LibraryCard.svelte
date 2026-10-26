@@ -28,6 +28,7 @@
     onSeen,
     attentionError = '',
     landscape = false,
+    detail,
   } = $props<{
     item: {
       id: string;
@@ -57,6 +58,8 @@
     onSeen?: () => void;
     attentionError?: string;
     landscape?: boolean;
+    /** The value its list is sorted by. */
+    detail?: string;
   }>();
   const music = $derived(['artist', 'album', 'track'].includes(item.kind));
   const wide = $derived(landscape || item.kind === 'episode');
@@ -215,6 +218,9 @@
               : ''}</span
           >{/if}
       </p>
+      {#if detail}<p class="mt-0.5 mb-0 text-[11px] leading-normal text-muted">
+          {detail}
+        </p>{/if}
     </div>
   </button>
   {#if description}<span id={`${cardId}-description`} class="sr-only"

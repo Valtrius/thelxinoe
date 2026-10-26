@@ -126,17 +126,31 @@ pub(super) async fn browse(db: &Database, input: Browse) -> anyhow::Result<Vec<V
     }).await
 }
 
-/// Every top-level movie or show, with when it joined the library. A show is available
-/// once any of its episodes is.
-pub(super) async fn titles(db: &Database, kind: String) -> anyhow::Result<Vec<(Value, i64)>> {
+/// Every top-level movie or show, with when it joined the library and what its files
+/// weigh. A show is available once any of its episodes is.
+pub(super) async fn titles(db: &Database, kind: String) -> anyhow::Result<Vec<(Value, Facts)>> {
     db.read("library.titles", move |db| {
         let mut query = db.prepare("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,
                 CASE m.kind WHEN 'show' THEN EXISTS(SELECT 1 FROM media s JOIN media e ON e.parent_id=s.id JOIN media_sources ms ON ms.media_id=e.id JOIN media_files f ON f.id=ms.file_id WHERE s.parent_id=m.id AND f.present=1)
                     ELSE EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) END,
-                m.created_at
+                m.created_at,
+                (SELECT SUM(f.size) FROM media_files f WHERE f.present=1 AND f.id IN (
+                    SELECT file_id FROM media_sources WHERE media_id=m.id
+                    UNION SELECT ms.file_id FROM media s JOIN media e ON e.parent_id=s.id JOIN media_sources ms ON ms.media_id=e.id WHERE s.parent_id=m.id)),
+                (SELECT COUNT(DISTINCT e.id) FROM media s JOIN media e ON e.parent_id=s.id JOIN media_sources ms ON ms.media_id=e.id JOIN media_files f ON f.id=ms.file_id WHERE s.parent_id=m.id AND f.present=1)
             FROM media m WHERE m.kind=?1 AND m.parent_id IS NULL")?;
         Ok(query
-            .query_map([kind], |r| Ok((media_row(r)?, r.get(8)?)))?
+            .query_map([kind], |r| {
+                Ok((
+                    media_row(r)?,
+                    Facts {
+                        added: Some(r.get(8)?),
+                        size: r.get::<_, Option<i64>>(9)?.filter(|size| *size > 0),
+                        episodes: Some(r.get::<_, i64>(10)?).filter(|count| *count > 0),
+                        ..Facts::default()
+                    },
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     })
     .await

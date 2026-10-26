@@ -419,14 +419,24 @@ test('libraries list every Sonarr series, sort and filter them, and Discover mar
   await expect(tiles).toHaveCount(26);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Sort shows', exact: true }).click();
-  await page
-    .getByRole('dialog', { name: 'Sort shows' })
+  const sorts = page.getByRole('dialog', { name: 'Sort shows' });
+  await sorts
     .getByRole('button', { name: 'Year ascending', exact: true })
     .click();
   await expect(tiles.first()).toHaveAttribute(
     'data-layout-key',
     'library:tmdb:47',
   );
+  // Cards show the value they are sorted by, as Sonarr's posters do.
+  await sorts
+    .getByRole('button', { name: 'Size on disk descending', exact: true })
+    .click();
+  await expect(tiles.first()).toHaveAttribute(
+    'data-layout-key',
+    'library:show-9',
+  );
+  await expect(tiles.first()).toContainText('13 GB');
+  await expect(card(page, 'tmdb:47')).not.toContainText('GB');
 
   await page.goto('/#discover');
   const poster = (name: string) =>
