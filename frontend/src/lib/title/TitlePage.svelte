@@ -37,7 +37,7 @@
   import StatusChip from '../ui/StatusChip.svelte';
   import TitleMenu from './TitleMenu.svelte';
   import RequestSeasons from './RequestSeasons.svelte';
-  import { isTitleRef, type TitleStatus } from './status';
+  import { hasStatus, isTitleRef, type TitleStatus } from './status';
   import {
     asset,
     loadFlags,
@@ -458,7 +458,7 @@
                 >{genre}</span
               >{/each}
           </div>
-          {#if status}<p class="mt-5">
+          {#if hasStatus(status)}<p class="mt-5">
               <StatusBadge {status} timezone={user.timezone} />
             </p>{:else if requestState && kind === 'show'}<p
               class="mt-5 text-xs font-semibold text-accent"

@@ -5,6 +5,7 @@
   import Button from '../ui/Button.svelte';
   import ProgressBar from '../ui/ProgressBar.svelte';
   import StatusBadge from './StatusBadge.svelte';
+  import { hasStatus } from './status';
   import TitleMenu from './TitleMenu.svelte';
   import { showToast } from '../providers/toasts';
   import { episodeLabel, setFlag, type Episode, type Season } from './catalog';
@@ -168,7 +169,7 @@
         role="tabpanel"
         aria-labelledby={`${ids}-tab-${season.number}`}
       >
-        {#if season.status}<p class="mb-3">
+        {#if hasStatus(season.status)}<p class="mb-3">
             <StatusBadge status={season.status} {timezone} />
           </p>{/if}
         <ol

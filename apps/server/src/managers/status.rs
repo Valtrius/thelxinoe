@@ -146,6 +146,8 @@ pub(crate) struct Title {
     status: Option<String>,
     #[serde(deserialize_with = "lenient")]
     seasons: Vec<SeasonFlag>,
+    /// Sonarr's `all` or `none`: whether new seasons arrive monitored.
+    monitor_new_items: Option<String>,
     statistics: Option<Statistics>,
     next_airing: Option<String>,
     previous_airing: Option<String>,
@@ -644,6 +646,8 @@ pub(crate) enum Phase {
     Missing,
     Unmonitored,
     Unavailable,
+    /// Nothing here and nothing to fetch now, though Sonarr still monitors the title.
+    Idle,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Counts {
@@ -665,6 +669,9 @@ pub(crate) struct Status {
     downloading: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     monitored: Option<bool>,
+    /// Nothing is here and nothing will come.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    inactive: bool,
 }
 impl Status {
     fn new(state: Phase) -> Self {
@@ -676,7 +683,12 @@ impl Status {
             episodes: None,
             downloading: None,
             monitored: None,
+            inactive: false,
         }
+    }
+    fn inactive(mut self) -> Self {
+        self.inactive = true;
+        self
     }
     /// Users learn whether something is coming, not how the library is administered.
     fn for_viewer(mut self, admin: bool) -> Self {
@@ -779,7 +791,7 @@ fn movie_status(inventory: &Inventory, movie: &Title, library: bool, now: i64) -
         status
     } else if !movie.monitored {
         // Unmonitored titles will not arrive, released or not.
-        Status::new(Phase::Unmonitored)
+        Status::new(Phase::Unmonitored).inactive()
     } else if !released {
         Status::new(Phase::Upcoming)
     } else {
@@ -819,20 +831,26 @@ fn episode_status(
 }
 
 /// A season or whole show from its episodes; `library` holds Sonarr episode IDs that
-/// are playable here even if Sonarr has no file for them.
+/// are playable here even if Sonarr has no file for them. `monitored` is the season's or
+/// series' own flag, and `more` whether episodes Sonarr adds later arrive monitored.
 fn episodes_status(
     inventory: &Inventory,
     series: &Title,
     episodes: &[&Episode],
     library: &HashSet<i64>,
     monitored: bool,
+    more: bool,
     now: i64,
 ) -> Status {
-    let (mut available, mut total, mut any_aired, mut wanted) = (0, 0, false, false);
+    let ended = ended(series.status.as_deref());
+    let followed = series.monitored && monitored;
+    let (mut available, mut total, mut any_aired, mut wanted, mut coming) =
+        (0, 0, false, false, false);
     let mut queued = HashSet::new();
     for episode in episodes {
         let aired = episode.aired(now);
         let present = episode.has_file || library.contains(&episode.id);
+        let fetched = series.monitored && episode.monitored;
         any_aired |= aired;
         // Like Sonarr's own episode count, the total is the aired episodes it monitors
         // and every episode obtained, even unmonitored or before its air date.
@@ -845,8 +863,11 @@ fn episodes_status(
             .any(|r| r.episode_id == Some(episode.id) && stage(r).is_some())
         {
             queued.insert(episode.id);
-        } else if aired && series.monitored && episode.monitored {
-            wanted = true;
+        } else if aired {
+            wanted |= fetched;
+        } else {
+            // Unscheduled episodes of an ended series are leftovers, not announcements.
+            coming |= fetched && (episode.air.is_some() || !ended);
         }
     }
     let mut status = if let Some(mut status) = transfer(
@@ -861,12 +882,16 @@ fn episodes_status(
         Status::new(Phase::Available)
     } else if available > 0 {
         Status::new(Phase::Partial)
-    } else if !any_aired && monitored {
-        Status::new(Phase::Upcoming)
     } else if wanted {
         Status::new(Phase::Missing)
+    } else if coming || (!any_aired && followed) {
+        Status::new(Phase::Upcoming)
+    } else if !followed {
+        Status::new(Phase::Unmonitored).inactive()
+    } else if more && followed && !ended {
+        Status::new(Phase::Idle)
     } else {
-        Status::new(Phase::Unmonitored)
+        Status::new(Phase::Idle).inactive()
     };
     status.episodes = Some(Counts { available, total });
     status.release = episodes
@@ -889,12 +914,20 @@ fn season_episodes<'a>(found: Found<'a>, season: Option<i64>) -> Vec<&'a Episode
         .collect()
 }
 fn show_status(found: Found<'_>, library: &HashSet<i64>, now: i64) -> Status {
+    let series = found.title;
+    // New seasons arrive monitored, or new episodes of a season Sonarr still monitors.
+    let more = series.monitor_new_items.as_deref() != Some("none")
+        || series
+            .seasons
+            .iter()
+            .any(|s| s.season_number != 0 && s.monitored);
     episodes_status(
         found.inventory,
-        found.title,
+        series,
         &season_episodes(found, None),
         library,
-        found.title.monitored,
+        series.monitored,
+        more,
         now,
     )
 }
@@ -910,6 +943,7 @@ fn season_status(found: Found<'_>, season: i64, library: &HashSet<i64>, now: i64
         found.title,
         &season_episodes(found, Some(season)),
         library,
+        monitored,
         monitored,
         now,
     )
