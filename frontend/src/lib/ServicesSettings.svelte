@@ -1427,7 +1427,7 @@
           />
         {/if}
 
-        {#if operational(selectedKind) && (definition.role === 'manager' || ['prowlarr', 'nzbget', 'bazarr'].includes(definition.kind))}
+        {#if operational(selectedKind) && (definition.role === 'manager' || ['prowlarr', 'nzbget', 'bazarr', 'seerr'].includes(definition.kind))}
           <div class="grid min-w-0 gap-5">
             {#if definition.role === 'manager' || definition.kind === 'prowlarr' || definition.kind === 'nzbget'}
               <section

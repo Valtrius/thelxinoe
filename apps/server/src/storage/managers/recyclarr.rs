@@ -355,6 +355,7 @@ pub(super) async fn applied(
                 tx.execute("UPDATE manager_services SET defaults=json_set(defaults,'$.quality_profile',?1,'$.quality_profile_trash_id',?4,'$.root_folder',?2,'$.monitored',json('true')) WHERE id=?3 AND json_extract(defaults,'$.quality_profile') IS NULL",params![profile,canonical_root(&target.kind),target.service_id,target.trash_id])?;
             }
             tx.execute("UPDATE recyclarr_targets SET profile_id=?1,profile_name=?2,applied_revision=revision,error=NULL WHERE service_id=?3 AND trash_id=?4",params![profile,name,target.service_id,target.trash_id])?;
+            connections::retry_requests(&tx,&target.service_id)?;
         }
         tx.commit()?; Ok(valid)
     }).await

@@ -61,6 +61,18 @@ pub(super) async fn discover(db: &Database, links: Vec<Link>) -> anyhow::Result<
     })
     .await
 }
+/// Seerr request links wait in conflict for their manager's root folder and profile, so
+/// writing those defaults retries them; any other conflict is found again and stays.
+/// Callers hold the manager's service guard, which the connection worker also takes.
+pub(in crate::managers) fn retry_requests(
+    db: &rusqlite::Connection,
+    manager: &str,
+) -> rusqlite::Result<usize> {
+    db.execute(
+        "UPDATE settings SET value=json_set(value,'$.state','pending','$.error',NULL,'$.attempts',0,'$.next_attempt',0,'$.updated_at',?2) WHERE key LIKE 'services.connection.%' AND json_extract(value,'$.target')=?1 AND json_extract(value,'$.kind')='requests' AND json_extract(value,'$.enabled')=1 AND json_extract(value,'$.state')='conflict'",
+        params![manager, now()],
+    )
+}
 pub(super) async fn remove(db: &Database, key: String) -> anyhow::Result<()> {
     db.write("managers.connections.remove", move |db| {
         db.execute(

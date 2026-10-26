@@ -260,6 +260,76 @@ test('connection actions spin locally, survive polling, and show errors in their
   expect(fixture.errors).toEqual([]);
 });
 
+test('Seerr shows its media manager connections and retries a blocked one', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+    owned: ['seerr'],
+  });
+  const blocked =
+    'Choose an existing root folder and request profile for this manager first';
+  let connection = {
+    id: 'requests',
+    source_id: 'support-seerr',
+    target_id: 'manager-sonarr',
+    source_kind: 'seerr',
+    target_kind: 'sonarr',
+    target_name: 'Sonarr',
+    kind: 'requests',
+    enabled: true,
+    state: 'conflict',
+    cleanup_pending: false,
+    error: blocked as string | null,
+  };
+  await page.route('**/api/v1/admin/support', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'support-seerr',
+            name: 'Seerr',
+            kind: 'seerr',
+            container_id: 'container-seerr',
+            port: 5055,
+            version: '3.5.0',
+            native_url: '',
+            url_base: '',
+            access_url: '/services/seerr',
+            checked_at: 1789984800,
+            error: null,
+          },
+        ],
+      },
+    }),
+  );
+  const actions: string[] = [];
+  await page.route('**/api/v1/admin/service-connections', async (route) => {
+    if (route.request().method() === 'GET')
+      return route.fulfill({ json: { items: [connection] } });
+    actions.push(route.request().postDataJSON().action);
+    connection = { ...connection, state: 'pending', error: null };
+    return route.fulfill({ json: connection });
+  });
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('link', { name: 'Seerr', exact: true })
+    .click();
+  const row = page
+    .getByRole('region', { name: 'Media managers' })
+    .getByLabel('Sonarr connection', { exact: true });
+  await expect(
+    row.getByText('Connection needs attention', { exact: true }),
+  ).toBeVisible();
+  await expect(row.getByText(blocked, { exact: true })).toBeVisible();
+  await row.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(row.getByText('Connecting', { exact: true })).toBeVisible();
+  expect(actions).toEqual(['retry']);
+  expect(fixture.errors).toEqual([]);
+});
+
 for (const reducedMotion of ['no-preference', 'reduce'] as const) {
   test(`choice highlight only animates user selection (${reducedMotion})`, async ({
     page,

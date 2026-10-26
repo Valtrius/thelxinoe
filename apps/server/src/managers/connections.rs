@@ -6,6 +6,7 @@ use std::sync::Arc;
 mod adapters;
 #[path = "../storage/managers/connections.rs"]
 mod storage;
+pub(super) use storage::retry_requests;
 #[cfg(test)]
 #[path = "connection_tests.rs"]
 mod tests;
@@ -455,12 +456,23 @@ pub(super) async fn request_target(
 ) -> Result<i64> {
     let link = storage::load(&state.db, &link_id(source, target))
         .await?
-        .filter(|l| l.enabled && l.state == "connected" && l.kind == "requests")
+        .filter(|l| l.enabled && l.kind == "requests")
         .ok_or_else(|| {
             ApiError::conflict(
                 "Connect Seerr to this manager in Media services before requesting media",
             )
         })?;
+    if link.state != "connected" {
+        let name = storage::endpoints(&state.db)
+            .await?
+            .into_iter()
+            .find(|e| e.id == target)
+            .map_or_else(|| kind.to_owned(), |e| e.name);
+        return Err(ApiError::conflict(match link.error {
+            Some(error) => format!("Seerr isn't connected to {name}: {error}"),
+            None => format!("Seerr is still connecting to {name}; try again shortly"),
+        }));
+    }
     adapters::requests::verified_record(&link, c, kind)
         .await
         .map_err(|e| ApiError::conflict(e.message))
