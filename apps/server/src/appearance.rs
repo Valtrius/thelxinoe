@@ -97,6 +97,8 @@ pub async fn update(
                     "youtube-feed-layout",
                     "youtube-watchlist-sidebar-open",
                     "youtube-selected-watchlist-id",
+                    "library-movies-view",
+                    "library-shows-view",
                 ]
                 .contains(&key.as_str())
                     || value.len() > 8192

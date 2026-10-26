@@ -12,6 +12,7 @@
   import { statusChip, type TitleStatus } from '../title/status';
   import { launchingMedia } from '../native-playback';
   import LaunchingOverlay from './LaunchingOverlay.svelte';
+  import StatusChip from './StatusChip.svelte';
   import { youtubeThumbnailSet } from '../providers/utils';
   import { libraryArtworkSet } from '../artwork';
   let {
@@ -42,6 +43,7 @@
       watched?: boolean;
       virtual?: boolean;
       status?: TitleStatus | null;
+      ended?: boolean;
     };
     keyPrefix?: string;
     open: () => void;
@@ -204,7 +206,10 @@
         !chip &&
         ['movie', 'episode', 'track'].includes(item.kind)
           ? ' · Unavailable'
-          : ''}{#if chip || item.virtual}<span class="sr-only"
+          : ''}{#if item.ended}<StatusChip
+            dot={false}
+            class="ml-1.5 py-px align-[1px]">Ended</StatusChip
+          >{/if}{#if chip || item.virtual}<span class="sr-only"
             >{item.virtual ? ' · Not in your library' : ''}{chip
               ? ` · ${chip.label}`
               : ''}</span

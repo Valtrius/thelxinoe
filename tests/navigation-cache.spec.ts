@@ -53,6 +53,9 @@ test('library returns reuse recent data and show stale cards while the next resp
     await navigate(page, 'Movies');
     await expect.poll(() => reads).toBe(2);
     await expect(page.getByText('Cached movie', { exact: true })).toBeVisible();
+    await page
+      .getByRole('button', { name: 'Filter movies', exact: true })
+      .click();
     await expect(
       page.getByRole('combobox', { name: 'Collection', exact: true }),
     ).toBeVisible();

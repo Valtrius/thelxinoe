@@ -72,6 +72,7 @@ export function librarySeed() {
       Object.assign(movie, { available: false, monitored: i === 22 });
     const show = add('show', i);
     if (i % 6 === 1) show.metadata.tmdb_id = 22 + i;
+    if (i % 5 === 4) show.metadata.status = 'ended';
     show.metadata.tvdb_id = 7000 + i;
     const artist = add('artist', i);
     for (let season = 1; season <= 2; season++) {

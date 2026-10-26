@@ -76,6 +76,9 @@ test('library filters retain workspace scroll when the results still fit it', as
     route.fulfill({ json: { items: [{ id: 1, name: 'Series', count: 60 }] } }),
   );
   await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Filter movies', exact: true })
+    .click();
   await expect(
     page.getByRole('combobox', { name: 'Collection', exact: true }),
   ).toBeVisible();

@@ -34,6 +34,17 @@ export function titleSeed() {
         premiere: 10 * day,
         episodes: 6,
       },
+      // Watched long ago; Sonarr keeps it without files.
+      {
+        tmdb: 47,
+        tvdb: 9047,
+        title: 'Harbor Lights',
+        year: 2019,
+        premiere: -400 * day,
+        episodes: 8,
+        monitored: false,
+        ended: true,
+      },
     ],
     // Sonarr episodes that have no library file yet.
     episodes: {
@@ -278,46 +289,56 @@ function virtualMovieStatus(s, movie) {
 
 function virtualSeriesStatus(s, series) {
   return collapse(
-    aggregate(seasonsOf(s, series)[0].episodes),
+    aggregate(seasonsOf(s, series)[0].episodes, series.monitored !== false),
     viewer(s).role === 'admin',
   );
 }
 
+/** Whether Discover's movie or series is a library item or Radarr/Sonarr title. */
+export function inLibrary(s, media) {
+  const tv = media.mediaType === 'tv';
+  return (
+    s.library.some(
+      (item) =>
+        item.kind === (tv ? 'show' : 'movie') &&
+        item.metadata?.tmdb_id === media.id,
+    ) ||
+    (tv ? s.titles.series : s.titles.movies).some(
+      (entry) => entry.tmdb === media.id,
+    )
+  );
+}
+
 /** Radarr/Sonarr titles that have no library item, as browse cards. */
-export function virtualCards(s, kind, query) {
-  const cards =
-    kind === 'movie'
-      ? s.titles.movies.map((movie, i) => ({
-          id: `tmdb:${movie.tmdb}`,
-          kind: 'movie',
-          title: movie.title,
-          year: movie.year,
+export function virtualCards(s, kind) {
+  return kind === 'movie'
+    ? s.titles.movies.map((movie, i) => ({
+        id: `tmdb:${movie.tmdb}`,
+        kind: 'movie',
+        title: movie.title,
+        year: movie.year,
+        available: false,
+        virtual: true,
+        watched: false,
+        artwork_url: art('movie', 30 + i),
+        metadata: {},
+        status: virtualMovieStatus(s, movie),
+      }))
+    : kind === 'show'
+      ? s.titles.series.map((series, i) => ({
+          id: `tmdb:${series.tmdb}`,
+          kind: 'show',
+          title: series.title,
+          year: series.year,
           available: false,
           virtual: true,
           watched: false,
-          artwork_url: art('movie', 30 + i),
+          artwork_url: art('show', 40 + i),
           metadata: {},
-          status: virtualMovieStatus(s, movie),
+          status: virtualSeriesStatus(s, series),
+          ended: Boolean(series.ended),
         }))
-      : kind === 'show'
-        ? s.titles.series.map((series, i) => ({
-            id: `tmdb:${series.tmdb}`,
-            kind: 'show',
-            title: series.title,
-            year: series.year,
-            available: false,
-            virtual: true,
-            watched: false,
-            artwork_url: art('show', 40 + i),
-            metadata: {},
-            status: virtualSeriesStatus(s, series),
-          }))
-        : [];
-  return query
-    ? cards.filter((card) =>
-        card.title.toLowerCase().includes(query.toLowerCase()),
-      )
-    : cards;
+      : [];
 }
 
 function managerTitle(item, index, kind) {
@@ -332,6 +353,9 @@ function managerTitle(item, index, kind) {
     tmdb_id: item.tmdb ?? item.metadata?.tmdb_id ?? null,
     tvdb_id: item.tvdb ?? item.metadata?.tvdb_id ?? null,
     imdb_id: null,
+    ended:
+      kind === 'show' &&
+      Boolean(item.ended || item.metadata?.status === 'ended'),
     poster_url: art(kind === 'movie' ? 'movie' : 'show', index),
     backdrop_url: art('video', index),
   };

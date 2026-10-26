@@ -378,6 +378,75 @@ test('a series only Sonarr knows lists its episodes from Discover and the Shows 
   expect(errors).toEqual([]);
 });
 
+test('libraries list every Sonarr series, sort and filter them, and Discover marks them', async ({
+  page,
+}) => {
+  const errors = track(page);
+  const tiles = page.locator('article.library-tile');
+  await page.goto('/#library/shows');
+  // A series watched long ago that Sonarr keeps without files.
+  await expect(card(page, 'tmdb:47')).toContainText('Ended');
+  await expect(tiles).toHaveCount(26);
+  await page.getByRole('button', { name: 'Filter shows', exact: true }).click();
+  const filters = page.getByRole('dialog', { name: 'Filter shows' });
+  await filters.getByRole('button', { name: /^Not downloaded/ }).click();
+  await expect(tiles).toHaveCount(1);
+  await filters.getByRole('button', { name: /^Upcoming/ }).click();
+  await expect(tiles).toHaveCount(2);
+  await filters.getByRole('button', { name: /^Ended/ }).click();
+  await expect(tiles).toHaveCount(1);
+  await expect(card(page, 'tmdb:47')).toBeVisible();
+  // Each user's view is kept for their next visit, once its save lands.
+  await expect
+    .poll(async () => {
+      const saved = await (
+        await page.request.get('/api/v1/me/appearance')
+      ).json();
+      return JSON.parse(
+        saved.provider_preferences['library-shows-view'] ?? '{}',
+      ).series;
+    })
+    .toBe('ended');
+  await page.reload();
+  await expect(tiles).toHaveCount(1);
+  await page.getByRole('button', { name: 'Filter shows', exact: true }).click();
+  for (const name of [/^Not downloaded/, /^Upcoming/, /^Ended/])
+    await expect(filters.getByRole('button', { name })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  await filters.getByRole('button', { name: 'Clear', exact: true }).click();
+  await expect(tiles).toHaveCount(26);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Sort shows', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Sort shows' })
+    .getByRole('button', { name: 'Year ascending', exact: true })
+    .click();
+  await expect(tiles.first()).toHaveAttribute(
+    'data-layout-key',
+    'library:tmdb:47',
+  );
+
+  await page.goto('/#discover');
+  const poster = (name: string) =>
+    page.getByRole('button', { name: `View ${name}`, exact: true }).first();
+  await expect(poster('Harbor Lights').locator('[data-in-library]')).toHaveText(
+    'In library',
+  );
+  await expect(
+    poster('Beyond the Horizon').locator('[data-in-library]'),
+  ).toHaveCount(0);
+  await page.goto('/#discover/tv/47');
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'Harbor Lights' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('article').getByText('Ended', { exact: true }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test('status changes reach open grids and title pages without reloading', async ({
   page,
 }) => {
