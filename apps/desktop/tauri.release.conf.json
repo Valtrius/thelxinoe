@@ -1,4 +1,4 @@
 {
   "bundle": { "createUpdaterArtifacts": true },
-  "plugins": { "updater": { "windows": { "installMode": "passive" } } }
+  "plugins": { "updater": { "windows": { "installMode": "quiet" } } }
 }
