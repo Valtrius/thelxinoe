@@ -248,6 +248,33 @@ pub struct Track {
     #[serde(skip)]
     pub path: Option<PathBuf>,
 }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Chapter {
+    /// Seconds into the media.
+    pub start: f64,
+    pub title: Option<String>,
+}
+/// The chapter markers FFprobe found in a file.
+pub fn chapters(probe: &Value) -> Vec<Chapter> {
+    probe["chapters"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|chapter| {
+            Some(Chapter {
+                start: chapter["start_time"]
+                    .as_str()?
+                    .parse()
+                    .ok()
+                    .filter(|start: &f64| start.is_finite())?,
+                title: chapter["tags"]["title"]
+                    .as_str()
+                    .filter(|title| !title.is_empty())
+                    .map(str::to_owned),
+            })
+        })
+        .collect()
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Source {
     pub id: String,

@@ -608,6 +608,7 @@ async fn run(
                                 if !qualities.is_empty() { qualities.insert(0, json!({"value":"auto","label":"Auto"})); }
                                 let payload = json!({"session":entry.id,"qualities":qualities,"selected":entry.data["options"]["quality"]});
                                 let _ = ipc.call(json!(["script-message", "thelxinoe-qualities", payload.to_string()])).await;
+                                let _ = chapters(&mut ipc, &entry.data).await;
                             }
                             if let Some(entry) = prepared.get_mut(&current) {
                                 entry.activity.set_active(!paused && !idle);
@@ -740,6 +741,32 @@ fn install_script(path: &std::path::Path, contents: &str) -> std::io::Result<()>
     }
     std::fs::write(path, contents)
 }
+/// MPV reads the chapters of files itself. Media without its own, such as online
+/// videos, takes the server's on MPV's timeline; MPV keeps only those within a
+/// known duration, so a converted stream's rolling window has none.
+async fn chapters(ipc: &mut Ipc, data: &Value) -> Result<()> {
+    let offset = data["timeline_start"].as_f64().unwrap_or(0.0);
+    let chapters: Vec<_> = data["chapters"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|chapter| {
+            Some(json!({"time": chapter["start"].as_f64()? - offset, "title": chapter["title"]}))
+        })
+        .collect();
+    if chapters.is_empty()
+        || ipc
+            .call(json!(["get_property", "chapter-list"]))
+            .await?
+            .as_array()
+            .is_some_and(|own| !own.is_empty())
+    {
+        return Ok(());
+    }
+    ipc.call(json!(["set_property", "chapter-list", chapters]))
+        .await?;
+    Ok(())
+}
 fn quality_allowed(data: &Value, quality: &str) -> bool {
     let choices = data["qualities"].as_array();
     choices.is_some_and(|choices| {
@@ -752,8 +779,8 @@ fn reload_event(message: &Value) -> bool {
 }
 
 #[cfg(test)]
-#[path = "quality_smoke.rs"]
-mod quality_smoke;
+#[path = "smoke.rs"]
+mod smoke;
 
 #[cfg(test)]
 mod capability_tests {

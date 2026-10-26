@@ -9,6 +9,7 @@
     AlertCircle,
     AudioLines,
     Captions,
+    ListVideo,
     Settings2,
     LoaderCircle,
     Maximize,
@@ -21,6 +22,7 @@
   } from '@lucide/svelte';
   import SegmentSkip from './SegmentSkip.svelte';
   import PlayerOption from './PlayerOption.svelte';
+  import { chapterAt, chapterMarks, chapterTitle } from './chapters';
   import { playerHandleReveal, playerReveal } from './player-reveal';
   import { api } from './api';
   import { inBackground } from './page-readiness';
@@ -133,6 +135,10 @@
     { revision: number; target: number; resume: boolean } | undefined;
   // The held seek-bar value while dragging, for the labels that follow it.
   let scrub = $state<number | null>(null);
+  const chapters = $derived(active?.chapters ?? []);
+  const chapter = $derived(chapterAt(chapters, position));
+  const heldChapter = $derived(chapterAt(chapters, scrub ?? position));
+  const chapterGaps = $derived(chapterMarks(chapters, active?.duration ?? 0));
   // Touch cannot hover: a tap over hidden controls only reveals them, and the
   // :hover it leaves on a tapped control must not keep them shown.
   let touch = false,
@@ -1157,10 +1163,10 @@
     {#if !active?.live}
       <SeekRange
         class="seek player-range w-full focus-visible:outline-2 focus-visible:outline-offset-2"
-        style={`--range-fill:${fraction(scrub ?? position)};--range-buffer:${fraction(bufferedTo)}`}
+        style={`--range-fill:${fraction(scrub ?? position)};--range-buffer:${fraction(bufferedTo)};--range-marks:${chapterGaps}`}
         data-sidebar-resize="xy"
         aria-label="Playback position"
-        aria-valuetext={`${time(scrub ?? position)} of ${time(active?.duration ?? 0)}`}
+        aria-valuetext={`${time(scrub ?? position)} of ${time(active?.duration ?? 0)}${heldChapter >= 0 ? `, ${chapterTitle(chapters, heldChapter)}` : ''}`}
         min="0"
         max={active?.duration || 1}
         step="0.1"
@@ -1219,21 +1225,23 @@
           />
         </div>{/if}
       <div
-        class="playback-details ml-2 grid shrink-0 gap-0.5 [text-shadow:0_0_2px_var(--background),0_0_6px_var(--background)] max-[600px]:ml-1"
+        class="playback-details ml-2 grid min-w-0 gap-0.5 [text-shadow:0_0_2px_var(--background),0_0_6px_var(--background)] max-[600px]:ml-1"
         data-sidebar-resize="xy-pos"
       >
         <span
-          class="playback-time inline-flex items-center gap-[7px] text-xs whitespace-nowrap tabular-nums max-[600px]:text-[11px]"
+          class="playback-time inline-flex min-w-0 items-center gap-[7px] text-xs whitespace-nowrap tabular-nums max-[600px]:text-[11px]"
           aria-live="off"
         >
           {#if active?.live}<span
               class="live-dot size-1.5 rounded-full bg-accent"
             ></span>Live{:else}{time(position)} / {time(
               active?.duration ?? 0,
-            )}{/if}
+            )}{#if chapter >= 0}<span class="playback-chapter min-w-0 truncate"
+                >· {chapterTitle(chapters, chapter)}</span
+              >{/if}{/if}
         </span>
         {#if active}<span
-            class="playback-mode text-[10px] font-[650] tracking-[0.12em] text-muted uppercase player-small:hidden"
+            class="playback-mode truncate text-[10px] font-[650] tracking-[0.12em] text-muted uppercase player-small:hidden"
             title={active.conversion_reason ?? undefined}
             >{deliveredQuality ? `${deliveredQuality} · ` : ''}{active.mode ===
             'direct'
@@ -1252,6 +1260,20 @@
         role="group"
         aria-label="Playback settings"
       >
+        {#if chapters.length}<PlayerOption
+            label="Chapters"
+            value={String(chapter)}
+            options={chapters.map((item, index) => ({
+              value: String(index),
+              label: `${time(item.start)} · ${chapterTitle(chapters, index)}`,
+            }))}
+            disabled={busy || !active}
+            open={optionMenu === 'chapters'}
+            setOpen={(open) => (optionMenu = open ? 'chapters' : null)}
+            select={(value) => void seek(chapters[Number(value)].start)}
+          >
+            {#snippet icon()}<ListVideo size={20} />{/snippet}
+          </PlayerOption>{/if}
         <PlayerOption
           label="Quality"
           value={quality}

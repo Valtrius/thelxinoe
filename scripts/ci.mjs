@@ -376,7 +376,8 @@ async function desktop() {
         '--',
         '--ignored',
         '--exact',
-        'mpv::runtime::quality_smoke::mpv_quality_reload_keeps_process_position_and_pause',
+        'mpv::runtime::smoke::mpv_quality_reload_keeps_process_position_and_pause',
+        'mpv::runtime::smoke::mpv_takes_server_chapters_only_for_media_without_its_own',
         'tools::config::runtime::tests::real_mpv_loads_one_plugin_copy_with_the_saved_settings',
       ],
       {

@@ -241,6 +241,10 @@ pub async fn browse(
         return Ok(None);
     }
     let list_id = list.as_ref().map(Identity::list).transpose()?;
+    let video = single
+        .as_ref()
+        .filter(|i| i.kind == "youtube")
+        .map(|i| i.key.clone());
     let q = query.clone();
     let user = p.user.id.clone();
     let server = state.server_id.to_string();
@@ -286,9 +290,14 @@ pub async fn browse(
         }
     }
     if is_single {
-        Ok(Some(
-            items.into_iter().next().ok_or_else(ApiError::not_found)?,
-        ))
+        let mut item = items.into_iter().next().ok_or_else(ApiError::not_found)?;
+        // Only a downloaded copy has chapters before the video is extracted.
+        if let Some(video) = video
+            && let Ok(source) = crate::online::downloads::source(state, &video).await
+        {
+            item["Chapters"] = catalog::chapters(&source.probe);
+        }
+        Ok(Some(item))
     } else {
         Ok(Some(catalog::result(items, total, start)))
     }

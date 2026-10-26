@@ -1644,7 +1644,7 @@ async fn downloaded_watchlist_video_plays_through_jellyfin_urls_and_stops() {
     let path = root.join("download.mkv");
     std::fs::copy(movie, &path).unwrap();
     let original = std::fs::read(&path).unwrap();
-    let probe = String::from_utf8(run(
+    let mut probe: Value = serde_json::from_slice(&run(
         "ffprobe",
         &[
             "-v",
@@ -1657,6 +1657,9 @@ async fn downloaded_watchlist_video_plays_through_jellyfin_urls_and_stops() {
         ],
     ))
     .unwrap();
+    probe["chapters"] =
+        json!([{"start_time":"0.000000","tags":{"title":"Intro"}},{"start_time":"9.000000"}]);
+    let probe = probe.to_string();
     let metadata = std::fs::metadata(&path).unwrap();
     let modified = metadata
         .modified()
@@ -1712,6 +1715,23 @@ async fn downloaded_watchlist_video_plays_through_jellyfin_urls_and_stops() {
     .await;
     let bob_item = page["Items"][0]["Id"].as_str().unwrap();
     assert_ne!(item, bob_item);
+    // The downloaded copy names its chapters in the item's details.
+    let (status, details) = call(
+        &state,
+        &format!("/Items/{item}"),
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{details}");
+    assert_eq!(
+        details["Chapters"],
+        json!([
+            {"StartPositionTicks":0,"Name":"Intro","ImageDateModified":"0001-01-01T00:00:00Z"},
+            {"StartPositionTicks":90_000_000,"Name":null,"ImageDateModified":"0001-01-01T00:00:00Z"}
+        ])
+    );
     let info = format!("/Items/{item}/PlaybackInfo");
     let (status, session) = call(&state, &info, "POST", json!({"MediaSourceId":item,"AudioStreamIndex":1,"DeviceProfile":{
         "DirectPlayProfiles":[{"Type":"Video","Container":"mkv","VideoCodec":"h264","AudioCodec":"aac"}]
