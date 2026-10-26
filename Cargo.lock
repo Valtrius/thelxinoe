@@ -6416,7 +6416,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-auth"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6434,7 +6434,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-backup"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "age",
  "anyhow",
@@ -6444,7 +6444,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-catalog"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "hex",
@@ -6463,7 +6463,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-core"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "chrono",
  "serde",
@@ -6473,7 +6473,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-database"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "rusqlite",
@@ -6486,7 +6486,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-desktop"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6527,7 +6527,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-docker-controller"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "axum",
@@ -6551,7 +6551,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-jobs"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "rusqlite",
@@ -6565,7 +6565,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-playback"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "fs2",
@@ -6582,7 +6582,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-releases"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6598,7 +6598,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-server"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "axum",
@@ -6649,7 +6649,7 @@ dependencies = [
 
 [[package]]
 name = "thelxinoe-tools"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "serde",
