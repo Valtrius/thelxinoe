@@ -396,10 +396,25 @@ test('libraries list every Sonarr series, sort and filter them, and Discover mar
   await filters.getByRole('button', { name: /^Ended/ }).click();
   await expect(tiles).toHaveCount(1);
   await expect(card(page, 'tmdb:47')).toBeVisible();
-  // Each user's view is kept for their next visit.
+  // Each user's view is kept for their next visit, once its save lands.
+  await expect
+    .poll(async () => {
+      const saved = await (
+        await page.request.get('/api/v1/me/appearance')
+      ).json();
+      return JSON.parse(
+        saved.provider_preferences['library-shows-view'] ?? '{}',
+      ).series;
+    })
+    .toBe('ended');
   await page.reload();
   await expect(tiles).toHaveCount(1);
   await page.getByRole('button', { name: 'Filter shows', exact: true }).click();
+  for (const name of [/^Not downloaded/, /^Upcoming/, /^Ended/])
+    await expect(filters.getByRole('button', { name })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
   await filters.getByRole('button', { name: 'Clear', exact: true }).click();
   await expect(tiles).toHaveCount(26);
   await page.keyboard.press('Escape');
