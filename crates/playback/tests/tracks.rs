@@ -1,5 +1,5 @@
 use serde_json::json;
-use thelxinoe_playback::Source;
+use thelxinoe_playback::{Chapter, Source};
 
 #[tokio::test]
 async fn forced_subtitle_flags_preserve_language_and_stable_identity() {
@@ -41,4 +41,32 @@ async fn forced_subtitle_flags_preserve_language_and_stable_identity() {
             .unwrap()
             .id
     );
+}
+
+#[test]
+fn chapters_keep_their_start_and_only_a_named_title() {
+    let probe = json!({"chapters":[
+        {"start_time":"0.000000","tags":{"title":"Opening"}},
+        {"start_time":"61.500000","tags":{"title":""}},
+        {"start_time":"N/A"},
+        {"start_time":"90.000000"}
+    ]});
+    assert_eq!(
+        thelxinoe_playback::chapters(&probe),
+        [
+            Chapter {
+                start: 0.0,
+                title: Some("Opening".into())
+            },
+            Chapter {
+                start: 61.5,
+                title: None
+            },
+            Chapter {
+                start: 90.0,
+                title: None
+            },
+        ]
+    );
+    assert!(thelxinoe_playback::chapters(&json!({})).is_empty());
 }

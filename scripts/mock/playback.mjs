@@ -107,12 +107,13 @@ export async function playbackApi(s, c) {
         'Install FFmpeg and restart dev:mock to preview playback.',
       );
     const item = s.library.find((item) => item.id === body.media_id);
+    const live = /^(twitch|kick):/.test(body.media_id);
     const playback = {
       id: `playback-${++s.sequence}`,
       media_id: body.media_id,
       file_id: item?.fileId ?? `file-${body.media_id}`,
       generation: 'preview',
-      live: /^(twitch|kick):/.test(body.media_id),
+      live,
       url: '/mock-media/sample.mp4',
       mode: 'direct',
       // The player adds Auto itself, as with the server's renditions.
@@ -133,6 +134,13 @@ export async function playbackApi(s, c) {
       ],
       selected_subtitle: body.options?.subtitle === 'eng' ? 'eng' : null,
       options: body.options,
+      chapters: live
+        ? []
+        : [
+            { start: 0, title: 'Opening' },
+            { start: 24, title: 'The long climb to the summit' },
+            { start: 61.5, title: null },
+          ],
       probe,
       replay_gain: s.playbackPreferences.replay_gain,
     };

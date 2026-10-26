@@ -108,7 +108,8 @@ img[data-arrived] {
 
 /* Player sliders: a slim track drawn from --range-fill and the optional
    --range-buffer fractions, under a square thumb ringed with the background.
-   The spans end at the thumb's centre, which travels inset by half its width. */
+   The spans end at the thumb's centre, which travels inset by half its width.
+   An optional --range-marks image is layered over the track. */
 @utility player-range {
   --range-thumb: 10px;
   --range-at: calc(
@@ -118,13 +119,15 @@ img[data-arrived] {
     var(--range-thumb) / 2 + (100% - var(--range-thumb)) *
       max(var(--range-fill, 0), var(--range-buffer, 0))
   );
-  --range-track: linear-gradient(
-    to right,
-    var(--accent) 0 var(--range-at),
-    color-mix(in srgb, var(--foreground) 42%, transparent) 0
-      var(--range-buffered),
-    color-mix(in srgb, var(--foreground) 22%, transparent) 0
-  );
+  --range-track:
+    var(--range-marks, none),
+    linear-gradient(
+      to right,
+      var(--accent) 0 var(--range-at),
+      color-mix(in srgb, var(--foreground) 42%, transparent) 0
+        var(--range-buffered),
+      color-mix(in srgb, var(--foreground) 22%, transparent) 0
+    );
   @apply block h-4 cursor-pointer appearance-none border-0 bg-transparent p-0;
   &::-webkit-slider-runnable-track {
     height: 3px;

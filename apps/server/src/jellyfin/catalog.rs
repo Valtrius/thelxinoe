@@ -42,6 +42,19 @@ fn kind(name: &str) -> &str {
 pub fn ticks(seconds: f64) -> i64 {
     (seconds.max(0.0) * 10_000_000.0).round() as i64
 }
+/// Chapter markers of the probed file. Chapters have no images.
+pub fn chapters(probe: &Value) -> Value {
+    json!(
+        thelxinoe_playback::chapters(probe)
+            .into_iter()
+            .map(|chapter| json!({
+                "StartPositionTicks": ticks(chapter.start),
+                "Name": chapter.title,
+                "ImageDateModified": "0001-01-01T00:00:00Z"
+            }))
+            .collect::<Vec<_>>()
+    )
+}
 pub fn result(items: Vec<Value>, total: usize, start: usize) -> Value {
     json!({"Items":items,"TotalRecordCount":total,"StartIndex":start})
 }

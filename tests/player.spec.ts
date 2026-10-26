@@ -255,6 +255,7 @@ async function fixture(
     nativeRestore?: boolean;
     indexed?: boolean;
     failProgress?: 'network' | number;
+    chapters?: { start: number; title: string | null }[];
   } = {},
 ) {
   const metadata = gate(!!options.hold),
@@ -546,6 +547,7 @@ async function fixture(
             : [],
           selected_subtitle: 'off',
           options: input.options,
+          chapters: options.chapters ?? [],
           probe: {
             streams: [
               { codec_type: 'video', height: 540, avg_frame_rate: '12/1' },
@@ -1934,6 +1936,40 @@ test('transcoded seeking uses the server timeline and live playback omits seekin
   expect(live.seeks).toEqual([]);
   expect(state.errors).toEqual([]);
   expect(live.errors).toEqual([]);
+});
+
+test('chapters mark the seek bar, name the current one, and seek from their menu', async ({
+  page,
+}) => {
+  const state = await fixture(page, {
+    mode: 'remux',
+    chapters: [
+      { start: 0, title: 'Opening' },
+      { start: 15, title: null },
+      { start: 45, title: 'Credits' },
+    ],
+  });
+  await decoded(page);
+  const slider = page.getByRole('slider', { name: 'Playback position' });
+  // Chapters after the start cut a gap where the thumb stands at their time.
+  expect(
+    await slider.evaluate((input) =>
+      input.style.getPropertyValue('--range-marks'),
+    ),
+  ).toMatch(/\* 0\.25\).*\* 0\.75\)/);
+  await expect(page.locator('.playback-chapter')).toHaveText('· Opening');
+  await expect(slider).toHaveAttribute('aria-valuetext', /, Opening$/);
+  await page.getByRole('button', { name: 'Chapters', exact: true }).click();
+  await expect(
+    page.getByRole('menuitemradio', { name: '0:00 · Opening', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await page
+    .getByRole('menuitemradio', { name: '0:15 · Chapter 2', exact: true })
+    .click();
+  await expect.poll(() => state.seeks).toEqual([15]);
+  await decoded(page);
+  await expect(page.locator('.playback-chapter')).toHaveText('· Chapter 2');
+  expect(state.errors).toEqual([]);
 });
 
 test('YouTube scrolls beneath its toolbar and Kick uses page scrolling', async ({

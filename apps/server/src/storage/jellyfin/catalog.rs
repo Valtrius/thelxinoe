@@ -430,25 +430,6 @@ fn premiere_date(metadata: &Value) -> Option<String> {
         .map(|at| at.format("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
-/// Chapter markers of the probed file. Chapters have no images.
-fn chapters(probe: &Value) -> Value {
-    json!(
-        probe["chapters"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|chapter| {
-                let start = chapter["start_time"].as_str()?.parse::<f64>().ok()?;
-                Some(json!({
-                    "StartPositionTicks": ticks(start),
-                    "Name": chapter["tags"]["title"],
-                    "ImageDateModified": "0001-01-01T00:00:00Z"
-                }))
-            })
-            .collect::<Vec<_>>()
-    )
-}
-
 /// Whether a file has a picture to take a still from, not only cover art.
 fn has_video(probe: &Value) -> bool {
     probe["streams"].as_array().is_some_and(|streams| {

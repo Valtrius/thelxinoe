@@ -1,5 +1,6 @@
 import { api, ApiError, serverUrl } from './api';
 import { captureSession } from './session';
+import type { Chapter } from './chapters';
 
 export type MediaChoice = {
   kind?: string;
@@ -58,6 +59,7 @@ export type Playback = {
   subtitles: { id: string; language: string; title: string; url: string }[];
   selected_subtitle: string | null;
   options: Options;
+  chapters: Chapter[];
   probe: Probe;
   replay_gain: string;
 };

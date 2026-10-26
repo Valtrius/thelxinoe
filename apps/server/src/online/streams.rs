@@ -21,7 +21,7 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{collections::HashMap, fmt::Write, sync::Arc, time::Duration};
 use thelxinoe_core::{Principal, now};
-use thelxinoe_playback::{Options, RemoteSource, Source};
+use thelxinoe_playback::{Chapter, Options, RemoteSource, Source};
 use tokio::sync::Mutex;
 
 /// The revision of byte-range HLS playlists, which the server writes on request.
@@ -50,6 +50,7 @@ struct Prepared {
     formats: Vec<formats::Format>,
     quality: Option<String>,
     probe: Value,
+    chapters: Vec<Chapter>,
 }
 impl Prepared {
     fn media(&self) -> Source {
@@ -442,6 +443,22 @@ fn select(metadata: &Value, proxy: Option<String>, excluded: &[&str]) -> Result<
         },
         formats,
         quality: None,
+        chapters: metadata["chapters"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|chapter| {
+                Some(Chapter {
+                    start: chapter["start_time"]
+                        .as_f64()
+                        .filter(|start| start.is_finite())?,
+                    title: chapter["title"]
+                        .as_str()
+                        .filter(|title| !title.is_empty())
+                        .map(str::to_owned),
+                })
+            })
+            .collect(),
     })
 }
 
@@ -787,7 +804,7 @@ async fn create_recorded(
         .then(|| format!("/api/v1/playback/{sid}/remote/audio?grant={grant}"));
     let encoding = decision.as_ref().map(|d| d.encoding).unwrap_or_default();
     Ok(
-        json!({"id":sid,"url":format!("{}?grant={grant}",session.path),"external_audio":external_audio,"grant":grant,"mode":mode,"encoding":encoding,"conversion_reason":decision.as_ref().and_then(|d| d.conversion_reason.clone()),"position":start,"duration":prepared.duration,"timeline_start":0.0,"video":true,"live":false,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":(!encoding.video).then(|| format.quality()),"probe":probe,"replay_gain":"off"}),
+        json!({"id":sid,"url":format!("{}?grant={grant}",session.path),"external_audio":external_audio,"grant":grant,"mode":mode,"encoding":encoding,"conversion_reason":decision.as_ref().and_then(|d| d.conversion_reason.clone()),"position":start,"duration":prepared.duration,"timeline_start":0.0,"video":true,"live":false,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":(!encoding.video).then(|| format.quality()),"chapters":prepared.chapters,"probe":probe,"replay_gain":"off"}),
     )
 }
 async fn create_live(
@@ -877,7 +894,7 @@ async fn create_live(
     }
     let grant = grants::issue(state, p, &format!("playback:{sid}"), 120).await?;
     Ok(
-        json!({"id":sid,"url":format!("{}?grant={grant}",session.path),"external_audio":null,"grant":grant,"mode":decision.mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":0.0,"duration":0.0,"timeline_start":0.0,"video":true,"live":true,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"probe":prepared.probe,"replay_gain":"off"}),
+        json!({"id":sid,"url":format!("{}?grant={grant}",session.path),"external_audio":null,"grant":grant,"mode":decision.mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":0.0,"duration":0.0,"timeline_start":0.0,"video":true,"live":true,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"chapters":[],"probe":prepared.probe,"replay_gain":"off"}),
     )
 }
 pub(crate) async fn validate(state: &AppState, id: &str) -> Result<()> {
@@ -1060,13 +1077,15 @@ mod tests {
     async fn native_files_keep_sources_private_and_enforce_playback_grants() {
         let (_temp, state, cookie) = fixture().await;
         let video = "abcdefghijk";
+        let mut metadata = metadata(false);
+        metadata["chapters"] = json!([{"start_time":0.0,"end_time":40.0,"title":"Intro"},{"start_time":40.0,"end_time":100.0,"title":""}]);
         state
             .online
             .streams
             .prepared
             .lock()
             .await
-            .insert(video.into(), select(&metadata(false), None, &[]).unwrap());
+            .insert(video.into(), select(&metadata, None, &[]).unwrap());
         let input = json!({"media_id":"youtube:abcdefghijk","position":20,"options":{"quality":"auto","audio":null,"subtitle":null,"capabilities":{"video":["h264"],"audio":["aac"],"containers":[],"hls":true,"native_remote":true}}});
         assert_eq!(
             call(&state, "/api/v1/playback", "POST", input.clone(), &cookie)
@@ -1081,6 +1100,10 @@ mod tests {
         assert_eq!(data["mode"], "direct");
         assert_eq!(data["position"].as_f64(), Some(20.0));
         assert_eq!(data["timeline_start"].as_f64(), Some(0.0));
+        assert_eq!(
+            data["chapters"],
+            json!([{"start":0.0,"title":"Intro"},{"start":40.0,"title":null}])
+        );
         assert!(!data.to_string().contains("googlevideo"));
         assert!(!data.to_string().contains("signature"));
         assert!(

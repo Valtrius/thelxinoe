@@ -430,6 +430,7 @@ async fn download(
                 "!is_live",
                 "--merge-output-format",
                 "mp4",
+                "--embed-chapters",
                 "--ffmpeg-location",
             ]
             .map(Into::into),
@@ -505,6 +506,7 @@ async fn download(
             "error".into(),
             "-show_format".into(),
             "-show_streams".into(),
+            "-show_chapters".into(),
             "-of".into(),
             "json".into(),
             target.clone().into_os_string(),
