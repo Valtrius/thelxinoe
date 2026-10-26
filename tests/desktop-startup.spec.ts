@@ -8,12 +8,14 @@ async function desktopFixture(page: Page, signedIn = false) {
     const bridge = window as unknown as {
       isTauri: boolean;
       startupReveals: { text: string; iconsReady: boolean; theme: string }[];
+      openedLinks: string[];
       __TAURI_INTERNALS__: unknown;
       __TAURI_EVENT_PLUGIN_INTERNALS__: unknown;
       emitDesktopEvent: (name: string, payload: unknown) => void;
     };
     bridge.isTauri = true;
     bridge.startupReveals = [];
+    bridge.openedLinks = [];
     bridge.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
     let callback = 0;
     const callbacks = new Map<number, (event: unknown) => void>();
@@ -50,6 +52,12 @@ async function desktopFixture(page: Page, signedIn = false) {
             ).every((image) => image.complete && image.naturalWidth > 0),
             theme: document.documentElement.dataset.theme ?? '',
           });
+          return;
+        }
+        if (command === 'open_external_url') {
+          if (String(args.value).startsWith('https://unsupported.example/'))
+            throw 'Invalid external URL';
+          bridge.openedLinks.push(String(args.value));
           return;
         }
         if (command === 'mpv_sessions') return [];
@@ -143,6 +151,43 @@ test('desktop update and tool activity reaches navigation independently of serve
   });
   await emit('tools-progress', { tool: 'ffmpeg', phase: 'complete' });
   await expect(marker).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('desktop opens new-tab links in the system browser', async ({ page }) => {
+  const fixture = await desktopFixture(page, true);
+  await page.goto('/');
+  await expect(
+    page.getByRole('link', { name: 'Settings', exact: true }),
+  ).toBeVisible();
+  const popups: string[] = [];
+  page.on('popup', (popup) => popups.push(popup.url()));
+  for (const href of [
+    'https://github.com/TRaSH-Guides/Guides',
+    'https://unsupported.example/',
+  ])
+    await page.evaluate((href) => {
+      const link = document.createElement('a');
+      link.href = href;
+      link.target = '_blank';
+      link.textContent = href;
+      document.body.append(link);
+    }, href);
+  await page.getByRole('link', { name: 'https://github.com/' }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as { openedLinks: string[] }).openedLinks,
+      ),
+    )
+    .toEqual(['https://github.com/TRaSH-Guides/Guides']);
+  await page
+    .getByRole('link', { name: 'https://unsupported.example/' })
+    .click();
+  await expect(page.getByRole('alert')).toContainText('Could not open link');
+  await expect(page.getByRole('alert')).toContainText('Invalid external URL');
+  expect(popups).toEqual([]);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

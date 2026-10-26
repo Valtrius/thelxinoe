@@ -467,7 +467,7 @@ export const api = {
   markYoutubeWatched: (id: string) => mark(id, true),
   markYoutubeUnwatched: (id: string) => mark(id, false),
   async openExternal(url: string) {
-    if (desktop) await invoke('open_provider_url', { value: url });
+    if (desktop) await invoke('open_external_url', { value: url });
     else window.open(url, '_blank', 'noopener,noreferrer');
   },
 };

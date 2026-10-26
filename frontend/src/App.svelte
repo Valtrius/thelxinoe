@@ -754,6 +754,26 @@
       true,
     );
   }
+  // The desktop window opens no tabs of its own; new-tab links go to the browser.
+  function openExternalLink(event: MouseEvent) {
+    if (
+      !desktop ||
+      event.defaultPrevented ||
+      !(event.target instanceof Element)
+    )
+      return;
+    const link = event.target.closest('a[href][target="_blank"]');
+    if (!(link instanceof HTMLAnchorElement)) return;
+    event.preventDefault();
+    invoke('open_external_url', { value: link.href }).catch((e) =>
+      showToast({
+        key: 'external-link',
+        tone: 'error',
+        title: 'Could not open link',
+        message: String(e),
+      }),
+    );
+  }
   async function playMedia(choice: MediaChoice, resolveYoutube = false) {
     if (!providerEnabled(choice.id)) return;
     if (desktop && choice.kind !== 'track')
@@ -916,7 +936,12 @@
   });
 </script>
 
-<svelte:document onclick={playYoutubeLink} />
+<svelte:document
+  onclick={(event) => {
+    playYoutubeLink(event);
+    openExternalLink(event);
+  }}
+/>
 
 {#if desktop}<WindowTitlebar />{/if}
 <AuthVerification />

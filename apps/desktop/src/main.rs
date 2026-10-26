@@ -49,8 +49,8 @@ fn reveal_after_timeout(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn open_provider_url(app: tauri::AppHandle, value: String) -> Result<(), String> {
-    let url = url::Url::parse(&value).map_err(|_| "Invalid provider URL")?;
+fn open_external_url(app: tauri::AppHandle, value: String) -> Result<(), String> {
+    let url = url::Url::parse(&value).map_err(|_| "Invalid external URL")?;
     if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
@@ -65,10 +65,13 @@ fn open_provider_url(app: tauri::AppHandle, value: String) -> Result<(), String>
                     | "developers.google.com"
                     | "dev.twitch.tv"
                     | "docs.kick.com"
+                    | "github.com"
+                    | "mpv.io"
+                    | "www.themoviedb.org"
             )
         )
     {
-        return Err("Invalid provider URL".into());
+        return Err("Invalid external URL".into());
     }
     app.opener()
         .open_url(url.as_str(), None::<&str>)
@@ -451,7 +454,7 @@ fn main() {
             change_server,
             backend_request,
             open_auth_browser,
-            open_provider_url,
+            open_external_url,
             open_youtube_linking,
             open_public_page,
             open_service,
