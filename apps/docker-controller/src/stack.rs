@@ -434,6 +434,22 @@ struct Install {
     secret: String,
     #[serde(default)]
     username: String,
+    /// The server's time zone setting.
+    #[serde(default)]
+    timezone: Option<String>,
+}
+/// The `TZ` of a managed container: the server's time zone, or UTC when it sent none.
+fn zone_env(zone: Option<&str>) -> String {
+    let zone = zone.filter(|zone| {
+        zone.len() <= 64
+            && zone
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != "..")
+            && zone
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-' | b'+'))
+    });
+    format!("TZ={}", zone.unwrap_or("UTC"))
 }
 fn app_config(t: templates::Template, input: &Install, directory: &std::path::Path) -> Result<()> {
     if t.workload == "job" {
@@ -550,12 +566,13 @@ async fn install(
     if t.media {
         mounts.push(json!({"Type":"bind","Source":d.media_source,"Target":"/media"}));
     }
-    let mut spec = json!({"Image":image,"Env":[format!("PUID={}",identity.uid),format!("PGID={}",identity.gid),"TZ=UTC".to_owned()],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"}},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":[format!("thelxinoe-{}",t.kind)]}}}});
+    let zone = zone_env(input.timezone.as_deref());
+    let mut spec = json!({"Image":image,"Env":[format!("PUID={}",identity.uid),format!("PGID={}",identity.gid),zone.clone()],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"}},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":[format!("thelxinoe-{}",t.kind)]}}}});
     if let Some(port) = t.port {
         spec["HostConfig"]["PortBindings"] = json!({format!("{port}/tcp"):[{"HostIp":"127.0.0.1","HostPort":input.host_port.ok_or_else(unavailable)?.to_string()}]});
     } else {
         spec["User"] = json!(identity.user());
-        spec["Env"] = json!(["TZ=UTC", "TERM=dumb"]);
+        spec["Env"] = json!([zone.clone(), "TERM=dumb"]);
         spec["Cmd"] = json!(["--version"]);
         spec["HostConfig"]["RestartPolicy"] = json!({"Name":"no"});
         spec["HostConfig"]["CapDrop"] = json!(["ALL"]);
@@ -567,7 +584,7 @@ async fn install(
     }
     if t.kind == "seerr" {
         spec["User"] = json!(identity.user());
-        spec["Env"] = json!(["CONFIG_DIRECTORY=/config", "TZ=UTC"]);
+        spec["Env"] = json!(["CONFIG_DIRECTORY=/config", zone]);
     }
     let mut s = Managed {
         id: key,
@@ -874,6 +891,26 @@ async fn verify_recorded(d: &Deployment, s: &Managed, raw: &Value) -> Result<()>
 #[cfg(test)]
 mod naming_tests {
     use super::*;
+    #[test]
+    fn managed_containers_take_only_plausible_zone_names() {
+        for zone in [
+            "Europe/Paris",
+            "America/Argentina/Buenos_Aires",
+            "Etc/GMT+1",
+        ] {
+            assert_eq!(zone_env(Some(zone)), format!("TZ={zone}"));
+        }
+        for zone in [
+            None,
+            Some(""),
+            Some("/etc/passwd"),
+            Some("../x"),
+            Some("A//B"),
+            Some("Paris\nX=1"),
+        ] {
+            assert_eq!(zone_env(zone), "TZ=UTC");
+        }
+    }
     #[test]
     fn bootstrap_ignores_stopped_servers_sharing_the_controller_runtime() {
         let runtime = json!("controller-runtime");

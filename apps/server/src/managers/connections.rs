@@ -142,7 +142,7 @@ struct Configure {
     target_id: String,
     action: String,
 }
-fn lock(state: &AppState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+pub(super) fn lock(state: &AppState, key: &str) -> Arc<tokio::sync::Mutex<()>> {
     state
         .managers
         .connection_locks

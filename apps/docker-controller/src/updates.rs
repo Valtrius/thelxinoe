@@ -27,6 +27,9 @@ struct Update {
     configuration_revision: Option<String>,
     #[serde(default)]
     configuration_candidate_revision: Option<String>,
+    /// The server's time zone at preflight; journals from earlier releases have none.
+    #[serde(default)]
+    timezone: Option<String>,
 }
 fn path(key: &str) -> PathBuf {
     store::root().join("updates").join(key)
@@ -184,6 +187,8 @@ pub(super) fn removable_updates(service: &str) -> Result<Vec<String>> {
 #[derive(Deserialize)]
 pub(super) struct Preflight {
     operation_id: String,
+    #[serde(default)]
+    timezone: Option<String>,
 }
 pub(super) async fn preflight(
     State(runtime): State<Runtime>,
@@ -233,6 +238,7 @@ pub(super) async fn preflight(
         replacement_intent: None,
         configuration_revision: None,
         configuration_candidate_revision: None,
+        timezone: input.timezone,
     };
     write(&u)?;
     s.phase = "updating".into();
@@ -798,6 +804,9 @@ async fn prepare_replacement(d: &Deployment, u: &mut Update) -> Result<String> {
     let mut service = u.old.clone();
     service.image = u.candidate.clone();
     service.spec["Image"] = json!(u.candidate);
+    if u.timezone.is_some() {
+        follow_server_zone(&mut service.spec, u.timezone.as_deref());
+    }
     let intent = creation::Intent::new(d, service, &u.id);
     u.replacement_intent = Some(intent.clone());
     u.stage = "creating-replacement".into();
@@ -819,6 +828,22 @@ async fn prepare_replacement(d: &Deployment, u: &mut Update) -> Result<String> {
     u.stage = "replacement-created".into();
     write(u)?;
     Ok(container)
+}
+/// Containers created before Thelxinoe followed the server's time zone run in UTC; their
+/// replacement adopts the server's. A zone taken from a transferred original is kept.
+fn follow_server_zone(spec: &mut Value, zone: Option<&str>) {
+    let Some(env) = spec["Env"].as_array_mut() else {
+        return;
+    };
+    let utc = |v: &Value| v == "TZ=UTC";
+    if env
+        .iter()
+        .any(|v| v.as_str().is_some_and(|v| v.starts_with("TZ=")) && !utc(v))
+    {
+        return;
+    }
+    env.retain(|v| !utc(v));
+    env.push(json!(zone_env(zone)));
 }
 pub(super) async fn reconcile_recyclarr(key: &str) -> Result<()> {
     let mut service = load(key)?;
@@ -1122,6 +1147,23 @@ mod tests {
             rollback(&deployment, &mut update).await.unwrap_err().0,
             StatusCode::CONFLICT
         );
+    }
+
+    #[test]
+    fn replacements_adopt_the_server_zone_over_utc_only() {
+        let zone = Some("Europe/Paris");
+        for (before, after) in [
+            (
+                json!(["PUID=1", "TZ=UTC"]),
+                json!(["PUID=1", "TZ=Europe/Paris"]),
+            ),
+            (json!(["PUID=1"]), json!(["PUID=1", "TZ=Europe/Paris"])),
+            (json!(["TZ=Asia/Tokyo"]), json!(["TZ=Asia/Tokyo"])),
+        ] {
+            let mut spec = json!({ "Env": before });
+            follow_server_zone(&mut spec, zone);
+            assert_eq!(spec["Env"], after);
+        }
     }
 }
 

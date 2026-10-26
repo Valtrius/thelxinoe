@@ -1114,10 +1114,11 @@ async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
                 )
                 .await;
             }
+            let timezone = crate::timezones::server_zone_name(&state.db).await?;
             let started = controller_call(
                 state,
                 &format!("/transfers/{}/start", t.id),
-                Some(json!({"revision":t.review["plan"]["revision"],"compose_mode":t.choices["compose_mode"]})),
+                Some(json!({"revision":t.review["plan"]["revision"],"compose_mode":t.choices["compose_mode"],"timezone":timezone})),
             )
             .await;
             match started {
