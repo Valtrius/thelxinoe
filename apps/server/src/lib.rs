@@ -21,6 +21,7 @@ pub mod error;
 mod grants;
 mod history;
 mod jellyfin;
+mod jellyfin_import;
 pub mod library;
 pub mod maintenance;
 mod managers;
@@ -201,6 +202,7 @@ pub fn router(state: AppState) -> Router {
         .merge(product::router())
         .merge(tools::router())
         .merge(jellyfin::router())
+        .merge(jellyfin_import::router())
         .merge(online::router(state.clone()))
         .merge(managers::router())
         .merge(segments::router())

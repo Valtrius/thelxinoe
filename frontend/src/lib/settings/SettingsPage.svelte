@@ -449,6 +449,13 @@
           openSettings={(name) => openSettings(name)}
           {revision}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
+    {#if section === 'jellyfin-import'}{#await settingsPages.JellyfinImport()}{@render loading(
+          'Loading settings',
+        )}{:then { default: JellyfinImport }}<JellyfinImport
+          {timeFormat}
+          timezone={user.timezone}
+          openSettings={(name, service) => openSettings(name, service)}
+        />{:catch caught}{@render failed(caught)}{/await}{/if}
     {#if section === 'retention'}{#await settingsPages.RetentionSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: RetentionSettings }}<RetentionSettings

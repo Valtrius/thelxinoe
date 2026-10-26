@@ -157,6 +157,30 @@ export const settingsSearchIndex: Record<
       terms: 'client id secret oauth application integration',
     },
   ],
+  'jellyfin-import': [
+    {
+      title: 'Jellyfin server',
+      terms:
+        'jellyfin migrate migration import address url api key connect forget',
+    },
+    {
+      title: 'Matching',
+      terms: 'library tmdb imdb tvdb ids files titles',
+    },
+    {
+      title: 'People',
+      terms: 'jellyfin accounts users map import into skip',
+    },
+    {
+      title: 'What to import',
+      terms: 'watched played resume points progress favorites',
+    },
+    {
+      // The page shows a preview before an import and its report after.
+      title: ['Preview', 'Matched by title', 'Not found', 'Last import'],
+      terms: 'jellyfin import again report history watched',
+    },
+  ],
   retention: [
     { title: 'Movies', terms: autoDeleteTerms },
     {

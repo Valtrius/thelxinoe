@@ -6,6 +6,7 @@ import {
   Boxes,
   Clapperboard,
   Hourglass,
+  Import,
   Laptop,
   Link,
   MonitorSmartphone,
@@ -99,6 +100,13 @@ const admin: SettingsPageInfo[] = [
     icon: Boxes,
     description:
       'Managed containers and connections for requests, downloads and library automation.',
+  },
+  {
+    id: 'jellyfin-import',
+    label: 'Jellyfin import',
+    icon: Import,
+    description:
+      'Watched state, resume points and favorites from an existing Jellyfin server.',
   },
   {
     id: 'retention',
