@@ -75,7 +75,7 @@ pub(super) async fn defaults(
     input: Defaults,
     p: thelxinoe_core::Principal,
 ) -> anyhow::Result<()> {
-    db.write("managers.defaults", move|db|{let tx=db.transaction()?;tx.execute("UPDATE manager_services SET defaults=?1,generation=?3 WHERE id=?2",params![serde_json::to_string(&input)?,id,thelxinoe_core::id()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.defaults',?2,?3)",params![p.user.id,id,now()])?;tx.commit()?;Ok(())}).await
+    db.write("managers.defaults", move|db|{let tx=db.transaction()?;tx.execute("UPDATE manager_services SET defaults=?1,generation=?3 WHERE id=?2",params![serde_json::to_string(&input)?,id,thelxinoe_core::id()])?;connections::retry_requests(&tx,&id)?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.defaults',?2,?3)",params![p.user.id,id,now()])?;tx.commit()?;Ok(())}).await
 }
 
 pub(super) async fn initialize_defaults(
@@ -84,10 +84,13 @@ pub(super) async fn initialize_defaults(
     input: Defaults,
 ) -> anyhow::Result<()> {
     db.write("managers.initialize_defaults", move |db| {
-        db.execute(
+        let tx = db.transaction()?;
+        tx.execute(
             "UPDATE manager_services SET defaults=?1,generation=?2 WHERE id=?3",
             params![serde_json::to_string(&input)?, id(), key],
         )?;
+        connections::retry_requests(&tx, &key)?;
+        tx.commit()?;
         Ok(())
     })
     .await

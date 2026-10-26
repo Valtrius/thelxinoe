@@ -493,6 +493,118 @@ async fn seerr_links_only_owned_pairs_and_preserves_conflicting_native_connectio
     upstream.abort();
 }
 
+#[tokio::test]
+async fn saved_defaults_retry_the_seerr_link_that_waited_for_them() {
+    let (_temp, state, cookie, manager_id, manager_port, _writes, manager_upstream) =
+        existing().await;
+    call(
+        &state,
+        &format!("/api/v1/admin/services/{manager_id}/connection"),
+        "PUT",
+        json!({"port":manager_port,"url_base":"","secret":"correct-fixture-api-key","allow_unverified":true}),
+        &cookie,
+    )
+    .await;
+    state
+        .managers
+        .docker
+        .lock()
+        .unwrap()
+        .get_mut(&format!("containers/{}", "a".repeat(64)))
+        .unwrap()["running"] = json!(true);
+    let native = Arc::new(tokio::sync::Mutex::new(Vec::<Value>::new()));
+    let records = native.clone();
+    let stub = Router::new().fallback(move |request: Request<axum::body::Body>| {
+        let records = records.clone();
+        async move {
+            let path = request.uri().path().to_owned();
+            let create = request.method() == reqwest::Method::POST;
+            Json(match path.as_str() {
+                "/api/v1/status" => json!({"version":"3"}),
+                "/api/v1/settings/public" => json!({"initialized":true}),
+                "/api/v1/settings/radarr" if create => {
+                    let bytes = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+                        .await
+                        .unwrap();
+                    let mut row: Value = serde_json::from_slice(&bytes).unwrap();
+                    row["id"] = json!(100);
+                    records.lock().await.push(row.clone());
+                    row
+                }
+                "/api/v1/settings/radarr" => json!(*records.lock().await),
+                _ => Value::Null,
+            })
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let upstream = tokio::spawn(async move {
+        axum::serve(listener, stub).await.unwrap();
+    });
+    let container = "b".repeat(64);
+    state.managers.docker.lock().unwrap().insert(format!("containers/{container}"),json!({"id":container,"name":"localhost","running":true,"mounts":[],"networks":[{"id":"shared","address":"127.0.0.1"}]}));
+    let registered=call(&state,"/api/v1/admin/support","POST",json!({"kind":"seerr","name":"Seerr","container_id":container,"port":port,"credentials":{"secret":"fixture-seerr-key"}}),&cookie).await;
+    assert_eq!(registered.0, StatusCode::OK, "{}", registered.2);
+    let seerr_id = registered.2["id"].as_str().unwrap().to_owned();
+    state
+        .db
+        .write("test.own", |db| Ok(crate::test_support::own(db)?))
+        .await
+        .unwrap();
+    let link = async || {
+        call(
+            &state,
+            "/api/v1/admin/service-connections",
+            "GET",
+            Value::Null,
+            &cookie,
+        )
+        .await
+        .2["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["source_id"] == seerr_id)
+            .unwrap()
+            .clone()
+    };
+    let reason = "Choose an existing root folder and request profile for this manager first";
+    connections::tick(&state).await.unwrap();
+    assert_eq!(link().await["state"], "conflict");
+    assert_eq!(link().await["error"], reason);
+    // A refused request says why instead of asking to connect a linked Seerr.
+    let request = call(
+        &state,
+        "/api/v1/seerr/requests",
+        "POST",
+        json!({"media_type":"movie","media_id":603,"profile":{"source":"custom","service_id":manager_id,"profile_id":1}}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(request.0, StatusCode::CONFLICT, "{}", request.2);
+    assert_eq!(
+        request.2["error"]["message"],
+        format!("Seerr isn't connected to Existing Radarr: {reason}")
+    );
+    let saved = call(
+        &state,
+        &format!("/api/v1/admin/managers/{manager_id}/defaults"),
+        "PUT",
+        json!({"root_folder":"/movies","quality_profile":1,"metadata_profile":null,"monitored":true}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.2);
+    connections::tick(&state).await.unwrap();
+    assert_eq!(link().await["state"], "connected");
+    let records = native.lock().await;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["activeDirectory"], "/movies");
+    drop(records);
+    manager_upstream.abort();
+    upstream.abort();
+}
+
 fn recreate(state: &AppState, from: &str, to: &str, mounts: Value) {
     let mut docker = state.managers.docker.lock().unwrap();
     docker.insert(format!("containers/{from}"), Value::Null);
