@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isTitleRef, statusChip, statusText } from './status';
+import { hasStatus, isTitleRef, statusChip, statusText } from './status';
 
 const now = Date.UTC(2026, 9, 17, 12);
 const at = (iso: string) => Date.parse(iso) / 1000;
@@ -67,9 +67,21 @@ describe('title status', () => {
     );
   });
 
-  it('shows no poster chip for available titles', () => {
+  it('counts episodes on series posters and shows nothing for idle titles', () => {
     expect(statusChip({ state: 'available' }, 'UTC', now)).toBeNull();
     expect(statusChip(null, 'UTC', now)).toBeNull();
+    expect(
+      statusChip(
+        { state: 'available', episodes: { available: 11, total: 11 } },
+        'UTC',
+        now,
+      ),
+    ).toEqual({ label: '11/11', tone: 'success' });
+    expect(
+      statusChip({ state: 'idle', inactive: true }, 'UTC', now),
+    ).toBeNull();
+    expect(hasStatus({ state: 'idle' })).toBe(false);
+    expect(hasStatus({ state: 'unmonitored' })).toBe(true);
     expect(
       statusChip(
         { state: 'partial', episodes: { available: 3, total: 9 } },

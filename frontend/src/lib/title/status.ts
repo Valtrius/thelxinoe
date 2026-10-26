@@ -9,7 +9,8 @@ export type TitleState =
   | 'upcoming'
   | 'missing'
   | 'unmonitored'
-  | 'unavailable';
+  | 'unavailable'
+  | 'idle';
 
 export type TitleStatus = {
   state: TitleState;
@@ -19,6 +20,8 @@ export type TitleStatus = {
   episodes?: { available: number; total: number };
   downloading?: number;
   monitored?: boolean;
+  /** Nothing is here and nothing will come. */
+  inactive?: boolean;
 };
 
 export type StatusTone = 'success' | 'accent' | 'warning' | 'muted';
@@ -65,7 +68,13 @@ const tones: Record<TitleState, StatusTone> = {
   missing: 'warning',
   unmonitored: 'muted',
   unavailable: 'muted',
+  idle: 'muted',
 };
+
+/** Whether a status has a line to show; idle titles have none. */
+export const hasStatus = (
+  status: TitleStatus | null | undefined,
+): status is TitleStatus => !!status && status.state !== 'idle';
 
 /** The status line of a title page or episode row. */
 export function statusText(
@@ -111,18 +120,23 @@ export function statusText(
       return { label: 'Not monitored', tone };
     case 'unavailable':
       return { label: 'Not available', tone };
+    case 'idle':
+      // Never shown; see hasStatus.
+      return { label: '', tone };
   }
 }
 
-/** A short chip for a poster. Available titles need none. */
+/** A short chip for a poster. Available movies and idle titles need none. */
 export function statusChip(
   status: TitleStatus | null | undefined,
   timezone: string,
   now = Date.now(),
 ): { label: string; tone: StatusTone } | null {
-  if (!status || status.state === 'available') return null;
+  if (!hasStatus(status) || (status.state === 'available' && !status.episodes))
+    return null;
   const tone = tones[status.state];
   switch (status.state) {
+    case 'available':
     case 'partial':
       return {
         label: `${status.episodes?.available ?? 0}/${status.episodes?.total ?? 0}`,

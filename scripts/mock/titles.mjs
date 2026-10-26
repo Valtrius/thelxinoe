@@ -142,7 +142,9 @@ function aggregate(episodes, monitored = true) {
     return { ...base, state: 'available' };
   if (available) return { ...base, state: 'partial' };
   if (!aired.length) return { ...base, state: 'upcoming' };
-  return { ...base, state: monitored ? 'missing' : 'unmonitored' };
+  return monitored
+    ? { ...base, state: 'missing' }
+    : { ...base, state: 'unmonitored', inactive: true };
 }
 
 /** Seasons of a library show or of a Sonarr-only series, raw states. */
@@ -247,7 +249,9 @@ export function statusOf(s, item) {
     const monitored = item.monitored !== false;
     return collapse(
       item.available === false
-        ? { state: monitored ? 'missing' : 'unmonitored', monitored }
+        ? monitored
+          ? { state: 'missing', monitored }
+          : { state: 'unmonitored', monitored, inactive: true }
         : { state: 'available', monitored },
       admin,
     );

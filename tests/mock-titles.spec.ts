@@ -58,6 +58,15 @@ test('posters and title pages show Radarr and Sonarr status in each role', async
   await expect(card(page, 'movie-0').locator('[data-title-chip]')).toHaveCount(
     0,
   );
+  // Only what will not come is greyed out, whether Radarr has it alone or not.
+  const art = (id: string) => card(page, id).locator('img[data-art]');
+  await expect(art('movie-23')).toHaveClass(/grayscale/);
+  await expect(art('tmdb:37')).not.toHaveClass(/grayscale/);
+  await page.goto('/#library/shows');
+  await expect(
+    page.locator('[data-title-chip="available"]').first(),
+  ).toHaveText(/^\d+\/\d+$/);
+  await page.goto('/#library/movies');
   await card(page, 'tmdb:35').locator('.card-primary').click();
   await expect(
     page.getByRole('heading', { level: 1, name: 'The Quiet Harbor' }),

@@ -163,7 +163,7 @@
             aria-hidden="true"
             data-art-backdrop
           />{/if}<img
-          class={`absolute size-full ${narrow ? 'object-contain' : 'object-cover'} ${mediaCardThumbnailClass} ${item.virtual ? 'opacity-45 grayscale' : ''}`}
+          class={`absolute size-full ${narrow ? 'object-contain' : 'object-cover'} ${mediaCardThumbnailClass} ${item.status?.inactive ? 'opacity-45 grayscale' : ''}`}
           src={source}
           srcset={sourceSet}
           sizes="auto, 350px"

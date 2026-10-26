@@ -160,7 +160,7 @@ fn movies_follow_file_queue_release_and_monitoring_precedence() {
     );
     assert_eq!(
         shown(movie(5, false), true),
-        json!({"state":"unmonitored","monitored":false})
+        json!({"state":"unmonitored","monitored":false,"inactive":true})
     );
     assert_eq!(movie(6, false).state, Phase::Queued);
     assert_eq!(
@@ -170,7 +170,7 @@ fn movies_follow_file_queue_release_and_monitoring_precedence() {
     // An unmonitored title will not arrive, even before its release.
     assert_eq!(
         shown(movie(9, false), false),
-        json!({"state":"unavailable","release":FUTURE_DAY})
+        json!({"state":"unavailable","release":FUTURE_DAY,"inactive":true})
     );
     // A playable library copy wins over everything Radarr reports.
     assert_eq!(movie(4, true).state, Phase::Available);
@@ -182,7 +182,7 @@ fn movies_follow_file_queue_release_and_monitoring_precedence() {
     );
     assert_eq!(
         shown(movie(5, false), false),
-        json!({"state":"unavailable"})
+        json!({"state":"unavailable","inactive":true})
     );
     assert_eq!(
         shown(movie(3, false), false),
@@ -264,10 +264,10 @@ fn episodes_seasons_and_shows_aggregate_their_episodes() {
         shown(season_status(series, 1, &HashSet::new(), NOW), true),
         json!({"state":"downloading","progress":0.75,"episodes":{"available":1,"total":3},"downloading":1,"monitored":true})
     );
-    // An unmonitored season is not coming, even if its episodes have not aired.
+    // Sonarr fetches monitored episodes, even in a season it no longer monitors.
     assert_eq!(
         shown(season_status(series, 2, &HashSet::new(), NOW), true),
-        json!({"state":"unmonitored","release":FUTURE_AT,"episodes":{"available":0,"total":0},"monitored":false})
+        json!({"state":"upcoming","release":FUTURE_AT,"episodes":{"available":0,"total":0},"monitored":false})
     );
     // An episode obtained before its air date counts as both aired and present.
     assert_eq!(
@@ -298,11 +298,16 @@ fn episodes_seasons_and_shows_aggregate_their_episodes() {
     let unwatched = found(&idle, "sonarr", 11);
     assert_eq!(
         shown(show_status(unwatched, &HashSet::new(), NOW), true),
-        json!({"state":"unmonitored","episodes":{"available":0,"total":1},"monitored":false})
+        json!({"state":"unmonitored","episodes":{"available":0,"total":1},"monitored":false,"inactive":true})
+    );
+    // A season Sonarr monitors is not followed while its series isn't.
+    assert_eq!(
+        shown(season_status(unwatched, 1, &HashSet::new(), NOW), true),
+        json!({"state":"unmonitored","episodes":{"available":0,"total":1},"monitored":true,"inactive":true})
     );
     assert_eq!(
         shown(show_status(unwatched, &HashSet::new(), NOW), false),
-        json!({"state":"unavailable","episodes":{"available":0,"total":1}})
+        json!({"state":"unavailable","episodes":{"available":0,"total":1},"inactive":true})
     );
 }
 
@@ -343,13 +348,104 @@ fn episode_totals_leave_out_aired_episodes_that_are_not_monitored() {
         shown(season_status(series, 2, &HashSet::new(), NOW), true),
         json!({"state":"available","episodes":{"available":1,"total":1},"monitored":false})
     );
-    // Aired episodes that are not wanted do not make a monitored show upcoming.
+    // Aired episodes that are not wanted do not make a monitored show upcoming, and an
+    // ended one with none monitored has nothing more to fetch.
     assert_eq!(
         shown(
             show_status(found(&snapshot, "sonarr", 21), &HashSet::new(), NOW),
             true
         ),
-        json!({"state":"unmonitored","episodes":{"available":0,"total":0},"monitored":true})
+        json!({"state":"idle","episodes":{"available":0,"total":0},"monitored":true,"inactive":true})
+    );
+}
+
+#[test]
+fn series_without_files_wait_for_what_sonarr_will_fetch() {
+    let episode = |id: i64, season: i64, air: Option<&str>, monitored: bool, file: bool| json!({"id":id,"seasonNumber":season,"episodeNumber":1,"airDateUtc":air,"monitored":monitored,"hasFile":file});
+    // Watched and deleted: aired, unmonitored and gone.
+    let gone = |id: i64| episode(id, 1, Some(PAST), false, false);
+    let seasons = |first: bool| json!([{"seasonNumber":1,"monitored":first},{"seasonNumber":2,"monitored":true}]);
+    let snapshot = snapshot_of(inventory(
+        "sonarr",
+        json!([
+            {"id":30,"tvdbId":230,"title":"Between seasons","monitored":true,"status":"continuing",
+             "monitorNewItems":"all","seasons":[{"seasonNumber":1,"monitored":false}]},
+            {"id":31,"tvdbId":231,"title":"Closed","monitored":true,"status":"continuing",
+             "monitorNewItems":"none","seasons":[{"seasonNumber":1,"monitored":false}]},
+            {"id":32,"tvdbId":232,"title":"Season kept","monitored":true,"status":"continuing",
+             "monitorNewItems":"none","seasons":[{"seasonNumber":1,"monitored":true}]},
+            {"id":33,"tvdbId":233,"title":"Returning","monitored":true,"status":"continuing","seasons":seasons(false)},
+            {"id":34,"tvdbId":234,"title":"Announced","monitored":true,"status":"continuing","seasons":seasons(false)},
+            {"id":35,"tvdbId":235,"title":"Leftover","monitored":true,"status":"ended","seasons":seasons(false)},
+            {"id":36,"tvdbId":236,"title":"Behind","monitored":true,"status":"continuing","seasons":seasons(true)},
+            {"id":37,"tvdbId":237,"title":"Kept","monitored":false,"status":"ended",
+             "seasons":[{"seasonNumber":1,"monitored":false}]}
+        ]),
+        json!({
+            "30":[gone(301)],
+            "31":[gone(311)],
+            "32":[gone(321)],
+            "33":[gone(331),episode(332,2,Some(FUTURE),true,false)],
+            "34":[gone(341),episode(342,2,None,true,false)],
+            "35":[gone(351),episode(352,2,None,true,false)],
+            "36":[episode(361,1,Some(PAST),true,false),episode(362,2,Some(FUTURE),true,false)],
+            "37":[episode(371,1,Some(PAST),false,true),gone(372)]
+        }),
+        json!([]),
+    ));
+    let show = |id: i64, admin: bool| {
+        shown(
+            show_status(found(&snapshot, "sonarr", id), &HashSet::new(), NOW),
+            admin,
+        )
+    };
+    let nothing = json!({"available":0,"total":0});
+    // New seasons arrive monitored, so the series is still followed.
+    assert_eq!(
+        show(30, true),
+        json!({"state":"idle","episodes":nothing,"monitored":true})
+    );
+    assert_eq!(show(30, false), json!({"state":"idle","episodes":nothing}));
+    // Nothing more can arrive.
+    assert_eq!(
+        show(31, true),
+        json!({"state":"idle","episodes":nothing,"monitored":true,"inactive":true})
+    );
+    // A season Sonarr still monitors takes the episodes it adds later.
+    assert_eq!(
+        show(32, true),
+        json!({"state":"idle","episodes":nothing,"monitored":true})
+    );
+    assert_eq!(
+        shown(
+            season_status(found(&snapshot, "sonarr", 32), 1, &HashSet::new(), NOW),
+            true
+        ),
+        json!({"state":"idle","episodes":nothing,"monitored":true})
+    );
+    // A monitored season to come, after seasons that are gone.
+    assert_eq!(
+        show(33, true),
+        json!({"state":"upcoming","release":FUTURE_AT,"episodes":nothing,"monitored":true})
+    );
+    assert_eq!(
+        show(34, true),
+        json!({"state":"upcoming","episodes":nothing,"monitored":true})
+    );
+    // An ended series' unscheduled episodes will not air.
+    assert_eq!(
+        show(35, true),
+        json!({"state":"idle","episodes":nothing,"monitored":true,"inactive":true})
+    );
+    // What is missing now matters more than what comes later.
+    assert_eq!(
+        show(36, true),
+        json!({"state":"missing","release":FUTURE_AT,"episodes":{"available":0,"total":1},"monitored":true})
+    );
+    // Files on disk keep an unmonitored series available.
+    assert_eq!(
+        show(37, true),
+        json!({"state":"available","episodes":{"available":1,"total":1},"monitored":false})
     );
 }
 fn snapshot_of(inventory: Inventory) -> Snapshot {
@@ -1174,7 +1270,11 @@ async fn browse_detail_seasons_and_lookup_expose_cached_status() {
     assert_eq!(items[4]["status"]["state"], "upcoming");
     assert_eq!(items[5]["status"]["state"], "available");
     assert_eq!(items[6]["status"]["state"], "queued");
-    assert_eq!(items[7]["status"], json!({"state":"unavailable"}));
+    // Users see an unmonitored title as one that will not come.
+    assert_eq!(
+        items[7]["status"],
+        json!({"state":"unavailable","inactive":true})
+    );
     let admin = get("/api/v1/catalog?kind=movie&q=A".into(), bob.clone()).await;
     let items = admin.2["items"].as_array().unwrap();
     assert_eq!(
