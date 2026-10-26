@@ -14,7 +14,7 @@
     choose,
     filtering,
     seriesStates,
-    sorts,
+    sortsFor,
     watchStates,
     type LibraryCounts,
     type LibraryView,
@@ -120,7 +120,7 @@
         class={`absolute top-11 left-0 w-64 border border-line-strong bg-surface-strong p-3 shadow-xl ${toolbarMenuClass}`}
       >
         <p class={`${eyebrowTextClass} mb-2`}>SORT BY</p>
-        {#each sorts as [sort, label] (sort)}
+        {#each sortsFor(shows) as [sort, label] (sort)}
           <div
             class="flex items-center gap-1 border-t border-line py-1.5 first:border-0"
           >

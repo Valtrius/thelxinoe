@@ -499,6 +499,8 @@ fn manager_titles_without_catalog_items_become_virtual_items() {
                 added: Some(1_577_836_800),
                 rating: Some(6.5),
                 genres: vec!["Drama".into()],
+                released: Some(1_577_880_000),
+                ..Facts::default()
             }
         )
     );
@@ -931,6 +933,157 @@ INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
             .iter()
             .all(|id| movies.tmdb.contains(id))
     );
+}
+
+#[tokio::test]
+async fn top_level_lists_sort_by_files_releases_and_airings() {
+    let (_temp, state, alice, _) = api_fixture().await;
+    // A missing file weighs nothing, and a file holding two episodes counts once.
+    state.db.write("test.fixture", |db| {
+        db.execute_batch("UPDATE media SET metadata=json_set(metadata,'$.runtime',120) WHERE id='movie-bound';
+UPDATE media SET metadata=json_set(metadata,'$.release_date','2022-03-04T00:00:00Z') WHERE id='movie-matched';
+UPDATE media_files SET size=5000 WHERE id='f2';
+INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at,present) VALUES
+ ('f3','movies','/media/movies/epsilon.mkv','g',9000,'m','f3','{}',1,0),
+ ('f4','shows','/media/shows/e1-e2.mkv','g',30,'m','f4','{}',1,1);
+INSERT INTO media_sources VALUES ('movie-plain','f3'),('e1','f4'),('e2','f4');")?;
+        Ok(())
+    }).await.unwrap();
+    let movies = inventory(
+        "radarr",
+        json!([
+            {"id":2,"tmdbId":102,"title":"alpha wanted","monitored":true,"isAvailable":true,"sizeOnDisk":1000,"inCinemas":PAST},
+            {"id":3,"tmdbId":103,"title":"Gamma","monitored":true,"isAvailable":false,"digitalRelease":FUTURE,
+             "runtime":95,"statistics":{"sizeOnDisk":3000}},
+            {"id":7,"tmdbId":107,"title":"Queued one","monitored":true,"isAvailable":true,"runtime":0}
+        ]),
+        json!({}),
+        json!([]),
+    );
+    let mut shows = sonarr();
+    let titles = Arc::make_mut(&mut shows.titles);
+    let series = titles.get_mut(&10).unwrap();
+    series.previous_airing = Some("2025-01-01T00:00:00Z".into());
+    series.next_airing = Some(FUTURE.into());
+    let unwatched = titles.get_mut(&11).unwrap();
+    unwatched.previous_airing = Some(PAST.into());
+    unwatched.statistics = Some(Statistics {
+        episode_file_count: 3,
+        size_on_disk: 7000,
+        ..Statistics::default()
+    });
+    replace(
+        &state,
+        snapshot(vec![("radarr", movies), ("sonarr", shows)]),
+    );
+    let list = |query: &'static str| {
+        let (state, alice) = (state.clone(), alice.clone());
+        async move {
+            let (status, _, body) = call(
+                &state,
+                &format!("/api/v1/catalog?{query}"),
+                "GET",
+                Value::Null,
+                &alice,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{query}: {body}");
+            body["items"].as_array().unwrap().clone()
+        }
+    };
+    for (query, expected) in [
+        (
+            "kind=movie&sort=size&order=desc",
+            vec![
+                "delta",
+                "Gamma",
+                "alpha wanted",
+                "Beta",
+                "Epsilon",
+                "Queued one",
+            ],
+        ),
+        (
+            "kind=movie&sort=size",
+            vec![
+                "alpha wanted",
+                "Gamma",
+                "delta",
+                "Beta",
+                "Epsilon",
+                "Queued one",
+            ],
+        ),
+        (
+            "kind=movie&sort=runtime&order=desc",
+            vec![
+                "Beta",
+                "Gamma",
+                "alpha wanted",
+                "delta",
+                "Epsilon",
+                "Queued one",
+            ],
+        ),
+        (
+            "kind=movie&sort=released",
+            vec![
+                "alpha wanted",
+                "delta",
+                "Gamma",
+                "Beta",
+                "Epsilon",
+                "Queued one",
+            ],
+        ),
+        (
+            "kind=show&sort=episodes&order=desc",
+            vec!["Unwatched series", "Show"],
+        ),
+        (
+            "kind=show&sort=size&order=desc",
+            vec!["Unwatched series", "Show"],
+        ),
+        (
+            "kind=show&sort=last_aired",
+            vec!["Unwatched series", "Show"],
+        ),
+        (
+            "kind=show&sort=next_airing&order=desc",
+            vec!["Show", "Unwatched series"],
+        ),
+    ] {
+        let titles = list(query)
+            .await
+            .iter()
+            .map(|item| item["title"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(titles, expected, "{query}");
+    }
+    // Cards carry what they can be sorted by, so they show the value they are.
+    let movies = list("kind=movie&sort=size&order=desc").await;
+    assert_eq!(movies[0]["size"], 5000);
+    assert_eq!(movies[0]["released"], 1_646_395_200);
+    assert_eq!(movies[0]["added"], 1);
+    assert!(movies[0].get("runtime").is_none());
+    assert_eq!(movies[1]["released"], FUTURE_DAY);
+    let shows = list("kind=show").await;
+    assert_eq!(
+        [
+            &shows[0]["size"],
+            &shows[0]["episodes"],
+            &shows[0]["last_aired"],
+            &shows[0]["next_airing"]
+        ],
+        [
+            &json!(31),
+            &json!(2),
+            &json!(1_735_689_600),
+            &json!(FUTURE_AT)
+        ]
+    );
+    assert_eq!(shows[1]["size"], 7000);
+    assert_eq!(shows[1]["episodes"], 3);
 }
 
 #[tokio::test]

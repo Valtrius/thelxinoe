@@ -34,9 +34,11 @@
     filtering,
     libraryViewKey,
     parseLibraryView,
+    sortDetail,
     viewQuery,
     type LibraryCounts,
     type LibraryView,
+    type SortValues,
     unfiltered,
   } from './library-view';
   let {
@@ -66,7 +68,7 @@
     collectionId?: string;
     filtersChanged?: (query: string, collection: string) => void;
   }>();
-  type Item = {
+  type Item = SortValues & {
     id: string;
     kind: string;
     title: string;
@@ -90,12 +92,12 @@
     busy = $state(true);
   // Movies and Shows keep each user's sorting and filters.
   const viewKey = $derived(libraryViewKey(domain));
+  const shows = $derived(domain === 'Shows');
   const view = $derived<LibraryView | undefined>(
     titles
-      ? parseLibraryView($appearance.provider_preferences[viewKey])
+      ? parseLibraryView($appearance.provider_preferences[viewKey], shows)
       : undefined,
   );
-  const shows = $derived(domain === 'Shows');
   const viewParameters = $derived(view ? viewQuery(view, shows) : '');
   const filtered = $derived(!!view && filtering(view, shows));
   function viewChanged(next: LibraryView) {
@@ -469,6 +471,9 @@
         open={() => void open(item)}
         details={titles ? undefined : () => void select(item)}
         timezone={titles ? timezone : undefined}
+        detail={view && !breadcrumbs.length
+          ? sortDetail(view.sort, item, timezone)
+          : undefined}
         play={['movie', 'episode', 'track'].includes(item.kind) &&
         item.available
           ? () =>

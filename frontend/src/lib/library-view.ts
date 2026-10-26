@@ -1,4 +1,17 @@
-export type LibrarySort = 'title' | 'year' | 'added' | 'rating';
+import { formatBytes } from './providers/utils';
+import { day } from './title/status';
+
+export type LibrarySort =
+  | 'title'
+  | 'year'
+  | 'added'
+  | 'rating'
+  | 'size'
+  | 'runtime'
+  | 'released'
+  | 'episodes'
+  | 'last_aired'
+  | 'next_airing';
 export type SortOrder = 'asc' | 'desc';
 export type WatchState = 'unwatched' | 'in_progress' | 'watched';
 export type Availability =
@@ -22,12 +35,31 @@ export type LibraryCounts = {
   series?: Record<Exclude<SeriesState, 'any'>, number>;
 };
 
-export const sorts: [LibrarySort, string][] = [
+/** A card's values for the sorts it shows, as the list's server sends them. */
+export type SortValues = Partial<
+  Record<Exclude<LibrarySort, 'title' | 'year'>, number>
+>;
+
+const movieSorts: [LibrarySort, string][] = [
   ['title', 'Title'],
   ['year', 'Year'],
+  ['released', 'Release date'],
   ['added', 'Date added'],
   ['rating', 'Rating'],
+  ['runtime', 'Runtime'],
+  ['size', 'Size on disk'],
 ];
+const showSorts: [LibrarySort, string][] = [
+  ['title', 'Title'],
+  ['year', 'Year'],
+  ['last_aired', 'Last aired'],
+  ['next_airing', 'Next airing'],
+  ['added', 'Date added'],
+  ['rating', 'Rating'],
+  ['episodes', 'Episodes'],
+  ['size', 'Size on disk'],
+];
+export const sortsFor = (shows: boolean) => (shows ? showSorts : movieSorts);
 export const watchStates: [WatchState, string][] = [
   ['unwatched', 'Unwatched'],
   ['in_progress', 'In progress'],
@@ -80,13 +112,14 @@ function choices<T extends string>(
 
 export function parseLibraryView(
   serialized: string | null | undefined,
+  shows: boolean,
 ): LibraryView {
   const fallback = defaultLibraryView();
   if (!serialized) return fallback;
   try {
     const saved = JSON.parse(serialized) as Record<string, unknown>;
     return {
-      sort: choice(saved.sort, sorts, fallback.sort),
+      sort: choice(saved.sort, sortsFor(shows), fallback.sort),
       order: saved.order === 'desc' ? 'desc' : 'asc',
       watch: choices(saved.watch, watchStates, fallback.watch),
       availability: choices(
@@ -153,4 +186,35 @@ export function viewQuery(view: LibraryView, shows: boolean) {
   if (shows && view.series !== 'any') query.set('series', view.series);
   if (view.genre) query.set('genre', view.genre);
   return query.toString();
+}
+
+/** What a card shows of the value its list is sorted by; every card shows its year. */
+export function sortDetail(
+  sort: LibrarySort,
+  values: SortValues,
+  timezone: string,
+  now = Date.now(),
+): string | undefined {
+  if (sort === 'title' || sort === 'year') return undefined;
+  const value = values[sort];
+  if (value == null) return undefined;
+  const date = () => day(value, timezone, now);
+  switch (sort) {
+    case 'added':
+      return `Added ${date()}`;
+    case 'rating':
+      return `Rated ${value.toFixed(1)}`;
+    case 'size':
+      return formatBytes(value);
+    case 'runtime':
+      return `${value} min`;
+    case 'released':
+      return `${value * 1000 > now ? 'Releases' : 'Released'} ${date()}`;
+    case 'episodes':
+      return `${value} ${value === 1 ? 'episode' : 'episodes'}`;
+    case 'last_aired':
+      return `Aired ${date()}`;
+    case 'next_airing':
+      return `Airs ${date()}`;
+  }
 }

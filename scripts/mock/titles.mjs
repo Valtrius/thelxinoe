@@ -309,6 +309,20 @@ export function inLibrary(s, media) {
   );
 }
 
+/** When a library show or Sonarr series last aired and next airs. */
+export function airings(s, show) {
+  const dates = seasonsOf(s, show)
+    .flatMap((season) => season.episodes)
+    .map((episode) => episode.air_date)
+    .filter(Boolean);
+  const aired = dates.filter((date) => date <= now());
+  const coming = dates.filter((date) => date > now());
+  return {
+    ...(aired.length ? { last_aired: Math.max(...aired) } : {}),
+    ...(coming.length ? { next_airing: Math.min(...coming) } : {}),
+  };
+}
+
 /** Radarr/Sonarr titles that have no library item, as browse cards. */
 export function virtualCards(s, kind) {
   return kind === 'movie'
@@ -323,6 +337,10 @@ export function virtualCards(s, kind) {
         artwork_url: art('movie', 30 + i),
         metadata: {},
         status: virtualMovieStatus(s, movie),
+        runtime: 110,
+        released: movie.release
+          ? now() + movie.release
+          : Date.UTC(movie.year, 4, 1, 12) / 1000,
       }))
     : kind === 'show'
       ? s.titles.series.map((series, i) => ({
@@ -337,6 +355,7 @@ export function virtualCards(s, kind) {
           metadata: {},
           status: virtualSeriesStatus(s, series),
           ended: Boolean(series.ended),
+          ...airings(s, series),
         }))
       : [];
 }

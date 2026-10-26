@@ -7,7 +7,7 @@ import {
   statistics,
   viewer,
 } from './data.mjs';
-import { inLibrary, statusOf, virtualCards } from './titles.mjs';
+import { airings, inLibrary, statusOf, virtualCards } from './titles.mjs';
 
 export async function mediaApi(s, c) {
   const { path, method, body, query, json, fail } = c;
@@ -85,6 +85,29 @@ export async function mediaApi(s, c) {
               parents.get(episode.parent_id) === item.id &&
               (episode.position > 0 || s.mediaStates[episode.id]?.watched),
           );
+    // What the server reads from library files, Radarr and Sonarr.
+    const sortValues = (item) => {
+      const index = Number(item.id.split('-')[1]);
+      const size = Math.round((2 + ((index * 5) % 23) * 0.5) * 1024 ** 3);
+      if (item.kind === 'movie')
+        return {
+          size: item.available === false ? undefined : size,
+          runtime: 85 + ((index * 11) % 60),
+          released:
+            Date.UTC(item.year, (index * 5) % 12, 1 + (index % 28), 12) / 1000,
+        };
+      const episodes = s.library.filter(
+        (episode) =>
+          episode.kind === 'episode' &&
+          parents.get(episode.parent_id) === item.id &&
+          episode.available !== false,
+      ).length;
+      return {
+        size: episodes ? size : undefined,
+        episodes: episodes || undefined,
+        ...airings(s, item.id),
+      };
+    };
     // Radarr and Sonarr titles have no library item, so no date added.
     const entry = (item, index, own) => {
       const availability = [
@@ -94,11 +117,19 @@ export async function mediaApi(s, c) {
           : []),
         ...(item.status?.state === 'upcoming' ? ['upcoming'] : []),
       ];
-      return {
-        card: item,
-        title: item.title.toLowerCase(),
-        added: own ? now() - index * 86400 : null,
+      const values = {
+        added: own ? now() - index * 86400 : undefined,
         rating: item.metadata?.rating,
+        ...(own ? sortValues(own) : {}),
+      };
+      return {
+        card: {
+          ...item,
+          ...Object.fromEntries(
+            Object.entries(values).filter(([, value]) => value !== undefined),
+          ),
+        },
+        title: item.title.toLowerCase(),
         genres: item.metadata?.genres ?? [],
         watch: item.watched
           ? 'watched'
@@ -156,8 +187,7 @@ export async function mediaApi(s, c) {
     );
     const sort = query.get('sort') ?? 'title';
     const desc = query.get('order') === 'desc';
-    const value = (e) =>
-      sort === 'year' ? e.card.year : sort === 'added' ? e.added : e.rating;
+    const value = (e) => e.card[sort];
     shelf.sort((a, b) => {
       const title = a.title.localeCompare(b.title);
       if (sort === 'title') return desc ? -title : title;

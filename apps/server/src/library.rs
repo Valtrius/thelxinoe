@@ -4,6 +4,7 @@ mod storage;
 use crate::{
     AppState,
     error::{ApiError, Result},
+    managers::status::Facts,
     security,
 };
 use axum::{
@@ -142,13 +143,19 @@ pub struct Browse {
     genre: Option<String>,
 }
 #[derive(Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 enum Sort {
     #[default]
     Title,
     Year,
     Added,
     Rating,
+    Size,
+    Runtime,
+    Released,
+    Episodes,
+    LastAired,
+    NextAiring,
 }
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -204,20 +211,12 @@ pub async fn browse(
 struct Shelved {
     card: Value,
     title: String,
-    added: Option<i64>,
-    rating: Option<f64>,
-    genres: Vec<String>,
+    facts: Facts,
     watch: &'static str,
     availability: Vec<&'static str>,
 }
 impl Shelved {
-    fn new(
-        card: Value,
-        added: Option<i64>,
-        rating: Option<f64>,
-        genres: Vec<String>,
-        started: bool,
-    ) -> Self {
+    fn new(card: Value, facts: Facts, started: bool) -> Self {
         let watch = if card["watched"] == true {
             "watched"
         } else if started {
@@ -240,15 +239,35 @@ impl Shelved {
         Self {
             title: card["title"].as_str().unwrap_or_default().to_lowercase(),
             card,
-            added,
-            rating,
-            genres,
+            facts,
             watch,
             availability,
         }
     }
     fn ended(&self) -> bool {
         self.card["ended"] == true
+    }
+    /// The card with what its list can be sorted by, so it shows the value it is.
+    fn into_card(self) -> Value {
+        let Self {
+            mut card, facts, ..
+        } = self;
+        let sorted = [
+            ("added", json!(facts.added)),
+            ("rating", json!(facts.rating)),
+            ("size", json!(facts.size)),
+            ("runtime", json!(facts.runtime)),
+            ("released", json!(facts.released)),
+            ("episodes", json!(facts.episodes)),
+            ("last_aired", json!(facts.last_aired)),
+            ("next_airing", json!(facts.next_airing)),
+        ];
+        for (key, value) in sorted {
+            if !value.is_null() {
+                card[key] = value;
+            }
+        }
+        card
     }
 }
 
@@ -310,29 +329,50 @@ async fn titles(
     let watch = chosen(&input.watch, &WATCH)?;
     let availability = chosen(&input.availability, &AVAILABILITY)?;
     let grant = crate::grants::artwork(state, p).await?;
-    let (mut cards, added): (Vec<_>, Vec<_>) = storage::titles(&state.db, kind.to_owned())
+    let (mut cards, files): (Vec<_>, Vec<_>) = storage::titles(&state.db, kind.to_owned())
         .await?
         .into_iter()
         .unzip();
     let presentation =
         present_cards(state, p, &mut cards.iter_mut().collect::<Vec<_>>(), &grant).await?;
-    crate::managers::status::decorate(state, p, &mut cards.iter_mut().collect::<Vec<_>>(), &grant)
-        .await?;
+    let mut managed = crate::managers::status::decorate_titles(
+        state,
+        p,
+        &mut cards.iter_mut().collect::<Vec<_>>(),
+        &grant,
+    )
+    .await?;
     let mut shelf = cards
         .into_iter()
-        .zip(added)
-        .map(|(mut card, added)| {
+        .zip(files)
+        .map(|(mut card, files)| {
             let metadata = &card["metadata"];
-            let rating = metadata["vote_average"]
-                .as_f64()
-                .filter(|v| v.is_finite() && *v > 0.0);
-            let genres = metadata["genres"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|genre| genre.as_str().or(genre["name"].as_str()))
-                .map(str::to_owned)
-                .collect();
+            let manager = card["id"]
+                .as_str()
+                .and_then(|id| managed.remove(id))
+                .unwrap_or_default();
+            let facts = Facts {
+                rating: metadata["vote_average"]
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v > 0.0),
+                genres: metadata["genres"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|genre| genre.as_str().or(genre["name"].as_str()))
+                    .map(str::to_owned)
+                    .collect(),
+                runtime: metadata["runtime"]
+                    .as_i64()
+                    .filter(|v| *v > 0)
+                    .or(manager.runtime),
+                released: manager
+                    .released
+                    .or_else(|| crate::managers::status::day(metadata["release_date"].as_str())),
+                last_aired: manager.last_aired,
+                next_airing: manager.next_airing,
+                ..files
+            };
             if kind == "show" {
                 card["ended"] = json!(crate::managers::status::ended(metadata["status"].as_str()));
             }
@@ -340,20 +380,18 @@ async fn titles(
                 .as_str()
                 .and_then(|id| presentation.get(id))
                 .is_some_and(|presented| presented.started);
-            Shelved::new(card, Some(added), rating, genres, started)
+            Shelved::new(card, facts, started)
         })
         .collect::<Vec<_>>();
     shelf.extend(
         crate::managers::status::virtual_titles(state, p, kind, &grant)
             .await?
             .into_iter()
-            .map(|(card, facts)| {
-                Shelved::new(card, facts.added, facts.rating, facts.genres, false)
-            }),
+            .map(|(card, facts)| Shelved::new(card, facts, false)),
     );
     let mut genres = shelf
         .iter()
-        .flat_map(|entry| entry.genres.iter().cloned())
+        .flat_map(|entry| entry.facts.genres.iter().cloned())
         .collect::<Vec<_>>();
     genres.sort_by_key(|genre| genre.to_lowercase());
     genres.dedup();
@@ -389,29 +427,32 @@ async fn titles(
             && input
                 .genre
                 .as_ref()
-                .is_none_or(|genre| entry.genres.contains(genre))
+                .is_none_or(|genre| entry.facts.genres.contains(genre))
     });
     // Stable, so library items keep their place before Radarr and Sonarr titles they tie.
     shelf.sort_by(|a, b| {
         let title = a.title.cmp(&b.title);
+        let (x, y, order) = (&a.facts, &b.facts, input.order);
         match input.sort {
-            Sort::Title if input.order == Order::Desc => title.reverse(),
-            Sort::Title => title,
-            Sort::Year => by(
-                a.card["year"].as_i64(),
-                b.card["year"].as_i64(),
-                input.order,
-            )
-            .then(title),
-            Sort::Added => by(a.added, b.added, input.order).then(title),
-            Sort::Rating => by(a.rating, b.rating, input.order).then(title),
+            Sort::Title if order == Order::Desc => return title.reverse(),
+            Sort::Title => return title,
+            Sort::Year => by(a.card["year"].as_i64(), b.card["year"].as_i64(), order),
+            Sort::Added => by(x.added, y.added, order),
+            Sort::Rating => by(x.rating, y.rating, order),
+            Sort::Size => by(x.size, y.size, order),
+            Sort::Runtime => by(x.runtime, y.runtime, order),
+            Sort::Released => by(x.released, y.released, order),
+            Sort::Episodes => by(x.episodes, y.episodes, order),
+            Sort::LastAired => by(x.last_aired, y.last_aired, order),
+            Sort::NextAiring => by(x.next_airing, y.next_airing, order),
         }
+        .then(title)
     });
     let total = shelf.len();
     let items = shelf
         .into_iter()
         .take(PAGE)
-        .map(|entry| entry.card)
+        .map(Shelved::into_card)
         .collect::<Vec<_>>();
     Ok(json!({"items":items,"total":total,"counts":counts,"genres":genres}))
 }

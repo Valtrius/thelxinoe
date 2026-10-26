@@ -55,6 +55,10 @@ fn time(value: Option<&str>) -> Option<i64> {
         .ok()
         .map(|at| at.timestamp())
 }
+/// Release dates have no time of day; noon UTC is the same date in every timezone.
+pub(crate) fn day(value: Option<&str>) -> Option<i64> {
+    time(value).map(|at| at - at.rem_euclid(86400) + 43200)
+}
 fn positive(value: Option<i64>) -> Option<i64> {
     value.filter(|v| *v > 0)
 }
@@ -79,6 +83,8 @@ struct Statistics {
     episode_count: i64,
     episode_file_count: i64,
     total_episode_count: i64,
+    #[serde(deserialize_with = "bytes")]
+    size_on_disk: i64,
 }
 /// The TMDB rating Radarr lists, else Sonarr's own, as metadata refreshes read them.
 #[derive(Clone, Copy, Debug, Default)]
@@ -108,7 +114,8 @@ pub(crate) fn ended(status: Option<&str>) -> bool {
             .any(|ended| status.eq_ignore_ascii_case(ended))
     })
 }
-/// One Radarr movie or Sonarr series, reduced to what status and title pages show.
+/// One Radarr movie or Sonarr series, reduced to what status, title pages and library
+/// lists show.
 #[derive(Clone, Debug, Default, Deserialize, Hash)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct Title {
@@ -129,6 +136,9 @@ pub(crate) struct Title {
     monitored: bool,
     #[serde(deserialize_with = "lenient")]
     has_file: bool,
+    /// Radarr's; Sonarr's is in the statistics.
+    #[serde(deserialize_with = "bytes")]
+    size_on_disk: i64,
     is_available: Option<bool>,
     in_cinemas: Option<String>,
     digital_release: Option<String>,
@@ -161,6 +171,31 @@ impl Title {
             .iter()
             .find(|image| image.cover_type == kind)
             .and_then(|image| image.url.as_deref())
+    }
+    /// The days a movie reaches cinemas, digital and physical release.
+    fn releases(&self) -> impl Iterator<Item = i64> + '_ {
+        [
+            &self.in_cinemas,
+            &self.digital_release,
+            &self.physical_release,
+        ]
+        .into_iter()
+        .filter_map(|date| day(date.as_deref()))
+    }
+    fn facts(&self) -> Facts {
+        let statistics = self.statistics.as_ref();
+        Facts {
+            added: time(self.added.as_deref()),
+            rating: self.ratings.0,
+            genres: self.genres.clone(),
+            size: positive(statistics.map(|s| s.size_on_disk))
+                .or(positive(Some(self.size_on_disk))),
+            runtime: self.runtime,
+            released: self.releases().min(),
+            episodes: positive(statistics.map(|s| s.episode_file_count)),
+            last_aired: time(self.previous_airing.as_deref()),
+            next_airing: time(self.next_airing.as_deref()),
+        }
     }
     /// What decides whether a series' episode list may have changed upstream.
     fn signature(&self) -> u64 {
@@ -729,15 +764,7 @@ fn transfer<'a>(records: impl IntoIterator<Item = &'a QueueItem>) -> Option<Stat
 }
 
 fn movie_status(inventory: &Inventory, movie: &Title, library: bool, now: i64) -> Status {
-    let releases = [
-        &movie.in_cinemas,
-        &movie.digital_release,
-        &movie.physical_release,
-    ]
-    .into_iter()
-    // Release dates have no time of day; noon UTC is the same date in every timezone.
-    .filter_map(|date| time(date.as_deref()).map(|at| at - at.rem_euclid(86400) + 43200))
-    .collect::<Vec<_>>();
+    let releases = movie.releases().collect::<Vec<_>>();
     let released = movie.is_available.unwrap_or_else(|| {
         movie.status.as_deref() == Some("released") || releases.iter().any(|at| *at <= now)
     });
@@ -1052,6 +1079,34 @@ pub(crate) async fn decorate(
     items: &mut [&mut Value],
     grant: &str,
 ) -> Result<()> {
+    decorated(state, p, items, grant).await.map(drop)
+}
+
+/// [`decorate`] movies or shows, returning what library lists sort their manager titles
+/// by.
+pub(crate) async fn decorate_titles(
+    state: &AppState,
+    p: &Principal,
+    items: &mut [&mut Value],
+    grant: &str,
+) -> Result<HashMap<String, Facts>> {
+    let (snapshot, catalog) = decorated(state, p, items, grant).await?;
+    Ok(catalog
+        .links
+        .iter()
+        .filter_map(|link| {
+            let found = find(&snapshot, manager(&link.kind)?, link)?;
+            Some((link.id.clone(), found.title.facts()))
+        })
+        .collect())
+}
+
+async fn decorated(
+    state: &AppState,
+    p: &Principal,
+    items: &mut [&mut Value],
+    grant: &str,
+) -> Result<(Arc<Snapshot>, Catalog)> {
     let snapshot = snapshot(state);
     let catalog = if snapshot.services.is_empty() {
         Catalog::default()
@@ -1089,7 +1144,7 @@ pub(crate) async fn decorate(
             .map_or(Value::Null, |status| json!(status));
         item["backdrop_url"] = json!(id.as_deref().and_then(|id| backdrops.get(id)));
     }
-    Ok(())
+    Ok((snapshot, catalog))
 }
 
 /// A detail page's status and its manager backdrop, through the item's movie or show.
@@ -1170,12 +1225,22 @@ pub(crate) async fn serve_title_art(
     serve_title(state, &service, entity, kind, request, None).await
 }
 
-/// What library lists sort and filter a manager-only title by, beyond its card.
+/// What library lists sort and filter a movie or show by, beyond its card.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Facts {
     pub(crate) added: Option<i64>,
     pub(crate) rating: Option<f64>,
     pub(crate) genres: Vec<String>,
+    /// Bytes of its files.
+    pub(crate) size: Option<i64>,
+    /// Minutes.
+    pub(crate) runtime: Option<i64>,
+    /// Its first release day.
+    pub(crate) released: Option<i64>,
+    /// Episodes with a file.
+    pub(crate) episodes: Option<i64>,
+    pub(crate) last_aired: Option<i64>,
+    pub(crate) next_airing: Option<i64>,
 }
 
 /// Every manager movie or series without a catalog item, wanted or not, so the library
@@ -1241,14 +1306,7 @@ fn virtual_items(
         if manager == "sonarr" {
             card["ended"] = json!(ended(title.status.as_deref()));
         }
-        items.push((
-            card,
-            Facts {
-                added: time(title.added.as_deref()),
-                rating: title.ratings.0,
-                genres: title.genres.clone(),
-            },
-        ));
+        items.push((card, title.facts()));
     }
     items
 }
