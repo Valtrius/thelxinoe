@@ -131,28 +131,57 @@ pub struct Browse {
     parent: Option<String>,
     q: Option<String>,
     collection: Option<i64>,
+    /// Top-level movie and show lists are sorted and filtered by these.
+    #[serde(default)]
+    sort: Sort,
+    #[serde(default)]
+    order: Order,
+    watch: Option<String>,
+    availability: Option<String>,
+    series: Option<Series>,
+    genre: Option<String>,
 }
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Sort {
+    #[default]
+    Title,
+    Year,
+    Added,
+    Rating,
+}
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum Order {
+    #[default]
+    Asc,
+    Desc,
+}
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum Series {
+    Continuing,
+    Ended,
+}
+const WATCH: [&str; 3] = ["unwatched", "in_progress", "watched"];
+const AVAILABILITY: [&str; 4] = ["downloaded", "downloading", "upcoming", "not_downloaded"];
+/// Lists show at most this many cards.
+const PAGE: usize = 500;
+
 pub async fn browse(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(input): Query<Browse>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::Browse).await?;
-    // Wanted manager titles without a library item join top-level movie and show lists.
-    let wanted = input
+    if let Some(kind) = input
         .kind
         .clone()
-        .filter(|kind| {
-            matches!(kind.as_str(), "movie" | "show")
-                && input.parent.is_none()
-                && input.collection.is_none()
-        })
-        .map(|kind| (kind, input.q.clone()));
+        .filter(|kind| matches!(kind.as_str(), "movie" | "show") && input.parent.is_none())
+    {
+        return Ok(Json(titles(&state, &p, &kind, input).await?));
+    }
     let mut items = storage::browse(&state.db, input).await?;
-    // A full page is cut alphabetically; wanted titles past its last row wait too.
-    let last = (items.len() >= 500)
-        .then(|| items.last()?["title"].as_str().map(str::to_lowercase))
-        .flatten();
     let grant = crate::grants::artwork(&state, &p).await?;
     decorate_cards_with(
         &state,
@@ -168,21 +197,223 @@ pub async fn browse(
         &grant,
     )
     .await?;
-    if let Some((kind, q)) = wanted {
-        items.extend(
-            crate::managers::status::virtual_titles(&state, &p, &kind, q.as_deref(), &grant)
-                .await?
-                .into_iter()
-                .filter(|item| {
-                    last.as_ref().is_none_or(|last| {
-                        item["title"].as_str().unwrap_or_default().to_lowercase() <= *last
-                    })
-                }),
-        );
-        // Stable, so real items keep their order when titles tie.
-        items.sort_by_cached_key(|item| item["title"].as_str().unwrap_or_default().to_lowercase());
-    }
     Ok(Json(json!({"items":items})))
+}
+
+/// A movie or show card and what its list is sorted and filtered by.
+struct Shelved {
+    card: Value,
+    title: String,
+    added: Option<i64>,
+    rating: Option<f64>,
+    genres: Vec<String>,
+    watch: &'static str,
+    availability: Vec<&'static str>,
+}
+impl Shelved {
+    fn new(
+        card: Value,
+        added: Option<i64>,
+        rating: Option<f64>,
+        genres: Vec<String>,
+        started: bool,
+    ) -> Self {
+        let watch = if card["watched"] == true {
+            "watched"
+        } else if started {
+            "in_progress"
+        } else {
+            "unwatched"
+        };
+        let mut availability = Vec::new();
+        if card["available"] == true {
+            availability.push("downloaded");
+        }
+        match card["status"]["state"].as_str() {
+            Some("downloading" | "queued") => availability.push("downloading"),
+            Some("upcoming") => availability.push("upcoming"),
+            _ => {}
+        }
+        if availability.is_empty() {
+            availability.push("not_downloaded");
+        }
+        Self {
+            title: card["title"].as_str().unwrap_or_default().to_lowercase(),
+            card,
+            added,
+            rating,
+            genres,
+            watch,
+            availability,
+        }
+    }
+    fn ended(&self) -> bool {
+        self.card["ended"] == true
+    }
+}
+
+/// A comma-separated choice among `names`; none means all of them.
+fn chosen<'a>(value: &'a Option<String>, names: &[&str]) -> Result<Option<Vec<&'a str>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let chosen = value.split(',').collect::<Vec<_>>();
+    if chosen.iter().any(|choice| !names.contains(choice)) {
+        return Err(ApiError::bad(format!("Choose among {}", names.join(", "))));
+    }
+    Ok(Some(chosen))
+}
+
+fn tally(
+    shelf: &[Shelved],
+    names: &[&'static str],
+    matches: impl Fn(&Shelved, &str) -> bool,
+) -> std::collections::BTreeMap<&'static str, usize> {
+    names
+        .iter()
+        .map(|name| {
+            (
+                *name,
+                shelf.iter().filter(|entry| matches(entry, name)).count(),
+            )
+        })
+        .collect()
+}
+
+/// Missing values sort last in either direction.
+fn by<T: PartialOrd>(a: Option<T>, b: Option<T>, order: Order) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let ordering = a.partial_cmp(&b).unwrap_or(Ordering::Equal);
+            if order == Order::Desc {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        }
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+/// Every top-level movie or show, the library's own and the Radarr or Sonarr titles it
+/// has no files for, filtered and sorted before the list is cut. Counts cover what the
+/// search and collection match, so each filter shows how much it would keep.
+async fn titles(
+    state: &AppState,
+    p: &thelxinoe_core::Principal,
+    kind: &str,
+    input: Browse,
+) -> Result<Value> {
+    let watch = chosen(&input.watch, &WATCH)?;
+    let availability = chosen(&input.availability, &AVAILABILITY)?;
+    let grant = crate::grants::artwork(state, p).await?;
+    let (mut cards, added): (Vec<_>, Vec<_>) = storage::titles(&state.db, kind.to_owned())
+        .await?
+        .into_iter()
+        .unzip();
+    let presentation =
+        present_cards(state, p, &mut cards.iter_mut().collect::<Vec<_>>(), &grant).await?;
+    crate::managers::status::decorate(state, p, &mut cards.iter_mut().collect::<Vec<_>>(), &grant)
+        .await?;
+    let mut shelf = cards
+        .into_iter()
+        .zip(added)
+        .map(|(mut card, added)| {
+            let metadata = &card["metadata"];
+            let rating = metadata["vote_average"]
+                .as_f64()
+                .filter(|v| v.is_finite() && *v > 0.0);
+            let genres = metadata["genres"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|genre| genre.as_str().or(genre["name"].as_str()))
+                .map(str::to_owned)
+                .collect();
+            if kind == "show" {
+                card["ended"] = json!(crate::managers::status::ended(metadata["status"].as_str()));
+            }
+            let started = card["id"]
+                .as_str()
+                .and_then(|id| presentation.get(id))
+                .is_some_and(|presented| presented.started);
+            Shelved::new(card, Some(added), rating, genres, started)
+        })
+        .collect::<Vec<_>>();
+    shelf.extend(
+        crate::managers::status::virtual_titles(state, p, kind, &grant)
+            .await?
+            .into_iter()
+            .map(|(card, facts)| {
+                Shelved::new(card, facts.added, facts.rating, facts.genres, false)
+            }),
+    );
+    let mut genres = shelf
+        .iter()
+        .flat_map(|entry| entry.genres.iter().cloned())
+        .collect::<Vec<_>>();
+    genres.sort_by_key(|genre| genre.to_lowercase());
+    genres.dedup();
+    let q = input.q.as_deref().map(str::to_lowercase);
+    shelf.retain(|entry| {
+        q.as_deref().is_none_or(|q| entry.title.contains(q))
+            && input.collection.is_none_or(|collection| {
+                entry.card["metadata"]["belongs_to_collection"]["id"].as_i64() == Some(collection)
+            })
+    });
+    let mut counts = json!({
+        "watch": tally(&shelf, &WATCH, |entry, name| entry.watch == name),
+        "availability": tally(&shelf, &AVAILABILITY, |entry, name| {
+            entry.availability.contains(&name)
+        }),
+    });
+    if kind == "show" {
+        counts["series"] = json!(tally(&shelf, &["continuing", "ended"], |entry, name| {
+            entry.ended() == (name == "ended")
+        }));
+    }
+    shelf.retain(|entry| {
+        watch
+            .as_ref()
+            .is_none_or(|watch| watch.contains(&entry.watch))
+            && availability.as_ref().is_none_or(|availability| {
+                entry.availability.iter().any(|a| availability.contains(a))
+            })
+            && (kind != "show"
+                || input
+                    .series
+                    .is_none_or(|series| entry.ended() == (series == Series::Ended)))
+            && input
+                .genre
+                .as_ref()
+                .is_none_or(|genre| entry.genres.contains(genre))
+    });
+    // Stable, so library items keep their place before Radarr and Sonarr titles they tie.
+    shelf.sort_by(|a, b| {
+        let title = a.title.cmp(&b.title);
+        match input.sort {
+            Sort::Title if input.order == Order::Desc => title.reverse(),
+            Sort::Title => title,
+            Sort::Year => by(
+                a.card["year"].as_i64(),
+                b.card["year"].as_i64(),
+                input.order,
+            )
+            .then(title),
+            Sort::Added => by(a.added, b.added, input.order).then(title),
+            Sort::Rating => by(a.rating, b.rating, input.order).then(title),
+        }
+    });
+    let total = shelf.len();
+    let items = shelf
+        .into_iter()
+        .take(PAGE)
+        .map(|entry| entry.card)
+        .collect::<Vec<_>>();
+    Ok(json!({"items":items,"total":total,"counts":counts,"genres":genres}))
 }
 /// Resolve cached art from the item, album or show in one bounded query.
 pub(crate) async fn decorate_cards_with(
@@ -191,12 +422,20 @@ pub(crate) async fn decorate_cards_with(
     items: &mut [&mut Value],
     grant: &str,
 ) -> Result<()> {
+    present_cards(state, p, items, grant).await.map(drop)
+}
+async fn present_cards(
+    state: &AppState,
+    p: &thelxinoe_core::Principal,
+    items: &mut [&mut Value],
+    grant: &str,
+) -> Result<std::collections::HashMap<String, storage::CardPresentation>> {
     let ids = items
         .iter()
         .filter_map(|item| item["id"].as_str())
         .collect::<Vec<_>>();
     if ids.is_empty() {
-        return Ok(());
+        return Ok(Default::default());
     }
     let ids = json!(ids).to_string();
     let metadata = storage::decorate_cards(ids, p.user.id.clone(), &state.db).await?;
@@ -211,7 +450,7 @@ pub(crate) async fn decorate_cards_with(
             }
         }
     }
-    Ok(())
+    Ok(metadata)
 }
 
 pub async fn detail(
@@ -227,6 +466,11 @@ pub async fn detail(
     item["artwork_url"] = Value::Null;
     decorate_cards_with(&state, &p, &mut [&mut item], &grant).await?;
     crate::managers::status::detail(&state, &p, &mut item, &grant).await?;
+    if item["kind"] == "show" {
+        item["ended"] = json!(crate::managers::status::ended(
+            item["metadata"]["status"].as_str()
+        ));
+    }
     // Keep protects files from deletion, which only administrators manage.
     if p.user.role == thelxinoe_core::Role::Admin {
         let protection = storage::keep(&state.db, media_id).await?;

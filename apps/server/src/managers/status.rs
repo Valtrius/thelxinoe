@@ -80,6 +80,34 @@ struct Statistics {
     episode_file_count: i64,
     total_episode_count: i64,
 }
+/// The TMDB rating Radarr lists, else Sonarr's own, as metadata refreshes read them.
+#[derive(Clone, Copy, Debug, Default)]
+struct Rating(Option<f64>);
+impl Hash for Rating {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.map(f64::to_bits).hash(state);
+    }
+}
+impl<'de> Deserialize<'de> for Rating {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let ratings = Option::<Value>::deserialize(deserializer)?.unwrap_or_default();
+        Ok(Self(
+            ratings
+                .pointer("/tmdb/value")
+                .or_else(|| ratings.pointer("/value"))
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && *v > 0.0),
+        ))
+    }
+}
+/// Whether a series' status, from Sonarr or TMDB, says no more episodes will air.
+pub(crate) fn ended(status: Option<&str>) -> bool {
+    status.is_some_and(|status| {
+        ["ended", "canceled", "cancelled"]
+            .iter()
+            .any(|ended| status.eq_ignore_ascii_case(ended))
+    })
+}
 /// One Radarr movie or Sonarr series, reduced to what status and title pages show.
 #[derive(Clone, Debug, Default, Deserialize, Hash)]
 #[serde(rename_all = "camelCase", default)]
@@ -95,6 +123,8 @@ pub(crate) struct Title {
     runtime: Option<i64>,
     #[serde(deserialize_with = "lenient")]
     genres: Vec<String>,
+    ratings: Rating,
+    added: Option<String>,
     #[serde(deserialize_with = "lenient")]
     monitored: bool,
     #[serde(deserialize_with = "lenient")]
@@ -1140,14 +1170,22 @@ pub(crate) async fn serve_title_art(
     serve_title(state, &service, entity, kind, request, None).await
 }
 
-/// Monitored manager titles that have no catalog item yet and are still wanted.
+/// What library lists sort and filter a manager-only title by, beyond its card.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Facts {
+    pub(crate) added: Option<i64>,
+    pub(crate) rating: Option<f64>,
+    pub(crate) genres: Vec<String>,
+}
+
+/// Every manager movie or series without a catalog item, wanted or not, so the library
+/// lists everything Radarr and Sonarr know.
 pub(crate) async fn virtual_titles(
     state: &AppState,
     p: &Principal,
     kind: &str,
-    q: Option<&str>,
     grant: &str,
-) -> Result<Vec<Value>> {
+) -> Result<Vec<(Value, Facts)>> {
     let snapshot = snapshot(state);
     let Some(manager) = manager(kind).filter(|_| matches!(kind, "movie" | "show")) else {
         return Ok(Vec::new());
@@ -1160,7 +1198,6 @@ pub(crate) async fn virtual_titles(
         &snapshot,
         kind,
         &linked,
-        q,
         admin(p),
         now(),
         grant,
@@ -1170,18 +1207,16 @@ fn virtual_items(
     snapshot: &Snapshot,
     kind: &str,
     linked: &Linked,
-    q: Option<&str>,
     admin: bool,
     now: i64,
     grant: &str,
-) -> Vec<Value> {
+) -> Vec<(Value, Facts)> {
     let Some(manager) = manager(kind) else {
         return Vec::new();
     };
     let Some(inventory) = snapshot.services.get(manager) else {
         return Vec::new();
     };
-    let q = q.map(str::to_lowercase);
     let mut items = Vec::new();
     for title in inventory.titles.values() {
         let known = linked
@@ -1189,11 +1224,7 @@ fn virtual_items(
             .contains(&(inventory.service.clone(), title.id))
             || title.tmdb_id.is_some_and(|id| linked.tmdb.contains(&id))
             || (manager == "sonarr" && title.tvdb_id.is_some_and(|id| linked.tvdb.contains(&id)));
-        if !title.monitored
-            || known
-            || q.as_deref()
-                .is_some_and(|q| !title.title.to_lowercase().contains(q))
-        {
+        if known {
             continue;
         }
         let Some(reference) = title.reference(manager) else {
@@ -1205,16 +1236,34 @@ fn virtual_items(
         } else {
             show_status(found, &HashSet::new(), now)
         };
-        if !matches!(
-            status.state,
-            Phase::Missing | Phase::Upcoming | Phase::Downloading | Phase::Queued
-        ) {
-            continue;
+        let mut card = json!({"id":reference,"kind":kind,"title":title.title,"year":title.year,"available":false,"virtual":true,
+            "artwork_url":artwork_url(found,"poster",grant),"status":status.for_viewer(admin),"watched":false});
+        if manager == "sonarr" {
+            card["ended"] = json!(ended(title.status.as_deref()));
         }
-        items.push(json!({"id":reference,"kind":kind,"title":title.title,"year":title.year,"available":false,"virtual":true,
-            "artwork_url":artwork_url(found,"poster",grant),"status":status.for_viewer(admin),"watched":false}));
+        items.push((
+            card,
+            Facts {
+                added: time(title.added.as_deref()),
+                rating: title.ratings.0,
+                genres: title.genres.clone(),
+            },
+        ));
     }
     items
+}
+
+/// The TMDB and TVDB ids of every movie or show the library lists: its own items and
+/// the Radarr or Sonarr titles shown beside them.
+pub(super) async fn library_ids(state: &AppState, kind: &str) -> Result<Linked> {
+    let mut linked = storage::linked(&state.db, kind.to_owned()).await?;
+    if let Some(inventory) = manager(kind).and_then(|m| snapshot(state).services.get(m).cloned()) {
+        linked.tmdb.extend(inventory.by_tmdb.keys());
+        if kind == "show" {
+            linked.tvdb.extend(inventory.by_tvdb.keys());
+        }
+    }
+    Ok(linked)
 }
 
 /// A library season and its episodes, with the caller's own progress.
@@ -1442,6 +1491,7 @@ async fn lookup(
             let t = found.title;
             json!({"title":t.title,"year":t.year,"overview":t.overview,"runtime":t.runtime,"genres":t.genres,
                 "tmdb_id":t.tmdb_id,"tvdb_id":if manager == "sonarr" {t.tvdb_id} else {None},"imdb_id":t.imdb_id,
+                "ended":manager == "sonarr" && ended(t.status.as_deref()),
                 "poster_url":artwork_url(found,"poster",&grant),"backdrop_url":artwork_url(found,"fanart",&grant)})
         }
         None => Value::Null,

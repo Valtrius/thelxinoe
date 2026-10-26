@@ -126,10 +126,28 @@ pub(super) async fn browse(db: &Database, input: Browse) -> anyhow::Result<Vec<V
     }).await
 }
 
+/// Every top-level movie or show, with when it joined the library. A show is available
+/// once any of its episodes is.
+pub(super) async fn titles(db: &Database, kind: String) -> anyhow::Result<Vec<(Value, i64)>> {
+    db.read("library.titles", move |db| {
+        let mut query = db.prepare("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,
+                CASE m.kind WHEN 'show' THEN EXISTS(SELECT 1 FROM media s JOIN media e ON e.parent_id=s.id JOIN media_sources ms ON ms.media_id=e.id JOIN media_files f ON f.id=ms.file_id WHERE s.parent_id=m.id AND f.present=1)
+                    ELSE EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) END,
+                m.created_at
+            FROM media m WHERE m.kind=?1 AND m.parent_id IS NULL")?;
+        Ok(query
+            .query_map([kind], |r| Ok((media_row(r)?, r.get(8)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+    .await
+}
+
 pub(super) struct CardPresentation {
     pub(super) year: Option<i64>,
     pub(super) artwork_id: Option<String>,
     pub(super) watched: bool,
+    /// Something in it is watched or has a resume position.
+    pub(super) started: bool,
 }
 
 pub(super) async fn decorate_cards(
@@ -144,18 +162,20 @@ pub(super) async fn decorate_cards(
                 UNION ALL
                 SELECT d.card_id,m.id,m.kind FROM descendants d JOIN media m ON m.parent_id=d.id WHERE d.kind IN ('show','season')
             ), watched AS (
-                SELECT d.card_id,MIN(COALESCE(s.watched,0)) AS completed FROM descendants d
+                SELECT d.card_id,MIN(COALESCE(s.watched,0)) AS completed,
+                    MAX(COALESCE(s.watched,0) OR EXISTS(SELECT 1 FROM edition_progress e WHERE e.user_id=?2 AND e.media_id=d.id AND e.position>0)) AS started
+                FROM descendants d
                 LEFT JOIN media_state s ON s.media_id=d.id AND s.user_id=?2
                 WHERE d.kind IN ('movie','episode') GROUP BY d.card_id
             )
             SELECT m.id,m.year,
                 CASE WHEN json_extract(m.metadata,'$.artwork_cached')=1 THEN m.id WHEN json_extract(p.metadata,'$.artwork_cached')=1 THEN p.id WHEN json_extract(g.metadata,'$.artwork_cached')=1 THEN g.id END,
-                COALESCE(w.completed,0)
+                COALESCE(w.completed,0),COALESCE(w.started,0)
             FROM media m LEFT JOIN media p ON p.id=m.parent_id LEFT JOIN media g ON g.id=p.parent_id
             LEFT JOIN watched w ON w.card_id=m.id WHERE m.id IN (SELECT value FROM json_each(?1))"
         )?;
         Ok(query.query_map(params![ids,user], |r| Ok((r.get::<_,String>(0)?, CardPresentation {
-            year: r.get(1)?, artwork_id: r.get(2)?, watched: r.get(3)?,
+            year: r.get(1)?, artwork_id: r.get(2)?, watched: r.get(3)?, started: r.get(4)?,
         })))?.collect::<rusqlite::Result<std::collections::HashMap<_,_>>>()?)
     }).await
 }

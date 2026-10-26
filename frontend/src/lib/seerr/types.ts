@@ -40,6 +40,8 @@ export type Media = {
     seasons?: { seasonNumber: number; status: number }[];
     requests?: MediaRequest[];
   };
+  /** Thelxinoe lists it, with files or as a Radarr or Sonarr title. */
+  inLibrary?: boolean;
 };
 export type MediaRequest = {
   id: number;

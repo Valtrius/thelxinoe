@@ -28,6 +28,8 @@ export type CatalogItem = {
   files?: CatalogFile[];
   watched?: boolean;
   virtual?: boolean;
+  /** A series no more episodes will air for. */
+  ended?: boolean;
 };
 export type Flags = {
   favorite: boolean;
@@ -65,6 +67,7 @@ export type ManagerTitle = {
   tmdb_id: number | null;
   tvdb_id: number | null;
   imdb_id: string | null;
+  ended: boolean;
   poster_url: string | null;
   backdrop_url: string | null;
 };

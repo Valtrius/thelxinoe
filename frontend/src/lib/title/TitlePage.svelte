@@ -34,6 +34,7 @@
   } from '../seerr/types';
   import Seasons from './Seasons.svelte';
   import StatusBadge from './StatusBadge.svelte';
+  import StatusChip from '../ui/StatusChip.svelte';
   import TitleMenu from './TitleMenu.svelte';
   import RequestSeasons from './RequestSeasons.svelte';
   import { isTitleRef, type TitleStatus } from './status';
@@ -140,6 +141,12 @@
       (Array.isArray(item?.metadata?.genres)
         ? (item!.metadata.genres as string[])
         : (manager?.genres ?? [])),
+  );
+  const ended = $derived(
+    kind === 'show' &&
+      (item?.ended ??
+        manager?.ended ??
+        ['Ended', 'Canceled'].includes(seerr?.status ?? '')),
   );
   const rating = $derived(
     seerr?.voteAverage || metadataNumber(item, 'vote_average'),
@@ -422,6 +429,9 @@
             class="mb-3 text-[11px] font-semibold tracking-widest text-accent uppercase"
           >
             {kind === 'movie' ? 'Movie' : 'Series'}{year ? ` · ${year}` : ''}
+            {#if ended}<StatusChip dot={false} class="ml-2 align-[1px]"
+                >Ended</StatusChip
+              >{/if}
           </p>
           <h1
             class="text-4xl leading-tight font-semibold tracking-tight compact:text-3xl"

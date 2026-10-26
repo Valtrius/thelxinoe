@@ -67,7 +67,8 @@ fn radarr() -> Inventory {
             {"id":2,"tmdbId":102,"title":"Fetching","monitored":true,"hasFile":false,"isAvailable":true},
             {"id":3,"tmdbId":103,"title":"Soon","monitored":true,"hasFile":false,"isAvailable":false,
              "inCinemas":PAST,"digitalRelease":FUTURE,"physicalRelease":"2036-01-01T00:00:00Z"},
-            {"id":4,"tmdbId":104,"title":"Wanted","monitored":true,"hasFile":false,"isAvailable":true,"digitalRelease":PAST},
+            {"id":4,"tmdbId":104,"title":"Wanted","monitored":true,"hasFile":false,"isAvailable":true,"digitalRelease":PAST,
+             "added":PAST,"genres":["Drama"],"ratings":{"imdb":{"value":7.1},"tmdb":{"value":6.5}}},
             {"id":5,"tmdbId":105,"title":"Ignored","monitored":false,"hasFile":false,"isAvailable":true},
             {"id":6,"tmdbId":106,"title":"Waiting","monitored":true,"hasFile":false,"isAvailable":true},
             {"id":7,"tmdbId":0,"title":"No identity","monitored":true,"hasFile":false,"isAvailable":true},
@@ -205,10 +206,10 @@ fn sonarr() -> Inventory {
     inventory(
         "sonarr",
         json!([
-            {"id":10,"tvdbId":201,"tmdbId":301,"title":"Series","monitored":true,
+            {"id":10,"tvdbId":201,"tmdbId":301,"title":"Series","monitored":true,"status":"continuing","ratings":{"votes":10,"value":8.0},
              "seasons":[{"seasonNumber":0,"monitored":false},{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":false}],
              "images":[{"coverType":"fanart","url":"/MediaCover/10/fanart.jpg"}]},
-            {"id":11,"tvdbId":202,"title":"Unwatched series","monitored":false,"seasons":[{"seasonNumber":1,"monitored":true}]}
+            {"id":11,"tvdbId":202,"title":"Unwatched series","monitored":false,"status":"ended","seasons":[{"seasonNumber":1,"monitored":true}]}
         ]),
         json!({
             "10":[
@@ -469,40 +470,62 @@ fn seasons_merge_library_and_sonarr_episodes_with_specials_last() {
 }
 
 #[test]
-fn wanted_titles_without_catalog_items_become_virtual_items() {
+fn manager_titles_without_catalog_items_become_virtual_items() {
     let snapshot = snapshot(vec![("radarr", radarr()), ("sonarr", sonarr())]);
     let linked = Linked {
         entities: HashSet::from([("radarr-1".to_owned(), 1)]),
         tmdb: HashSet::from([102]),
         tvdb: HashSet::new(),
     };
-    let movies = virtual_items(&snapshot, "movie", &linked, None, false, NOW, "g");
+    // Wanted or not, every title with an identity is listed.
+    let movies = virtual_items(&snapshot, "movie", &linked, false, NOW, "g");
     assert_eq!(
-        movies.iter().map(|m| m["id"].clone()).collect::<Vec<_>>(),
-        [json!("tmdb:103"), json!("tmdb:104"), json!("tmdb:106")]
+        movies
+            .iter()
+            .map(|(m, _)| m["id"].clone())
+            .collect::<Vec<_>>(),
+        [
+            json!("tmdb:103"),
+            json!("tmdb:104"),
+            json!("tmdb:105"),
+            json!("tmdb:106")
+        ]
     );
     assert_eq!(
         movies[1],
-        json!({"id":"tmdb:104","kind":"movie","title":"Wanted","year":null,"available":false,"virtual":true,"artwork_url":null,"status":{"state":"unavailable"},"watched":false})
+        (
+            json!({"id":"tmdb:104","kind":"movie","title":"Wanted","year":null,"available":false,"virtual":true,"artwork_url":null,"status":{"state":"unavailable"},"watched":false}),
+            Facts {
+                added: Some(1_577_836_800),
+                rating: Some(6.5),
+                genres: vec!["Drama".into()],
+            }
+        )
     );
-    let filtered = virtual_items(&snapshot, "movie", &linked, Some("WAIT"), true, NOW, "g");
-    assert_eq!(filtered.len(), 1);
-    assert_eq!(filtered[0]["status"]["state"], "queued");
-    assert_eq!(filtered[0]["status"]["monitored"], true);
-    let poster = virtual_items(
-        &snapshot,
-        "movie",
-        &Linked::default(),
-        Some("own"),
-        true,
-        NOW,
-        "g",
+    let admin = virtual_items(&snapshot, "movie", &linked, true, NOW, "g");
+    assert_eq!(admin[2].0["status"]["state"], "unmonitored");
+    assert_eq!(admin[3].0["status"]["state"], "queued");
+    assert_eq!(admin[3].0["status"]["monitored"], true);
+    // A title whose file the library has not found yet is listed too.
+    let unscanned = virtual_items(&snapshot, "movie", &Linked::default(), true, NOW, "g");
+    assert_eq!(unscanned[0].0["id"], "tmdb:101");
+    assert_eq!(unscanned[0].0["status"]["state"], "available");
+    let shows = virtual_items(&snapshot, "show", &Linked::default(), true, NOW, "g");
+    assert_eq!(
+        shows
+            .iter()
+            .map(|(s, _)| (
+                s["id"].clone(),
+                s["ended"].clone(),
+                s["status"]["state"].clone()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (json!("tmdb:301"), json!(false), json!("downloading")),
+            (json!("tvdb:202"), json!(true), json!("unmonitored"))
+        ]
     );
-    assert!(poster.is_empty(), "available titles are not wanted");
-    let shows = virtual_items(&snapshot, "show", &Linked::default(), None, true, NOW, "g");
-    // The monitored series is downloading; the unmonitored one is never listed.
-    assert_eq!(shows.len(), 1);
-    assert_eq!(shows[0]["id"], "tmdb:301");
+    assert_eq!(shows[0].1.rating, Some(8.0));
     let tvdb_only = inventory(
         "sonarr",
         json!([{"id":12,"tvdbId":203,"title":"Only TVDB","monitored":true,"images":[{"coverType":"poster","url":"/MediaCover/12/poster.jpg"}]}]),
@@ -510,26 +533,33 @@ fn wanted_titles_without_catalog_items_become_virtual_items() {
         json!([]),
     );
     let tvdb_only = snapshot_of(tvdb_only);
-    let shows = virtual_items(
-        &tvdb_only,
-        "show",
-        &Linked::default(),
-        None,
-        false,
-        NOW,
-        "g",
-    );
-    assert_eq!(shows[0]["id"], "tvdb:203");
+    let shows = virtual_items(&tvdb_only, "show", &Linked::default(), false, NOW, "g");
+    assert_eq!(shows[0].0["id"], "tvdb:203");
     assert_eq!(
-        shows[0]["artwork_url"],
+        shows[0].0["artwork_url"],
         "/api/v1/catalog/titles/sonarr-1/12/artwork/poster?grant=g"
     );
-    assert_eq!(shows[0]["status"]["state"], "upcoming");
+    assert_eq!(shows[0].0["status"]["state"], "upcoming");
     let linked = Linked {
         tvdb: HashSet::from([203]),
         ..Linked::default()
     };
-    assert!(virtual_items(&tvdb_only, "show", &linked, None, false, NOW, "g").is_empty());
+    assert!(virtual_items(&tvdb_only, "show", &linked, false, NOW, "g").is_empty());
+}
+
+#[test]
+fn series_end_when_sonarr_or_tmdb_says_so() {
+    for status in ["ended", "Ended", "Canceled", "cancelled"] {
+        assert!(ended(Some(status)), "{status}");
+    }
+    for status in [
+        Some("continuing"),
+        Some("Returning Series"),
+        Some("upcoming"),
+        None,
+    ] {
+        assert!(!ended(status), "{status:?}");
+    }
 }
 
 #[test]
@@ -723,6 +753,187 @@ INSERT INTO edition_progress VALUES ('alice','e2','',30,60,1);")?;
 }
 
 #[tokio::test]
+async fn top_level_lists_filter_and_sort_before_they_are_cut() {
+    let (_temp, state, alice, _) = api_fixture().await;
+    state.db.write("test.fixture", |db| {
+        db.execute_batch("UPDATE media SET metadata=json_set(metadata,'$.vote_average',7.5,'$.genres',json('[{\"name\":\"Drama\"}]')) WHERE id='movie-bound';
+UPDATE media SET metadata=json_set(metadata,'$.status','ended') WHERE id='show';
+INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice','movie-matched',1,1);
+INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES ('movie-started','movies','movie',NULL,'d','Started',2);
+INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
+        Ok(())
+    }).await.unwrap();
+    let movies = inventory(
+        "radarr",
+        json!([
+            {"id":2,"tmdbId":102,"title":"alpha wanted","monitored":true,"isAvailable":true,"added":"2024-01-01T00:00:00Z"},
+            {"id":3,"tmdbId":103,"title":"Gamma","monitored":true,"isAvailable":false,"digitalRelease":FUTURE,
+             "added":"2025-01-01T00:00:00Z","genres":["Drama"]},
+            {"id":7,"tmdbId":107,"title":"Queued one","monitored":true,"isAvailable":true,"ratings":{"tmdb":{"value":8.0}}}
+        ]),
+        json!({}),
+        json!([{"id":1,"movieId":7,"status":"queued","trackedDownloadState":"downloading","size":10,"sizeleft":10}]),
+    );
+    replace(
+        &state,
+        snapshot(vec![("radarr", movies), ("sonarr", sonarr())]),
+    );
+    let titles = |query: &'static str| {
+        let (state, alice) = (state.clone(), alice.clone());
+        async move {
+            let (status, _, body) = call(
+                &state,
+                &format!("/api/v1/catalog?{query}"),
+                "GET",
+                Value::Null,
+                &alice,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{query}: {body}");
+            let titles = body["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["title"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            (titles, body)
+        }
+    };
+    let (all, body) = titles("kind=movie").await;
+    assert_eq!(
+        all,
+        [
+            "alpha wanted",
+            "Beta",
+            "delta",
+            "Epsilon",
+            "Gamma",
+            "Queued one",
+            "Started"
+        ]
+    );
+    assert_eq!(body["total"], 7);
+    assert_eq!(body["genres"], json!(["Drama"]));
+    assert_eq!(
+        body["counts"],
+        json!({"watch":{"in_progress":1,"unwatched":5,"watched":1},
+            "availability":{"downloaded":1,"downloading":1,"not_downloaded":4,"upcoming":1}})
+    );
+    for (query, expected) in [
+        ("kind=movie&watch=watched", vec!["delta"]),
+        (
+            "kind=movie&watch=in_progress,watched",
+            vec!["delta", "Started"],
+        ),
+        ("kind=movie&availability=downloaded", vec!["delta"]),
+        (
+            "kind=movie&availability=downloading,upcoming",
+            vec!["Gamma", "Queued one"],
+        ),
+        (
+            "kind=movie&availability=not_downloaded&q=E",
+            vec!["alpha wanted", "Beta", "Epsilon", "Started"],
+        ),
+        ("kind=movie&genre=Drama", vec!["Beta", "Gamma"]),
+        (
+            "kind=movie&sort=title&order=desc",
+            vec![
+                "Started",
+                "Queued one",
+                "Gamma",
+                "Epsilon",
+                "delta",
+                "Beta",
+                "alpha wanted",
+            ],
+        ),
+        // Titles without the value come last either way; ties keep the title order.
+        (
+            "kind=movie&sort=added&order=desc",
+            vec![
+                "Gamma",
+                "alpha wanted",
+                "Started",
+                "Beta",
+                "delta",
+                "Epsilon",
+                "Queued one",
+            ],
+        ),
+        (
+            "kind=movie&sort=added",
+            vec![
+                "Beta",
+                "delta",
+                "Epsilon",
+                "Started",
+                "alpha wanted",
+                "Gamma",
+                "Queued one",
+            ],
+        ),
+        (
+            "kind=movie&sort=rating&order=desc",
+            vec![
+                "Queued one",
+                "Beta",
+                "alpha wanted",
+                "delta",
+                "Epsilon",
+                "Gamma",
+                "Started",
+            ],
+        ),
+    ] {
+        assert_eq!(titles(query).await.0, expected, "{query}");
+    }
+    // Counts follow the search, not the other filters.
+    let (_, body) = titles("kind=movie&q=E&watch=watched").await;
+    assert_eq!(
+        body["counts"]["watch"],
+        json!({"in_progress":1,"unwatched":4,"watched":1})
+    );
+    let (shows, body) = titles("kind=show").await;
+    assert_eq!(shows, ["Show", "Unwatched series"]);
+    assert_eq!(body["items"][0]["ended"], true);
+    assert_eq!(body["counts"]["series"], json!({"continuing":0,"ended":2}));
+    assert_eq!(body["counts"]["watch"]["in_progress"], 1);
+    assert!(titles("kind=show&series=continuing").await.0.is_empty());
+    assert_eq!(
+        titles("kind=show&series=ended&watch=in_progress").await.0,
+        ["Show"]
+    );
+    for invalid in [
+        "kind=movie&watch=seen",
+        "kind=movie&availability=",
+        "kind=movie&sort=length",
+        "kind=show&series=airing",
+    ] {
+        let (status, ..) = call(
+            &state,
+            &format!("/api/v1/catalog?{invalid}"),
+            "GET",
+            Value::Null,
+            &alice,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{invalid}");
+    }
+    let detail = call(&state, "/api/v1/catalog/show", "GET", Value::Null, &alice).await;
+    assert_eq!(detail.2["ended"], true);
+    // Discover marks what the library lists: its items and the manager-only titles.
+    let shows = library_ids(&state, "show").await.unwrap();
+    assert!([201, 202].iter().all(|id| shows.tvdb.contains(id)));
+    assert!(shows.tmdb.contains(&301));
+    let movies = library_ids(&state, "movie").await.unwrap();
+    assert!(
+        [101, 102, 104, 107]
+            .iter()
+            .all(|id| movies.tmdb.contains(id))
+    );
+}
+
+#[tokio::test]
 async fn browse_detail_seasons_and_lookup_expose_cached_status() {
     let (_temp, state, alice, bob) = api_fixture().await;
     let get = |path: String, cookie: String| {
@@ -740,7 +951,9 @@ async fn browse_detail_seasons_and_lookup_expose_cached_status() {
             "delta",
             "Epsilon",
             "Gamma",
-            "Queued one"
+            "Omega",
+            "Queued one",
+            "Zeta"
         ]
     );
     assert_eq!(items[0]["id"], "tmdb:102");
@@ -759,12 +972,14 @@ async fn browse_detail_seasons_and_lookup_expose_cached_status() {
     assert_eq!(items[2]["status"], json!({"state":"available"}));
     assert_eq!(items[3]["status"], Value::Null);
     assert_eq!(items[4]["status"]["state"], "upcoming");
-    assert_eq!(items[5]["status"]["state"], "queued");
+    assert_eq!(items[5]["status"]["state"], "available");
+    assert_eq!(items[6]["status"]["state"], "queued");
+    assert_eq!(items[7]["status"], json!({"state":"unavailable"}));
     let admin = get("/api/v1/catalog?kind=movie&q=A".into(), bob.clone()).await;
     let items = admin.2["items"].as_array().unwrap();
     assert_eq!(
         items.iter().map(|i| i["title"].clone()).collect::<Vec<_>>(),
-        ["alpha wanted", "Beta", "delta", "Gamma"]
+        ["alpha wanted", "Beta", "delta", "Gamma", "Omega", "Zeta"]
     );
     assert_eq!(
         items[1]["status"],
@@ -780,7 +995,9 @@ async fn browse_detail_seasons_and_lookup_expose_cached_status() {
     );
     let shows = get("/api/v1/catalog?kind=show".into(), bob.clone()).await;
     let items = shows.2["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "the unmonitored series is not wanted");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[1]["id"], "tvdb:202");
+    assert_eq!(items[1]["status"]["state"], "unmonitored");
     assert_eq!(items[0]["status"]["state"], "partial");
     assert_eq!(
         items[0]["status"]["episodes"],

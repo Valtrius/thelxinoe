@@ -7,7 +7,7 @@ import {
   statistics,
   viewer,
 } from './data.mjs';
-import { statusOf, virtualCards } from './titles.mjs';
+import { inLibrary, statusOf, virtualCards } from './titles.mjs';
 
 export async function mediaApi(s, c) {
   const { path, method, body, query, json, fail } = c;
@@ -69,8 +69,116 @@ export async function mediaApi(s, c) {
       watched: watched(item),
       status: statusOf(s, item),
       backdrop_url: backdrop(item),
+      ...(item.kind === 'show'
+        ? { ended: item.metadata.status === 'ended' }
+        : {}),
     };
   };
+  // Top-level movies and shows, filtered and sorted before the list is cut.
+  const titleList = (kind) => {
+    const started = (item) =>
+      item.kind === 'movie'
+        ? item.position > 0
+        : s.library.some(
+            (episode) =>
+              episode.kind === 'episode' &&
+              parents.get(episode.parent_id) === item.id &&
+              (episode.position > 0 || s.mediaStates[episode.id]?.watched),
+          );
+    // Radarr and Sonarr titles have no library item, so no date added.
+    const entry = (item, index, own) => {
+      const availability = [
+        ...(item.available ? ['downloaded'] : []),
+        ...(['downloading', 'queued'].includes(item.status?.state)
+          ? ['downloading']
+          : []),
+        ...(item.status?.state === 'upcoming' ? ['upcoming'] : []),
+      ];
+      return {
+        card: item,
+        title: item.title.toLowerCase(),
+        added: own ? now() - index * 86400 : null,
+        rating: item.metadata?.rating,
+        genres: item.metadata?.genres ?? [],
+        watch: item.watched
+          ? 'watched'
+          : own && started(own)
+            ? 'in_progress'
+            : 'unwatched',
+        availability: availability.length ? availability : ['not_downloaded'],
+      };
+    };
+    const own = s.library.filter((item) => item.kind === kind);
+    const genres = [...new Set(own.flatMap((item) => item.metadata.genres))];
+    let shelf = own
+      .filter((_, index) =>
+        query.get('collection')
+          ? index % 3 === Number(query.get('collection').slice(-1))
+          : true,
+      )
+      .map((item, index) => entry(card(item), index, item));
+    if (!query.get('collection'))
+      shelf.push(...virtualCards(s, kind).map((item) => entry(item, 0, null)));
+    const q = query.get('q')?.toLowerCase();
+    if (q) shelf = shelf.filter((item) => item.title.includes(q));
+    const tally = (names, of) =>
+      Object.fromEntries(
+        names.map((name) => [name, shelf.filter((e) => of(e, name)).length]),
+      );
+    const counts = {
+      watch: tally(
+        ['unwatched', 'in_progress', 'watched'],
+        (e, name) => e.watch === name,
+      ),
+      availability: tally(
+        ['downloaded', 'downloading', 'upcoming', 'not_downloaded'],
+        (e, name) => e.availability.includes(name),
+      ),
+      ...(kind === 'show'
+        ? {
+            series: tally(
+              ['continuing', 'ended'],
+              (e, name) => Boolean(e.card.ended) === (name === 'ended'),
+            ),
+          }
+        : {}),
+    };
+    const chosen = (name) => query.get(name)?.split(',');
+    shelf = shelf.filter(
+      (e) =>
+        (!chosen('watch') || chosen('watch').includes(e.watch)) &&
+        (!chosen('availability') ||
+          e.availability.some((a) => chosen('availability').includes(a))) &&
+        (kind !== 'show' ||
+          !query.get('series') ||
+          Boolean(e.card.ended) === (query.get('series') === 'ended')) &&
+        (!query.get('genre') || e.genres.includes(query.get('genre'))),
+    );
+    const sort = query.get('sort') ?? 'title';
+    const desc = query.get('order') === 'desc';
+    const value = (e) =>
+      sort === 'year' ? e.card.year : sort === 'added' ? e.added : e.rating;
+    shelf.sort((a, b) => {
+      const title = a.title.localeCompare(b.title);
+      if (sort === 'title') return desc ? -title : title;
+      const [x, y] = [value(a), value(b)];
+      // Titles without the value come last either way.
+      if ((x == null) !== (y == null)) return x == null ? 1 : -1;
+      return (x == null ? 0 : desc ? y - x : x - y) || title;
+    });
+    return {
+      items: shelf.slice(0, 500).map((e) => e.card),
+      total: shelf.length,
+      counts,
+      genres,
+    };
+  };
+  if (
+    path === '/catalog' &&
+    !query.has('parent') &&
+    ['movie', 'show'].includes(query.get('kind'))
+  )
+    return json(titleList(query.get('kind')));
   if (path === '/catalog') {
     let items = s.library.filter((item) =>
       query.has('parent')
@@ -81,20 +189,7 @@ export async function mediaApi(s, c) {
       items = items.filter((item) =>
         item.title.toLowerCase().includes(query.get('q').toLowerCase()),
       );
-    if (query.get('collection'))
-      items = items.filter(
-        (_, index) => index % 3 === Number(query.get('collection').slice(-1)),
-      );
-    const top =
-      !query.has('parent') &&
-      !query.get('collection') &&
-      ['movie', 'show'].includes(query.get('kind'));
-    return json({
-      items: [
-        ...items.map(card),
-        ...(top ? virtualCards(s, query.get('kind'), query.get('q')) : []),
-      ],
-    });
+    return json({ items: items.map(card) });
   }
   if (path === '/catalog/collections')
     return json({
@@ -251,6 +346,9 @@ export async function mediaApi(s, c) {
         ...shown,
         status: statusOf(s, item),
         backdrop_url: backdrop(item),
+        ...(item.kind === 'show'
+          ? { ended: item.metadata.status === 'ended' }
+          : {}),
         ...(viewer(s).role === 'admin'
           ? (({ own, by, within }) => ({
               keep: own,
@@ -489,7 +587,9 @@ export async function mediaApi(s, c) {
           .includes(query.get('q').toLowerCase()),
       );
     return json({
-      results: items,
+      results: items.map((item) =>
+        inLibrary(s, item) ? { ...item, inLibrary: true } : item,
+      ),
       page: Number(query.get('page') ?? 1),
       totalPages: 1,
       totalResults: items.length,
@@ -506,7 +606,10 @@ export async function mediaApi(s, c) {
         ? {
             results: s.discover
               .filter((item) => item.mediaType === detail[1] && item !== media)
-              .slice(0, 12),
+              .slice(0, 12)
+              .map((item) =>
+                inLibrary(s, item) ? { ...item, inLibrary: true } : item,
+              ),
             page: 1,
             totalPages: 1,
             totalResults: 12,

@@ -258,17 +258,16 @@ async fn discover(
         _ => return Err(ApiError::not_found()),
     };
     let (_, c) = connection(&state).await?;
-    Ok(Json(public(
-        call(
-            &c,
-            reqwest::Method::GET,
-            path,
-            &[("page", page(&input))],
-            None,
-            None,
-        )
-        .await?,
-    )))
+    let results = call(
+        &c,
+        reqwest::Method::GET,
+        path,
+        &[("page", page(&input))],
+        None,
+        None,
+    )
+    .await?;
+    Ok(Json(mark_library(&state, public(results)).await?))
 }
 async fn search(
     State(state): State<AppState>,
@@ -280,17 +279,16 @@ async fn search(
         return Err(ApiError::bad("Enter between 2 and 200 characters"));
     }
     let (_, c) = connection(&state).await?;
-    Ok(Json(public(
-        call(
-            &c,
-            reqwest::Method::GET,
-            "search",
-            &[("query", input.q.trim().into()), ("page", page(&input))],
-            None,
-            None,
-        )
-        .await?,
-    )))
+    let results = call(
+        &c,
+        reqwest::Method::GET,
+        "search",
+        &[("query", input.q.trim().into()), ("page", page(&input))],
+        None,
+        None,
+    )
+    .await?;
+    Ok(Json(mark_library(&state, public(results)).await?))
 }
 fn media_path(kind: &str, id: i64) -> Result<String> {
     if !matches!(kind, "movie" | "tv") || id <= 0 {
@@ -316,7 +314,40 @@ async fn recommendations(
     security::principal(&state, &headers).await?;
     let path = format!("{}/recommendations", media_path(&kind, id)?);
     let (_, c) = connection(&state).await?;
-    Ok(Json(public(c.get(&path).await?)))
+    Ok(Json(
+        mark_library(&state, public(c.get(&path).await?)).await?,
+    ))
+}
+/// Marks the movies and series the library already lists, own files or Radarr and
+/// Sonarr titles alike.
+async fn mark_library(state: &AppState, mut page: Value) -> Result<Value> {
+    let Some(results) = page.get_mut("results").and_then(Value::as_array_mut) else {
+        return Ok(page);
+    };
+    let mut known = std::collections::HashMap::new();
+    for item in results {
+        let kind = match item["mediaType"].as_str() {
+            Some("person") => continue,
+            Some("tv") => "show",
+            Some(_) => "movie",
+            None if item.get("title").is_none() && item.get("name").is_some() => "show",
+            None => "movie",
+        };
+        let linked = match known.entry(kind) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(super::status::library_ids(state, kind).await?)
+            }
+        };
+        let id = |pointer: &str| item.pointer(pointer).and_then(Value::as_i64);
+        let listed = id("/id").is_some_and(|tmdb| linked.tmdb.contains(&tmdb))
+            || (kind == "show"
+                && id("/mediaInfo/tvdbId").is_some_and(|tvdb| linked.tvdb.contains(&tvdb)));
+        if listed {
+            item["inLibrary"] = json!(true);
+        }
+    }
+    Ok(page)
 }
 async fn requests(
     State(state): State<AppState>,
@@ -788,6 +819,41 @@ mod tests {
     use super::*;
     use crate::test_support::{call as api, fixture};
     use std::{future::Future, sync::Arc, task::Poll, time::Duration};
+
+    #[tokio::test]
+    async fn discover_results_say_which_titles_the_library_lists() {
+        let (_temp, state, _) = fixture().await;
+        state.db.write("test.fixture", |db| {
+            db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Library','movies','/media');
+INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES
+ ('film','root','movie','film','Film','{\"tmdb_id\":603}',1),
+ ('show','root','show','show','Show','{\"tmdb_id\":1399,\"tvdb_id\":121361}',1),
+ ('other','root','show','other','Other','{\"tvdb_id\":81189}',1);")?;
+            Ok(())
+        }).await.unwrap();
+        let page = mark_library(
+            &state,
+            json!({"page":1,"results":[
+                {"id":603,"mediaType":"movie","title":"Film"},
+                {"id":1399,"mediaType":"tv","name":"Show"},
+                {"id":1396,"mediaType":"tv","name":"Other","mediaInfo":{"tvdbId":81189}},
+                // A movie and a series may share a TMDB id.
+                {"id":603,"mediaType":"tv","name":"Not the film"},
+                {"id":603,"mediaType":"person","name":"Someone"},
+                {"id":1399,"name":"Recommended show"},
+                {"id":7,"title":"Elsewhere"}
+            ]}),
+        )
+        .await
+        .unwrap();
+        let listed = page["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["inLibrary"] == true)
+            .collect::<Vec<_>>();
+        assert_eq!(listed, [true, true, true, false, false, true, false]);
+    }
 
     // Browser qualification cannot deterministically queue an exclusive operation
     // between two awaits inside the request handler. Exercise the actual HTTP route.

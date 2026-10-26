@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Film, Star } from '@lucide/svelte';
+  import { Film, LibraryBig, Star } from '@lucide/svelte';
   import {
     artwork,
     availability,
@@ -45,6 +45,11 @@
             ? 'bg-emerald-950/90 text-emerald-100'
             : 'bg-black/80 text-white',
         ]}>{status}</span
+      >{/if}
+    {#if item.inLibrary}<span
+        class="absolute top-2 left-2 flex items-center gap-1 bg-black/80 px-1.5 py-1 text-[10px] text-white"
+        data-in-library
+        ><LibraryBig size={10} class="text-accent" />In library</span
       >{/if}
     {#if (item.voteAverage ?? 0) > 0}<span
         class="absolute top-2 right-2 flex items-center gap-1 bg-black/80 px-1.5 py-1 text-[10px] text-white"

@@ -1,8 +1,6 @@
 <script lang="ts">
   import SectionHeading from './ui/SectionHeading.svelte';
   import Notice from './ui/Notice.svelte';
-  import FormField from './ui/FormField.svelte';
-  import { formControlClass } from './ui/styles';
   import { Folder, RefreshCw, ArrowLeft, Ellipsis } from '@lucide/svelte';
   import { DropdownMenu } from 'bits-ui';
   import { api } from './api';
@@ -30,6 +28,17 @@
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import { emptyClass, rowClass } from './ui/styles';
+  import LibraryToolbar from './LibraryToolbar.svelte';
+  import { appearance, updateAppearance } from './appearance';
+  import {
+    filtering,
+    libraryViewKey,
+    parseLibraryView,
+    viewQuery,
+    type LibraryCounts,
+    type LibraryView,
+    unfiltered,
+  } from './library-view';
   let {
     domain,
     admin,
@@ -69,12 +78,31 @@
     overview?: string;
     virtual?: boolean;
     status?: TitleStatus | null;
+    ended?: boolean;
   };
   // Movies and Shows open a title page; Music keeps its track panel here.
   const titles = $derived(domain !== 'Music');
   let items = $state<Item[]>([]),
+    total = $state(0),
+    counts = $state<LibraryCounts>(),
+    genres = $state<string[]>([]),
     error = $state(''),
     busy = $state(true);
+  // Movies and Shows keep each user's sorting and filters.
+  const viewKey = $derived(libraryViewKey(domain));
+  const view = $derived<LibraryView | undefined>(
+    titles
+      ? parseLibraryView($appearance.provider_preferences[viewKey])
+      : undefined,
+  );
+  const shows = $derived(domain === 'Shows');
+  const viewParameters = $derived(view ? viewQuery(view, shows) : '');
+  const filtered = $derived(!!view && filtering(view, shows));
+  function viewChanged(next: LibraryView) {
+    updateAppearance({
+      provider_preferences: { [viewKey]: JSON.stringify(next) },
+    });
+  }
   let collections = $state<{ id: number; name: string; count: number }[]>([]),
     collection = $state('');
   let breadcrumbs = $state<{ id: string; title: string; kind: string }[]>([]),
@@ -113,14 +141,23 @@
       const query = parent
         ? `parent=${parent}`
         : `kind=${domain === 'Movies' ? 'movie' : domain === 'Shows' ? 'show' : 'artist'}`;
-      const path = `/catalog?${query}&q=${encodeURIComponent(search)}${collection ? `&collection=${collection}` : ''}`;
+      const path = `/catalog?${query}&q=${encodeURIComponent(search)}${collection ? `&collection=${collection}` : ''}${!parent && viewParameters ? `&${viewParameters}` : ''}`;
       const list = navigationCache.read(
         'catalog',
         path,
-        () => api<{ items: Item[] }>(path),
+        () =>
+          api<{
+            items: Item[];
+            total?: number;
+            counts?: LibraryCounts;
+            genres?: string[];
+          }>(path),
         (result) => {
           if (request === generation) {
             items = result.items;
+            total = result.total ?? result.items.length;
+            counts = result.counts;
+            genres = result.genres ?? [];
             busy = false;
           }
         },
@@ -193,6 +230,14 @@
           }
         }
       })();
+    });
+  });
+  let observedView: string | undefined;
+  $effect(() => {
+    const next = viewParameters;
+    untrack(() => {
+      if (observedView !== undefined && observedView !== next) void load();
+      observedView = next;
     });
   });
   let observedRevision: number | undefined;
@@ -303,16 +348,22 @@
     >
   </div>
 {/if}
-<div class="mb-5 flex flex-wrap items-center gap-3">
-  <FormField class="m-0 min-w-45 max-w-90 flex-1"
-    ><span class="sr-only">Search {domain.toLowerCase()}</span><input
-      class={formControlClass}
-      bind:value={search}
-      oninput={searchChanged}
-      placeholder={`Search your ${domain.toLowerCase()}`}
-    /></FormField
-  >{#if busy && !items.length}<Skeleton class="w-16" />{:else}<span
-      class="text-muted">{items.length} items</span
+<div class="mb-5 flex flex-wrap items-center gap-1.5">
+  <LibraryToolbar
+    {domain}
+    bind:search
+    {searchChanged}
+    view={breadcrumbs.length ? undefined : view}
+    {viewChanged}
+    {counts}
+    {genres}
+    {collections}
+    bind:collection
+    collectionChanged={() =>
+      filtersChanged ? filtersChanged(search, collection) : void load()}
+  />{#if busy && !items.length}<Skeleton class="ml-1.5 w-16" />{:else}<span
+      class="ml-1.5 text-muted"
+      >{items.length < total ? `${items.length} of ${total}` : items.length} items</span
     >{/if}
   {#if admin}<div class="ml-auto">
       <DropdownMenu.Root>
@@ -343,20 +394,6 @@
     </div>{/if}
 </div>
 {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
-{#if domain === 'Movies' && collections.length}
-  <FormField class="max-w-80"
-    >Collection<select
-      class={formControlClass}
-      bind:value={collection}
-      onchange={() =>
-        filtersChanged ? filtersChanged(search, collection) : void load()}
-      ><option value="">All movies</option
-      >{#each collections as group (group.id)}<option value={String(group.id)}
-          >{group.name} ({group.count})</option
-        >{/each}</select
-    ></FormField
-  >
-{/if}
 {#if selected}<Panel>
     <SectionHeading>
       <h2>{selected.title}</h2>
@@ -460,9 +497,12 @@
   />{:else if !error}<section class={emptyClass}>
     <Folder size={42} />
     <h2>
-      {search ? 'No matches' : 'No media yet'}
+      {search || filtered || collection ? 'No matches' : 'No media yet'}
     </h2>
-    <p>
-      {search ? 'Try a different search.' : 'Imported media will appear here.'}
-    </p>
+    {#if search}<p>Try a different search.</p>{:else if filtered}<Button
+        variant="secondary"
+        size="form"
+        onclick={() => view && viewChanged(unfiltered(view))}
+        >Clear filters</Button
+      >{:else if !collection}<p>Imported media will appear here.</p>{/if}
   </section>{/if}
