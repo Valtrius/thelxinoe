@@ -4,6 +4,8 @@ use rusqlite::{OptionalExtension, params};
 use thelxinoe_core::now;
 use thelxinoe_database::Database;
 
+const REPLACED: &str = "Replaced by the latest release";
+
 pub async fn inventory(db: &Database) -> Result<Vec<Tool>> {
     db.read("tools.inventory", |db| {
         let mut query = db.prepare("SELECT id,policy,channel,pinned,revision,installed,previous,held,candidate,checked_at,next_check_at,check_error,integrity_error FROM server_tools ORDER BY CASE id WHEN 'yt-dlp' THEN 0 WHEN 'deno' THEN 1 WHEN 'streamlink' THEN 2 ELSE 3 END")?;
@@ -60,10 +62,14 @@ pub async fn enqueue(
     db.write("tools.enqueue", move |db| {
         let tx=db.transaction()?;
         if let Some((id, existing, pending))=tx.query_row("SELECT id,action,candidate FROM tool_jobs WHERE tool=?1 AND CASE WHEN action='check' THEN 0 WHEN action IN ('bootstrap','validate') THEN 1 ELSE 2 END = CASE WHEN ?2='check' THEN 0 WHEN ?2 IN ('bootstrap','validate') THEN 1 ELSE 2 END AND stage NOT IN ('complete','failed','canceled')",params![tool.id,action],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?))).optional()? {
-            ensure!(existing==action && pending.as_deref().map(serde_json::from_str::<Candidate>).transpose()?==candidate,"Another operation is pending for this tool");
-            if manual { tx.execute("UPDATE tool_jobs SET manual=1,retry_at=0 WHERE id=?1",[&id])?; }
-            tx.commit()?;
-            return Ok(id);
+            if existing==action && pending.as_deref().map(serde_json::from_str::<Candidate>).transpose()?==candidate {
+                if manual { tx.execute("UPDATE tool_jobs SET manual=1,retry_at=0 WHERE id=?1",[&id])?; }
+                tx.commit()?;
+                return Ok(id);
+            }
+            // A requested install replaces an update frozen on an older candidate.
+            ensure!(manual && action=="install" && existing=="install","Another operation is pending for this tool");
+            tx.execute("UPDATE tool_jobs SET stage='canceled',reason=?2,updated_at=?3 WHERE id=?1",params![id,REPLACED,now()])?;
         }
         let revision:i64=tx.query_row("SELECT revision FROM server_tools WHERE id=?1",[&tool.id],|r|r.get(0))?;
         ensure!(revision==tool.revision,"Tool settings changed; refresh and retry");
@@ -98,7 +104,12 @@ pub async fn discover(
     db.write("tools.discovery", move |db| {
         let success=error.is_none();
         let retry=retry_at.unwrap_or(now()+3600).clamp(now()+60,now()+86400);
-        db.execute("UPDATE server_tools SET candidate=CASE WHEN ?4 THEN ?2 ELSE candidate END,checked_at=CASE WHEN ?4 THEN ?3 ELSE checked_at END,next_check_at=?5,check_error=?6 WHERE id=?1 AND channel=?7",params![tool.id,candidate.map(|v|serde_json::to_string(&v)).transpose()?,now(),success,if success{now()+86400}else{retry},error,tool.channel])?; Ok(())
+        let candidate=candidate.map(|v|serde_json::to_string(&v)).transpose()?;
+        let tx=db.transaction()?;
+        let discovered=tx.execute("UPDATE server_tools SET candidate=CASE WHEN ?4 THEN ?2 ELSE candidate END,checked_at=CASE WHEN ?4 THEN ?3 ELSE checked_at END,next_check_at=?5,check_error=?6 WHERE id=?1 AND channel=?7",params![tool.id,candidate,now(),success,if success{now()+86400}else{retry},error,tool.channel])?>0 && success;
+        // The scheduler only queues the new candidate once no update is pending.
+        if discovered { tx.execute("UPDATE tool_jobs SET stage='canceled',reason=?3,updated_at=?4 WHERE tool=?1 AND action='install' AND manual=0 AND stage NOT IN ('complete','failed','canceled') AND json_extract(candidate,'$.id') IS NOT json_extract(?2,'$.id')",params![tool.id,candidate,REPLACED,now()])?; }
+        tx.commit()?;Ok(())
     }).await
 }
 

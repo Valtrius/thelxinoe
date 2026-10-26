@@ -479,7 +479,8 @@ def probe(root, value):
                 output = run([executable("streamlink", "python"), "-I", "-B", "-u", "-c", value["streamlink_script"]],
                     timeout=60, request=canonical({"provider": provider, "channel": channel}) + b"\n")
                 worker = json.loads(output.splitlines()[-1])
-                require(cli.startswith("https://") and worker.get("url", "").startswith("https://"), "Public stream is unavailable")
+                require(cli.startswith("https://") and any(f.get("url", "").startswith("https://") for f in worker.get("formats", [])),
+                        "Public stream is unavailable")
             return {"status": "passed", "seconds": round(time.monotonic() - started, 2)}
         except Exception as error:
             message = str(error).lower()
@@ -503,8 +504,14 @@ def probe(root, value):
             attempts.append({"identifier": identifier, "candidate": candidate, "current": current})
             if candidate["status"] == "passed":
                 break
-        results.append({"provider": provider, "candidate": candidate, "attempts": attempts})
-    return {"ready": all(result["candidate"]["status"] == "passed" for result in results), "probes": results}
+        # Live channels may all be offline during the maintenance window. Only a
+        # current version that passes or fails differently shows a regression there.
+        unchanged = provider != "youtube" and value["current"].get("streamlink") is not None and all(
+            a["current"] and a["current"]["status"] != "passed" and a["current"]["reason"] == a["candidate"]["reason"]
+            for a in attempts)
+        results.append({"provider": provider, "candidate": candidate, "attempts": attempts, "unchanged": unchanged})
+    return {"ready": all(result["candidate"]["status"] == "passed" or result["unchanged"] for result in results),
+            "probes": results}
 
 
 def main():

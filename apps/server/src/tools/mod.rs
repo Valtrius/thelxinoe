@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod queue_tests;
+#[cfg(test)]
 mod startup_tests;
 #[path = "../storage/tools.rs"]
 mod storage;
