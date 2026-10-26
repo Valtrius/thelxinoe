@@ -305,6 +305,53 @@ fn episodes_seasons_and_shows_aggregate_their_episodes() {
         json!({"state":"unavailable","episodes":{"available":0,"total":1}})
     );
 }
+
+#[test]
+fn episode_totals_leave_out_aired_episodes_that_are_not_monitored() {
+    let snapshot = snapshot_of(inventory(
+        "sonarr",
+        json!([
+            {"id":20,"tvdbId":220,"title":"Half wanted","monitored":true,
+             "seasons":[{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":false}]},
+            {"id":21,"tvdbId":221,"title":"Future only","monitored":true,"status":"ended",
+             "seasons":[{"seasonNumber":1,"monitored":true}]}
+        ]),
+        json!({
+            "20":[
+                {"id":1,"seasonNumber":1,"episodeNumber":1,"airDateUtc":PAST,"monitored":true,"hasFile":true},
+                {"id":2,"seasonNumber":1,"episodeNumber":2,"airDateUtc":PAST,"monitored":true,"hasFile":false},
+                {"id":3,"seasonNumber":2,"episodeNumber":1,"airDateUtc":PAST,"monitored":false,"hasFile":true},
+                {"id":4,"seasonNumber":2,"episodeNumber":2,"airDateUtc":PAST,"monitored":false,"hasFile":false}
+            ],
+            "21":[
+                {"id":5,"seasonNumber":1,"episodeNumber":1,"airDateUtc":PAST,"monitored":false,"hasFile":false}
+            ]
+        }),
+        json!([]),
+    ));
+    let series = found(&snapshot, "sonarr", 20);
+    // An unmonitored episode counts once it is obtained.
+    assert_eq!(
+        shown(show_status(series, &HashSet::new(), NOW), true),
+        json!({"state":"partial","episodes":{"available":2,"total":3},"monitored":true})
+    );
+    assert_eq!(
+        shown(show_status(series, &HashSet::from([2]), NOW), true),
+        json!({"state":"available","episodes":{"available":3,"total":3},"monitored":true})
+    );
+    assert_eq!(
+        shown(season_status(series, 2, &HashSet::new(), NOW), true),
+        json!({"state":"available","episodes":{"available":1,"total":1},"monitored":false})
+    );
+    // Aired episodes that are not wanted do not make a monitored show upcoming.
+    assert_eq!(
+        shown(
+            show_status(found(&snapshot, "sonarr", 21), &HashSet::new(), NOW),
+            true
+        ),
+        json!({"state":"unmonitored","episodes":{"available":0,"total":0},"monitored":true})
+    );
+}
 fn snapshot_of(inventory: Inventory) -> Snapshot {
     snapshot(vec![("sonarr", inventory)])
 }

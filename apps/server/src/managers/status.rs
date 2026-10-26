@@ -828,13 +828,15 @@ fn episodes_status(
     monitored: bool,
     now: i64,
 ) -> Status {
-    let (mut available, mut total, mut wanted) = (0, 0, false);
+    let (mut available, mut total, mut any_aired, mut wanted) = (0, 0, false, false);
     let mut queued = HashSet::new();
     for episode in episodes {
         let aired = episode.aired(now);
         let present = episode.has_file || library.contains(&episode.id);
-        // An episode obtained before its air date still counts towards the total.
-        total += usize::from(aired || present);
+        any_aired |= aired;
+        // Like Sonarr's own episode count, the total is the aired episodes it monitors
+        // and every episode obtained, even unmonitored or before its air date.
+        total += usize::from(present || (aired && episode.monitored));
         if present {
             available += 1;
         } else if inventory
@@ -859,7 +861,7 @@ fn episodes_status(
         Status::new(Phase::Available)
     } else if available > 0 {
         Status::new(Phase::Partial)
-    } else if total == 0 && monitored {
+    } else if !any_aired && monitored {
         Status::new(Phase::Upcoming)
     } else if wanted {
         Status::new(Phase::Missing)
