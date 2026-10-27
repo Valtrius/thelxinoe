@@ -769,9 +769,11 @@ test('library hierarchy, playlist and watchlist edits, online feeds and statisti
   await settings
     .getByRole('switch', { name: 'Remove videos when watched', exact: true })
     .click();
+  // The menu's backdrop covers its button and takes the press that closes it.
   await page
     .getByRole('button', { name: 'Watchlist settings', exact: true })
-    .click();
+    .click({ force: true });
+  await expect(settings).toBeHidden();
   const card = page.locator('article[data-video-id]').nth(1);
   await card.hover();
   await card.getByRole('button', { name: /^More actions for / }).click();

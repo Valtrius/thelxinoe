@@ -27,6 +27,9 @@
   } from '../../../layout-motion';
   import { sortedYoutubeWatchlistItems } from '../../youtube-watchlists';
   import Button from '../../../ui/Button.svelte';
+  import MenuBackdrop, {
+    ignoreBackdrop,
+  } from '../../../ui/MenuBackdrop.svelte';
   import Switch from '../../../ui/Switch.svelte';
   import {
     eyebrowTextClass as eyebrowClass,
@@ -445,9 +448,16 @@
           >
           <ChevronDown class="size-3.5 text-muted" />
         </Popover.Trigger>
+        {#if listMenuOpen}<MenuBackdrop
+            close={() => {
+              listMenuOpen = false;
+              confirmingDeleteWatchlistId = null;
+            }}
+          />{/if}
         <Popover.ContentStatic
           role="dialog"
           aria-label="Watchlists"
+          onInteractOutside={ignoreBackdrop}
           class="absolute top-10 right-0 left-0 z-50 border border-line-strong bg-surface-strong p-1.5 shadow-xl"
         >
           {#each watchlists as watchlist (watchlist.id)}
@@ -555,9 +565,13 @@
           {/snippet}
         </Popover.Trigger>
         {#if selected}
+          {#if sortMenuOpen}<MenuBackdrop
+              close={() => (sortMenuOpen = false)}
+            />{/if}
           <Popover.ContentStatic
             role="dialog"
             aria-label="Sort watchlist"
+            onInteractOutside={ignoreBackdrop}
             class={`absolute top-10 right-0 z-50 w-64 border border-line-strong bg-surface-strong p-3 shadow-xl compact:top-12 ${toolbarMenuClass}`}
           >
             <p class={`${eyebrowClass} mb-2`}>SORT BY</p>
@@ -626,9 +640,13 @@
           {/snippet}
         </Popover.Trigger>
         {#if selected}
+          {#if settingsOpen}<MenuBackdrop
+              close={() => (settingsOpen = false)}
+            />{/if}
           <Popover.ContentStatic
             role="dialog"
             aria-label="Watchlist settings"
+            onInteractOutside={ignoreBackdrop}
             class={`absolute top-10 right-0 z-50 w-72 border border-line-strong bg-surface-strong p-3 text-xs shadow-xl compact:top-12 ${toolbarMenuClass}`}
           >
             <p class={`${eyebrowClass} mb-2`}>WATCHLIST SETTINGS</p>

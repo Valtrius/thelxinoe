@@ -15,6 +15,9 @@
     Search,
   } from '@lucide/svelte';
   import Button from '../../../ui/Button.svelte';
+  import MenuBackdrop, {
+    ignoreBackdrop,
+  } from '../../../ui/MenuBackdrop.svelte';
   import {
     eyebrowTextClass as eyebrowClass,
     toolbarMenuClass,
@@ -233,10 +236,14 @@
           >
         {/snippet}
       </Popover.Trigger>
+      {#if openMenu === 'sort'}<MenuBackdrop
+          close={() => (openMenu = null)}
+        />{/if}
       <Popover.ContentStatic
         role="dialog"
         aria-label="Sort feed"
-        class={`absolute top-11 right-0 w-64 border border-line-strong bg-surface-strong p-3 shadow-xl ${toolbarMenuClass}`}
+        onInteractOutside={ignoreBackdrop}
+        class={`absolute top-11 right-0 z-50 w-64 border border-line-strong bg-surface-strong p-3 shadow-xl ${toolbarMenuClass}`}
       >
         <p class={`${eyebrowClass} mb-2`}>SORT BY</p>
         {#each [['date', 'Date'], ['channel', 'Channel'], ['duration', 'Duration']] as item (item[0])}
@@ -287,10 +294,14 @@
           >
         {/snippet}
       </Popover.Trigger>
+      {#if openMenu === 'filter'}<MenuBackdrop
+          close={() => (openMenu = null)}
+        />{/if}
       <Popover.ContentStatic
         role="dialog"
         aria-label="Filter feed"
-        class={`absolute top-11 right-0 max-h-[calc(100dvh-7rem)] w-80 overflow-y-auto border border-line-strong bg-surface-strong p-3 shadow-xl ${toolbarMenuClass}`}
+        onInteractOutside={ignoreBackdrop}
+        class={`absolute top-11 right-0 z-50 max-h-[calc(100dvh-7rem)] w-80 overflow-y-auto border border-line-strong bg-surface-strong p-3 shadow-xl ${toolbarMenuClass}`}
       >
         <div class="mb-2 flex items-center justify-between">
           <p class={eyebrowClass}>FILTER</p>
@@ -428,10 +439,14 @@
           >
         {/snippet}
       </Popover.Trigger>
+      {#if openMenu === 'group'}<MenuBackdrop
+          close={() => (openMenu = null)}
+        />{/if}
       <Popover.ContentStatic
         role="dialog"
         aria-label="Group feed"
-        class={`absolute top-11 right-0 w-72 border border-line-strong bg-surface-strong p-2 shadow-xl ${toolbarMenuClass}`}
+        onInteractOutside={ignoreBackdrop}
+        class={`absolute top-11 right-0 z-50 w-72 border border-line-strong bg-surface-strong p-2 shadow-xl ${toolbarMenuClass}`}
       >
         <p class={`${eyebrowClass} px-2 py-1`}>GROUP BY DATE</p>
         {#each [['smart', 'Smart', 'Days, then weeks, then months'], ['day', 'Every day', 'One dated section per day'], ['week', 'Every week', 'Monday through Sunday'], ['month', 'Every month', 'One section per month'], ['none', 'No grouping', 'One sorted feed']] as item (item[0])}

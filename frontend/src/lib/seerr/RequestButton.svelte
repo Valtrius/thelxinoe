@@ -4,6 +4,7 @@
   import { Check, ChevronDown, LoaderCircle, Plus } from '@lucide/svelte';
   import { api } from '../api';
   import Button from '../ui/Button.svelte';
+  import MenuBackdrop, { ignoreBackdrop } from '../ui/MenuBackdrop.svelte';
   import { formControlClass } from '../ui/styles';
   import type { MediaKind } from './types';
 
@@ -137,10 +138,12 @@
           >{/snippet}
       </Popover.Trigger>
       <Popover.Portal disabled={inline}>
+        {#if open}<MenuBackdrop close={() => (open = false)} />{/if}
         <Popover.Content
           align="end"
           sideOffset={4}
           preventScroll={false}
+          onInteractOutside={ignoreBackdrop}
           onkeydown={navigate}
           class="z-50 max-h-[min(28rem,80vh)] w-[min(22rem,calc(100vw-2rem))] overflow-y-auto border border-line-strong bg-surface-strong text-foreground"
         >

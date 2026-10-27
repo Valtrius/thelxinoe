@@ -6,9 +6,13 @@
   import { dismissToastByKey, showToast } from '../../toasts';
   import type { YoutubeVideo } from '../../types';
   import { youtubeUrl } from '../../utils';
+  import MenuBackdrop, {
+    ignoreBackdrop,
+  } from '../../../ui/MenuBackdrop.svelte';
 
   let { video, restart }: { video: YoutubeVideo; restart: () => void } =
     $props();
+  let open = $state(false);
 
   const itemClass =
     'flex h-8 w-full cursor-default items-center gap-[0.55rem] whitespace-nowrap px-[0.55rem] py-[0.4rem] text-left text-[0.7rem] text-muted outline-none data-[highlighted]:bg-accent-soft data-[highlighted]:text-foreground [&_svg]:size-[0.85rem] [&_svg]:shrink-0 compact:h-11 compact:text-[13px]';
@@ -58,7 +62,7 @@
   }
 </script>
 
-<DropdownMenu.Root>
+<DropdownMenu.Root bind:open>
   <DropdownMenu.Trigger>
     {#snippet child({ props })}<button
         {...props}
@@ -69,11 +73,13 @@
       >{/snippet}
   </DropdownMenu.Trigger>
   <DropdownMenu.Portal>
+    {#if open}<MenuBackdrop close={() => (open = false)} />{/if}
     <DropdownMenu.Content
       align="end"
       sideOffset={4}
       collisionPadding={8}
       preventScroll={false}
+      onInteractOutside={ignoreBackdrop}
       class="z-50 grid min-w-52 border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
       aria-label={`Actions for ${video.title}`}
     >

@@ -18,6 +18,7 @@
   import { attention, acknowledgeAttention } from '../attention';
   import AttentionDot from '../ui/AttentionDot.svelte';
   import Button from '../ui/Button.svelte';
+  import MenuBackdrop, { ignoreBackdrop } from '../ui/MenuBackdrop.svelte';
   import Notice from '../ui/Notice.svelte';
   import { formControlClass } from '../ui/styles';
   import MediaRow from './MediaRow.svelte';
@@ -105,7 +106,8 @@
     requestPages = $state(1),
     requestPage = $state(1),
     requestLoading = $state(false),
-    actionBusy = $state<number | null>(null);
+    actionBusy = $state<number | null>(null),
+    requestMenu = $state<number | null>(null);
   let searchTimer: ReturnType<typeof setTimeout>,
     searchGeneration = 0,
     requestGeneration = 0,
@@ -607,6 +609,9 @@
                     >Decline</Button
                   >{/if}
                 {#if request.status === 1 || (request.status === 4 && user.role === 'admin')}<DropdownMenu.Root
+                    open={requestMenu === request.id}
+                    onOpenChange={(open) =>
+                      (requestMenu = open ? request.id : null)}
                   >
                     <DropdownMenu.Trigger disabled={actionBusy !== null}>
                       {#snippet child({ props })}<Button
@@ -618,10 +623,14 @@
                         >{/snippet}
                     </DropdownMenu.Trigger>
                     <DropdownMenu.Portal>
+                      {#if requestMenu === request.id}<MenuBackdrop
+                          close={() => (requestMenu = null)}
+                        />{/if}
                       <DropdownMenu.Content
                         align="end"
                         sideOffset={4}
                         preventScroll={false}
+                        onInteractOutside={ignoreBackdrop}
                         class="z-50 grid min-w-44 border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
                       >
                         {#if request.status === 4 && user.role === 'admin'}<DropdownMenu.Item
