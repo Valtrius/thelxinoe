@@ -108,7 +108,17 @@ pub(super) async fn run(
     output_limit: usize,
 ) -> anyhow::Result<Output> {
     // A short run is bounded by its length alone.
-    run_progress(home, executable, args, timeout, timeout, output_limit, None).await
+    let activity = Activity::new(timeout);
+    run_progress(
+        home,
+        executable,
+        args,
+        &activity,
+        timeout,
+        output_limit,
+        None,
+    )
+    .await
 }
 
 async fn collect_progress(
@@ -146,8 +156,39 @@ async fn collect_progress(
     }
 }
 
-/// A tool's output pipe, noting when it last delivered anything.
-struct Active<'a, R>(R, &'a Mutex<Instant>);
+/// When a tool last showed activity, and how long it may go without. Its output counts, and
+/// its caller may record more, like a file the tool writes without reporting it.
+pub(super) struct Activity {
+    last: Mutex<Instant>,
+    idle: Duration,
+}
+
+impl Activity {
+    pub(super) fn new(idle: Duration) -> Self {
+        Self {
+            last: Mutex::new(Instant::now()),
+            idle,
+        }
+    }
+
+    pub(super) fn record(&self) {
+        *self.last.lock().unwrap() = Instant::now();
+    }
+
+    /// Resolves once nothing was recorded for `idle`.
+    async fn stalled(&self) {
+        loop {
+            let deadline = *self.last.lock().unwrap() + self.idle;
+            if Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep_until(deadline).await;
+        }
+    }
+}
+
+/// A tool's output pipe, recording activity whenever it delivers anything.
+struct Active<'a, R>(R, &'a Activity);
 impl<R: AsyncRead + Unpin> AsyncRead for Active<'_, R> {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
@@ -157,30 +198,19 @@ impl<R: AsyncRead + Unpin> AsyncRead for Active<'_, R> {
         let before = buffer.filled().len();
         let result = std::pin::Pin::new(&mut self.0).poll_read(context, buffer);
         if buffer.filled().len() > before {
-            *self.1.lock().unwrap() = Instant::now();
+            self.1.record();
         }
         result
     }
 }
 
-/// Resolves once the tool has written nothing for `idle`.
-async fn stalled(active: &Mutex<Instant>, idle: Duration) {
-    loop {
-        let deadline = *active.lock().unwrap() + idle;
-        if Instant::now() >= deadline {
-            return;
-        }
-        tokio::time::sleep_until(deadline).await;
-    }
-}
-
-/// Runs a tool that ends once it writes nothing for `idle`, and at the latest after
-/// `timeout`. A tool that keeps reporting progress may run up to that bound.
+/// Runs a tool that ends once `activity` stalls, and at the latest after `timeout`. A tool
+/// that keeps reporting progress may run up to that bound.
 pub(super) async fn run_progress(
     home: tempfile::TempDir,
     executable: &Path,
     args: &[OsString],
-    idle: Duration,
+    activity: &Activity,
     timeout: Duration,
     output_limit: usize,
     progress: Option<tokio::sync::mpsc::Sender<String>>,
@@ -194,17 +224,17 @@ pub(super) async fn run_progress(
     .context("Could not start managed online tool")?;
     let stdout = child.stdout().take().context("Missing tool stdout")?;
     let stderr = child.stderr().take().context("Missing tool stderr")?;
-    let active = Mutex::new(Instant::now());
+    activity.record();
     let result = tokio::time::timeout(timeout, async {
         tokio::select! {
             result = async {
                 tokio::try_join!(
                     async { Ok::<_, anyhow::Error>(child.wait().await?) },
-                    collect_progress(Active(stdout, &active), output_limit, progress),
-                    collect(Active(stderr, &active), 256 * 1024),
+                    collect_progress(Active(stdout, activity), output_limit, progress),
+                    collect(Active(stderr, activity), 256 * 1024),
                 )
             } => result,
-            () = stalled(&active, idle) => Err(anyhow::anyhow!("Online tool stopped making progress")),
+            () = activity.stalled() => Err(anyhow::anyhow!("Online tool stopped making progress")),
         }
     })
     .await;
@@ -393,7 +423,7 @@ mod tests {
                 tempfile::tempdir().unwrap(),
                 Path::new("/bin/sh"),
                 &["-c".into(), script.into()],
-                Duration::from_secs(2),
+                &Activity::new(Duration::from_secs(2)),
                 Duration::from_secs(60),
                 1024,
                 None,
@@ -412,6 +442,32 @@ mod tests {
         };
         assert!(silent.to_string().contains("progress"), "{silent}");
         assert!(started.elapsed() < Duration::from_secs(20));
+    }
+    // A tool that works without a word, as FFmpeg does under yt-dlp, keeps running while its
+    // caller records the activity it sees.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn activity_the_caller_records_extends_a_silent_run() {
+        let activity = Activity::new(Duration::from_secs(1));
+        let args = ["-c".into(), "sleep 3".into()];
+        let run = run_progress(
+            tempfile::tempdir().unwrap(),
+            Path::new("/bin/sh"),
+            &args,
+            &activity,
+            Duration::from_secs(60),
+            1024,
+            None,
+        );
+        tokio::pin!(run);
+        let mut interval = tokio::time::interval(Duration::from_millis(250));
+        let output = loop {
+            tokio::select! {
+                output = &mut run => break output,
+                _ = interval.tick() => activity.record(),
+            }
+        };
+        assert!(output.unwrap().success);
     }
     #[cfg(unix)]
     #[tokio::test]

@@ -10,23 +10,30 @@ mod auto_delete_tests;
 fn progress_accepts_estimates_and_rejects_invalid_byte_counts() {
     assert_eq!(
         parse_progress("THELXINOE_PROGRESS:25\t100\tNA\t3\th264\tnone"),
-        Some((25, Some(100), Some(3), "video"))
+        Some(Progress::Download((25, Some(100), Some(3), "video")))
     );
     assert_eq!(
         parse_progress("THELXINOE_PROGRESS:25\tNA\t50\tNA\tnone\topus"),
-        Some((25, Some(50), None, "audio"))
+        Some(Progress::Download((25, Some(50), None, "audio")))
     );
     assert_eq!(
-        parse_progress("THELXINOE_PROGRESS:25\t250000000000")
-            .unwrap()
-            .1,
-        Some(250_000_000_000),
+        parse_progress("THELXINOE_PROGRESS:25\t250000000000"),
+        Some(Progress::Download((
+            25,
+            Some(250_000_000_000),
+            None,
+            "video"
+        ))),
         "a download has no size of its own"
     );
     for input in ["NaN", "inf", "-1", "1e19"] {
         assert!(parse_progress(&format!("THELXINOE_PROGRESS:{input}\t100")).is_none());
     }
     assert!(parse_progress("unrelated extractor output").is_none());
+    assert_eq!(
+        parse_progress("THELXINOE_PROGRESS:processing\r"),
+        Some(Progress::Processing)
+    );
 }
 
 #[tokio::test]
@@ -669,14 +676,116 @@ fn only_failures_the_video_does_not_explain_are_retried() {
     }
 }
 
+async fn listed(state: &AppState) -> Value {
+    state
+        .db
+        .read("test.fixture", |db| {
+            super::super::browse::one(db, "alice", VIDEO, "grant")
+        })
+        .await
+        .unwrap()["download"]
+        .clone()
+}
+
+// Once every stream is downloaded, yt-dlp puts them together with no progress of its own.
+#[tokio::test]
+async fn a_download_being_put_together_reads_as_processing() {
+    let (_temp, state, alice) = fixture().await;
+    request(&state, &[VIDEO]).await;
+    let (_, generation, ..) = attempt(&state).await.unwrap();
+    let audio = (100, Some(100), Some(0), "audio");
+    storage::save_progress(&state.db, VIDEO.into(), generation.clone(), audio)
+        .await
+        .unwrap();
+    let processing = || storage::save_processing(&state.db, VIDEO.into(), generation.clone());
+    assert_eq!(processing().await.unwrap(), 1);
+    assert_eq!(
+        processing().await.unwrap(),
+        0,
+        "Each post-processor reports; only the first is news"
+    );
+    assert_eq!(listed(&state).await["status"], "processing");
+    let status = call(
+        &state,
+        &format!("/api/v1/online/youtube/videos/{VIDEO}/download"),
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(status.2["download"]["state"], "processing", "{}", status.2);
+    publish_progress(&state, VIDEO).await.unwrap();
+    let progress: Value = state
+        .db
+        .read("test.fixture", |db| {
+            Ok(serde_json::from_str(&db.query_row(
+                "SELECT payload FROM events WHERE kind='online.download.progress'",
+                [],
+                |r| r.get::<_, String>(0),
+            )?)?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(progress["state"], "processing");
+    // A restart puts the attempt back in the queue, and the next one downloads again.
+    storage::recover_downloads(&state.db).await.unwrap();
+    attempt(&state).await.unwrap();
+    assert_eq!(listed(&state).await["status"], "downloading");
+}
+
+#[tokio::test]
+async fn failed_downloads_tell_users_why_in_their_own_words() {
+    let (_temp, state, _) = fixture().await;
+    request(&state, &[VIDEO]).await;
+    let (_, generation, ..) = attempt(&state).await.unwrap();
+    storage::finish_download(
+        "network_blocked",
+        reason("network_blocked"),
+        VIDEO.into(),
+        generation,
+        Some(600),
+        &state.db,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed(&state).await["errorMessage"],
+        "YouTube is blocking public access from this server's network"
+    );
+    make_due(&state, VIDEO).await;
+    let (_, generation, ..) = attempt(&state).await.unwrap();
+    assert_eq!(listed(&state).await["errorMessage"], Value::Null);
+    storage::finish_download(
+        "failed",
+        Some(UNFINISHED),
+        VIDEO.into(),
+        generation,
+        Some(1800),
+        &state.db,
+    )
+    .await
+    .unwrap();
+    assert_eq!(listed(&state).await["errorMessage"], UNFINISHED);
+    for status in ["ready", "waiting_for_space"] {
+        assert_eq!(reason(status), None, "{status}");
+    }
+}
+
 #[tokio::test]
 async fn failed_downloads_retry_when_due_with_the_current_tools() {
     let (_temp, state, _) = fixture().await;
     request(&state, &[VIDEO]).await;
     let (_, generation, ..) = attempt(&state).await.unwrap();
-    storage::finish_download("failed", VIDEO.into(), generation, Some(600), &state.db)
-        .await
-        .unwrap();
+    storage::finish_download(
+        "failed",
+        None,
+        VIDEO.into(),
+        generation,
+        Some(600),
+        &state.db,
+    )
+    .await
+    .unwrap();
     let (status, retries, retry_at) = retry_state(&state, VIDEO).await;
     assert_eq!((status.as_str(), retries), ("failed", 1));
     assert!(retry_at.unwrap() > now() + 590);
@@ -705,6 +814,7 @@ async fn failed_downloads_retry_when_due_with_the_current_tools() {
     );
     storage::finish_download(
         "network_blocked",
+        None,
         VIDEO.into(),
         generation,
         Some(1800),
@@ -742,6 +852,7 @@ async fn a_download_youtube_blocked_holds_back_the_queue_until_its_retry() {
     assert_eq!(video, VIDEO);
     storage::finish_download(
         "network_blocked",
+        None,
         VIDEO.into(),
         generation,
         Some(600),
@@ -756,9 +867,16 @@ async fn a_download_youtube_blocked_holds_back_the_queue_until_its_retry() {
     make_due(&state, VIDEO).await;
     let (video, generation, ..) = attempt(&state).await.unwrap();
     assert_eq!(video, VIDEO, "The blocked download is attempted first");
-    storage::finish_download("failed", VIDEO.into(), generation, Some(1800), &state.db)
-        .await
-        .unwrap();
+    storage::finish_download(
+        "failed",
+        None,
+        VIDEO.into(),
+        generation,
+        Some(1800),
+        &state.db,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         attempt(&state).await.unwrap().0,
         OTHER,

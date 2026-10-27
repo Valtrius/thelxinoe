@@ -319,6 +319,7 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
     );
     storage::finish_download(
         "waiting_for_space",
+        None,
         waiting_id.clone(),
         waiting_generation.clone(),
         None,

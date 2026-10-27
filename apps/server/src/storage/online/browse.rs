@@ -68,11 +68,12 @@ pub(in super::super) fn video(row: &rusqlite::Row<'_>, grant: &str) -> rusqlite:
     let status: Option<String> = row.get(17)?;
     let download = status.map(|status| -> rusqlite::Result<Value> {
         let format = super::super::downloads::format(row.get::<_,Option<String>>(25)?.as_deref());
+        let kind = row.get::<_,Option<String>>(24)?;
         Ok(json!({
-        "videoId":id,"status":match status.as_str(){"ready"=>"ready","queued"=>"queued","waiting_for_space"=>"waiting_for_space","downloading"=>"downloading","processing"=>"processing",_=>"failed"},
+        "videoId":id,"status":match super::super::downloads::client_state(&status,kind.as_deref()){"ready"=>"ready","queued"=>"queued","waiting_for_space"=>"waiting_for_space","downloading"=>"downloading","processing"=>"processing",_=>"failed"},
         "fileSizeBytes":row.get::<_,Option<i64>>(18)?.unwrap_or(0),"pinned":row.get::<_,bool>(12)?,
         "widthPixels":format.width,"heightPixels":format.height,"frameRate":format.frame_rate,
-        "downloadedBytes":row.get::<_,Option<i64>>(21)?.unwrap_or(0),"totalBytes":row.get::<_,Option<i64>>(22)?,"etaSeconds":row.get::<_,Option<i64>>(23)?,"mediaKind":row.get::<_,Option<String>>(24)?,"requestedAt":date(row.get::<_,Option<i64>>(19)?.unwrap_or(0)),"errorMessage":row.get::<_,Option<String>>(20)?,"retryAt":row.get::<_,Option<i64>>(26)?.map(date)
+        "downloadedBytes":row.get::<_,Option<i64>>(21)?.unwrap_or(0),"totalBytes":row.get::<_,Option<i64>>(22)?,"etaSeconds":row.get::<_,Option<i64>>(23)?,"mediaKind":kind,"requestedAt":date(row.get::<_,Option<i64>>(19)?.unwrap_or(0)),"errorMessage":row.get::<_,Option<String>>(20)?,"retryAt":row.get::<_,Option<i64>>(26)?.map(date)
     })) }).transpose()?;
     Ok(json!({
         "videoId":id,"channelId":row.get::<_,String>(1)?,"channelName":row.get::<_,String>(2)?,

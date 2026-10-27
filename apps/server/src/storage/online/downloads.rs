@@ -81,7 +81,7 @@ pub(super) async fn configure(db: &Database, enabled: bool, p: Principal) -> any
 }
 
 pub(super) async fn status(db: &Database, video: String) -> anyhow::Result<Option<Value>> {
-    db.read("online.downloads.status", move |db| Ok(db.query_row("SELECT state,size,error,downloaded_bytes,total_bytes,eta_seconds,media_kind,probe,retry_at FROM youtube_downloads WHERE video_id=?1",[video],|r|{let format=super::format(r.get::<_,Option<String>>(7)?.as_deref());Ok(json!({"state":r.get::<_,String>(0)?,"size":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?,"width":format.width,"height":format.height,"frame_rate":format.frame_rate,"retry_at":r.get::<_,Option<i64>>(8)?}))}).optional()?)).await
+    db.read("online.downloads.status", move |db| Ok(db.query_row("SELECT state,size,error,downloaded_bytes,total_bytes,eta_seconds,media_kind,probe,retry_at FROM youtube_downloads WHERE video_id=?1",[video],|r|{let format=super::format(r.get::<_,Option<String>>(7)?.as_deref());let kind=r.get::<_,Option<String>>(6)?;Ok(json!({"state":super::client_state(&r.get::<_,String>(0)?,kind.as_deref()),"size":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":kind,"width":format.width,"height":format.height,"frame_rate":format.frame_rate,"retry_at":r.get::<_,Option<i64>>(8)?}))}).optional()?)).await
 }
 
 pub(super) async fn request_for(
@@ -159,20 +159,23 @@ pub(super) async fn claim_download(
             bundle=serde_json::to_string(tools)?;
             tx.execute("UPDATE youtube_downloads SET generation=?2,tools=?3,error=NULL,retry_at=NULL,downloaded_bytes=0,total_bytes=NULL,eta_seconds=NULL,media_kind=NULL WHERE video_id=?1",params![video,generation,bundle])?;
         }
-        tx.execute("UPDATE youtube_downloads SET state='downloading',updated_at=?2 WHERE video_id=?1",params![video,now()])?;
+        // An attempt that stopped while processing starts over downloading.
+        tx.execute("UPDATE youtube_downloads SET state='downloading',media_kind=NULLIF(media_kind,?3),updated_at=?2 WHERE video_id=?1",params![video,now(),PROCESSING])?;
         tx.commit()?;Ok(Some((video,generation,bundle,waiting,retries)))
     }).await
 }
 
-/// Records an attempt's outcome; a failed one retries `retry` seconds later.
+/// Records an attempt's outcome and what users are told about it; a failed one retries
+/// `retry` seconds later.
 pub(super) async fn finish_download(
     status: &'static str,
+    reason: Option<&'static str>,
     video: String,
     generation: String,
     retry: Option<i64>,
     db: &Database,
 ) -> anyhow::Result<()> {
-    db.write("online.downloads.finish_download", move |db| {db.execute("UPDATE youtube_downloads SET state=?3,error=CASE WHEN ?3 IN ('ready','waiting_for_space') THEN NULL ELSE ?3 END,retries=retries+(?5 IS NOT NULL),retry_at=?4+?5,updated_at=?4 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,status,now(),retry])?;Ok(())}).await
+    db.write("online.downloads.finish_download", move |db| {db.execute("UPDATE youtube_downloads SET state=?3,error=?6,retries=retries+(?5 IS NOT NULL),retry_at=?4+?5,updated_at=?4 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,status,now(),retry,reason])?;Ok(())}).await
 }
 
 pub(super) async fn publish_progress(
@@ -180,7 +183,7 @@ pub(super) async fn publish_progress(
     db: &Database,
 ) -> anyhow::Result<(Option<Value>, Vec<String>)> {
     db.read("online.downloads.publish_progress", move|db|{
-        let progress=db.query_row("SELECT generation,state,size,downloaded_bytes,total_bytes,eta_seconds,media_kind,probe,retry_at FROM youtube_downloads WHERE video_id=?1",[&id],|r|{let format=super::format(r.get::<_,Option<String>>(7)?.as_deref());Ok(json!({"video_id":id,"generation":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"size":r.get::<_,Option<i64>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?,"width":format.width,"height":format.height,"frame_rate":format.frame_rate,"retry_at":r.get::<_,Option<i64>>(8)?}))}).optional()?;
+        let progress=db.query_row("SELECT generation,state,size,downloaded_bytes,total_bytes,eta_seconds,media_kind,probe,retry_at FROM youtube_downloads WHERE video_id=?1",[&id],|r|{let format=super::format(r.get::<_,Option<String>>(7)?.as_deref());let kind=r.get::<_,Option<String>>(6)?;Ok(json!({"video_id":id,"generation":r.get::<_,String>(0)?,"state":super::client_state(&r.get::<_,String>(1)?,kind.as_deref()),"size":r.get::<_,Option<i64>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":kind,"width":format.width,"height":format.height,"frame_rate":format.frame_rate,"retry_at":r.get::<_,Option<i64>>(8)?}))}).optional()?;
         let users=db.prepare("SELECT user_id FROM youtube_videos WHERE video_id=?1")?.query_map([id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok((progress,users))
     }).await
@@ -222,6 +225,16 @@ pub(super) async fn save_progress(
     progress: (i64, Option<i64>, Option<i64>, &'static str),
 ) -> anyhow::Result<usize> {
     db.write("online.downloads.save_progress", move|db|Ok(db.execute("UPDATE youtube_downloads SET downloaded_bytes=?3,total_bytes=?4,eta_seconds=?5,media_kind=?6 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![id,version,progress.0,progress.1,progress.2,progress.3])?)).await
+}
+
+/// Notes that yt-dlp is putting the downloaded streams together; changes nothing when that
+/// was already known.
+pub(super) async fn save_processing(
+    db: &Database,
+    id: String,
+    version: String,
+) -> anyhow::Result<usize> {
+    db.write("online.downloads.save_processing", move|db|Ok(db.execute("UPDATE youtube_downloads SET eta_seconds=NULL,media_kind=?3 WHERE video_id=?1 AND generation=?2 AND state='downloading' AND media_kind IS NOT ?3",params![id,version,PROCESSING])?)).await
 }
 
 pub(super) async fn has_interest(
