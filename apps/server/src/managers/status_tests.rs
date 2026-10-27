@@ -213,8 +213,11 @@ fn sonarr() -> Inventory {
         ]),
         json!({
             "10":[
-                {"id":1001,"seasonNumber":1,"episodeNumber":1,"title":"Pilot","airDateUtc":PAST,"monitored":true,"hasFile":true,"runtime":45},
-                {"id":1002,"seasonNumber":1,"episodeNumber":2,"title":"Second","airDateUtc":PAST,"monitored":true,"hasFile":false},
+                {"id":1001,"seasonNumber":1,"episodeNumber":1,"title":"Pilot","airDateUtc":PAST,"monitored":true,"hasFile":true,"runtime":45,
+                 "images":[{"coverType":"screenshot","url":"/MediaCover/10/screenshot.jpg","remoteUrl":"https://artworks.thetvdb.com/banners/episodes/1001.jpg"}],
+                 "episodeFile":{"size":1500000000.0,"quality":{"quality":{"name":"WEBDL-1080p"}}}},
+                {"id":1002,"seasonNumber":1,"episodeNumber":2,"title":"Second","airDateUtc":PAST,"monitored":true,"hasFile":false,
+                 "images":[{"coverType":"screenshot","remoteUrl":"https://example.com/1002.jpg"}]},
                 {"id":1003,"seasonNumber":1,"episodeNumber":3,"title":"Third","airDateUtc":PAST,"monitored":true,"hasFile":false},
                 {"id":2001,"seasonNumber":2,"episodeNumber":1,"title":"Next","airDateUtc":FUTURE,"monitored":true,"hasFile":false},
                 {"id":2002,"seasonNumber":2,"episodeNumber":2,"title":"Unscheduled","monitored":true,"hasFile":false},
@@ -553,7 +556,13 @@ fn seasons_merge_library_and_sonarr_episodes_with_specials_last() {
             episodes: Vec::new(),
         },
     ];
-    let value = seasons_value(Some(found(&snapshot, "sonarr", 10)), &library, true, NOW);
+    let value = seasons_value(
+        Some(found(&snapshot, "sonarr", 10)),
+        &library,
+        true,
+        NOW,
+        "grant",
+    );
     let seasons = value["seasons"].as_array().unwrap();
     assert_eq!(
         seasons
@@ -582,7 +591,27 @@ fn seasons_merge_library_and_sonarr_episodes_with_specials_last() {
     assert_eq!(episodes[0]["position"], 12.5);
     assert_eq!(episodes[0]["duration"], 2700.0);
     assert_eq!(episodes[0]["air_date"], 1_577_836_800);
+    // TheTVDB's still comes before a frame of the library file; other hosts are dropped.
+    assert_eq!(
+        episodes[0]["stills"],
+        json!([
+            "https://artworks.thetvdb.com/banners/episodes/1001.jpg",
+            "/api/v1/catalog/e1/still?grant=grant"
+        ])
+    );
+    assert_eq!(
+        episodes[1]["stills"],
+        json!(["/api/v1/catalog/e2/still?grant=grant"])
+    );
+    assert_eq!(episodes[0]["manager_id"], 1001);
+    assert_eq!(
+        episodes[0]["file"],
+        json!({"quality":"WEBDL-1080p","size":1_500_000_000})
+    );
     assert_eq!(episodes[1]["status"]["state"], "available");
+    assert_eq!(episodes[2]["manager_id"], 1003);
+    assert_eq!(episodes[2]["stills"], json!([]));
+    assert_eq!(episodes[3]["manager_id"], Value::Null);
     assert_eq!(episodes[2]["title"], "Third");
     assert_eq!(episodes[2]["available"], false);
     assert_eq!(episodes[2]["position"], Value::Null);
@@ -600,16 +629,53 @@ fn seasons_merge_library_and_sonarr_episodes_with_specials_last() {
     assert_eq!(specials["episodes"][0]["id"], "sp1");
     assert_eq!(specials["episodes"][0]["status"]["state"], "unmonitored");
     // Users get the collapsed states, and a library without Sonarr has no status.
-    let user = seasons_value(Some(found(&snapshot, "sonarr", 10)), &library, false, NOW);
+    let user = seasons_value(
+        Some(found(&snapshot, "sonarr", 10)),
+        &library,
+        false,
+        NOW,
+        "grant",
+    );
     assert_eq!(
         user["seasons"][2]["episodes"][0]["status"],
         json!({"state":"unavailable"})
     );
     assert!(user["seasons"][0]["status"].get("monitored").is_none());
-    let local = seasons_value(None, &library, false, NOW);
+    // Sonarr's identities and files are for administrators.
+    assert!(
+        user["seasons"][0]["episodes"][0]
+            .get("manager_id")
+            .is_none()
+    );
+    assert!(user["seasons"][0]["episodes"][0].get("file").is_none());
+    assert_eq!(
+        user["seasons"][0]["episodes"][0]["stills"][0],
+        episodes[0]["stills"][0]
+    );
+    let local = seasons_value(None, &library, false, NOW, "grant");
     assert_eq!(local["seasons"].as_array().unwrap().len(), 2);
     assert_eq!(local["seasons"][0]["status"], Value::Null);
     assert_eq!(local["seasons"][1]["title"], "Specials");
+}
+
+#[test]
+fn series_actions_know_what_a_missing_search_fetches() {
+    let snapshot = snapshot(vec![("sonarr", sonarr())]);
+    let missing = |present: HashSet<i64>| {
+        let series = series_value(found(&snapshot, "sonarr", 10), &present, NOW);
+        assert_eq!((series.service.as_str(), series.id), ("sonarr-1", 10));
+        assert_eq!(series.seasons, [0, 1, 2]);
+        series
+            .episodes
+            .iter()
+            .filter(|e| e.missing)
+            .map(|e| (e.id, e.season))
+            .collect::<Vec<_>>()
+    };
+    // Downloading, upcoming and unmonitored episodes are not searched for.
+    assert_eq!(missing(HashSet::new()), [(1002, 1)]);
+    // Nor is one the library can play though Sonarr has no file for it.
+    assert!(missing(HashSet::from([1002])).is_empty());
 }
 
 #[test]

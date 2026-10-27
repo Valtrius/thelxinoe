@@ -316,6 +316,50 @@ export async function mediaApi(s, c) {
       }
       return json(s.mediaStates[item.id]);
     }
+    if (action === 'watched' && method === 'PUT') {
+      const number = (entry) => entry.sort_number ?? 0;
+      const seasonOf = (episode) =>
+        s.library.find((entry) => entry.id === episode.parent_id);
+      let episodes;
+      if (item.kind === 'season' && !body.through)
+        episodes = s.library.filter(
+          (entry) => entry.kind === 'episode' && entry.parent_id === item.id,
+        );
+      else if (item.kind === 'episode' && body.through) {
+        const season = seasonOf(item);
+        // Earlier seasons and episodes; Specials only count other Specials.
+        const before = (entry) => {
+          const other = seasonOf(entry);
+          if (other?.parent_id !== season?.parent_id) return false;
+          if (!number(season))
+            return !number(other) && number(entry) <= number(item);
+          return (
+            number(other) > 0 &&
+            (number(other) < number(season) ||
+              (number(other) === number(season) &&
+                number(entry) <= number(item)))
+          );
+        };
+        episodes = s.library.filter(
+          (entry) => entry.kind === 'episode' && before(entry),
+        );
+      } else if (item.kind === 'episode') episodes = [item];
+      else
+        return fail(
+          400,
+          'Mark a season, an episode, or an episode and those before it',
+        );
+      for (const episode of episodes) {
+        s.mediaStates[episode.id] ??= {
+          favorite: false,
+          watch_later: false,
+          watched: false,
+        };
+        s.mediaStates[episode.id].watched = body.watched;
+        if (body.watched) clearWatchLater(episode);
+      }
+      return json({ episodes: episodes.length });
+    }
     if (action === 'segments') {
       s.segmentsByMedia[item.id] ??= [
         {

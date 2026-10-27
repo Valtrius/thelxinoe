@@ -33,6 +33,62 @@ pub(super) async fn set_for(
     }).await
 }
 
+pub(super) enum Marked {
+    Missing,
+    Unsupported,
+    Episodes(usize),
+}
+
+/// A season's episodes, or an episode with every one before it in its series: earlier
+/// seasons and episodes, Specials only among Specials.
+const THROUGH: &str = "WITH target AS (
+    SELECT e.id,COALESCE(e.sort_number,0) AS episode,COALESCE(s.sort_number,0) AS season,s.parent_id AS show
+    FROM media e JOIN media s ON s.id=e.parent_id WHERE e.id=?1 AND e.kind='episode' AND s.kind='season')
+SELECT e.id FROM target t JOIN media s ON s.parent_id=t.show AND s.kind='season'
+    JOIN media e ON e.parent_id=s.id AND e.kind='episode'
+WHERE e.id=t.id OR (CASE WHEN t.season=0
+    THEN COALESCE(s.sort_number,0)=0 AND COALESCE(e.sort_number,0)<=t.episode
+    ELSE COALESCE(s.sort_number,0)>0 AND (s.sort_number<t.season
+        OR (s.sort_number=t.season AND COALESCE(e.sort_number,0)<=t.episode)) END)";
+
+pub(super) async fn set_watched(
+    user: String,
+    media: String,
+    watched: bool,
+    through: bool,
+    db: &Database,
+) -> anyhow::Result<Marked> {
+    db.write("user_media.set_watched", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let kind: Option<String> = tx
+            .query_row("SELECT kind FROM media WHERE id=?1", [&media], |r| r.get(0))
+            .optional()?;
+        let Some(kind) = kind else {
+            return Ok(Marked::Missing);
+        };
+        let episodes = match (kind.as_str(), through) {
+            ("season", false) => tx
+                .prepare("SELECT id FROM media WHERE parent_id=?1 AND kind='episode'")?
+                .query_map([&media], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+            ("episode", true) => tx
+                .prepare(THROUGH)?
+                .query_map([&media], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+            ("episode", false) => vec![media],
+            _ => return Ok(Marked::Unsupported),
+        };
+        let at = now();
+        for episode in &episodes {
+            tx.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=?3,updated_at=?4",params![user,episode,watched,at])?;
+            tx.execute("UPDATE edition_progress SET position=CASE WHEN ?1 THEN duration ELSE 0 END,updated_at=?2 WHERE user_id=?3 AND media_id=?4",params![watched,at,user,episode])?;
+        }
+        tx.commit()?;
+        Ok(Marked::Episodes(episodes.len()))
+    })
+    .await
+}
+
 pub(super) async fn home_for(p: Principal, db: &Database) -> anyhow::Result<Value> {
     db.read("user_media.home_for", move |db| {
         let favorites = db.prepare("SELECT c.id,c.kind,c.title,c.available,sh.title FROM media_cards c JOIN media_state s ON s.media_id=c.id LEFT JOIN media pm ON pm.id=c.parent_id LEFT JOIN media_cards sh ON sh.id=CASE c.kind WHEN 'season' THEN c.parent_id WHEN 'episode' THEN pm.parent_id END WHERE s.user_id=?1 AND s.favorite=1 ORDER BY s.updated_at DESC,c.title LIMIT 100")?.query_map([&p.user.id],shelf_card)?.collect::<std::result::Result<Vec<_>,_>>()?;

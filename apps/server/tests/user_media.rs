@@ -703,3 +703,78 @@ async fn viewing_statistics_exclude_seek_jumps_and_survive_device_revocation() {
         "session.revoke"
     );
 }
+
+async fn watched(state: &AppState, token: &str) -> Vec<&'static str> {
+    let mut watched = Vec::new();
+    for id in ["e1", "e2", "e3", "e4", "special"] {
+        let path = format!("/catalog/{id}/state");
+        if ok(state, token, &path, "GET", Value::Null).await["watched"] == true {
+            watched.push(id);
+        }
+    }
+    watched
+}
+#[tokio::test]
+async fn seasons_and_the_episodes_before_one_are_marked_at_once() {
+    let (_temp, state) = fixture().await;
+    state.db.write("test.fixture", |db| {
+        for (id,kind,parent,number) in [("season2","season","show",2),("e3","episode","season2",1),("e4","episode","season2",2)] {
+            db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'root',?2,?3,?1,?1,?4,?5)",params![id,kind,parent,number,now()])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let (alice, _) = login(&state, "alice").await;
+    let (bob, _) = login(&state, "bob").await;
+    let mark = |id: &str, body: Value| {
+        let (state, alice, path) = (
+            state.clone(),
+            alice.clone(),
+            format!("/catalog/{id}/watched"),
+        );
+        async move { call(&state, &alice, &path, "PUT", body).await }
+    };
+
+    // Through an episode: the seasons before it and its own earlier episodes.
+    let through = json!({"watched":true,"through":true});
+    assert_eq!(mark("e3", through.clone()).await.1, json!({"episodes":3}));
+    assert_eq!(watched(&state, &alice).await, ["e1", "e2", "e3"]);
+    // Specials only count other Specials.
+    assert_eq!(
+        mark("special", through.clone()).await.1,
+        json!({"episodes":1})
+    );
+    assert_eq!(watched(&state, &alice).await, ["e1", "e2", "e3", "special"]);
+
+    // A whole season, which also leaves Watch Later once every episode is watched.
+    ok(
+        &state,
+        &alice,
+        "/catalog/season2/state",
+        "PUT",
+        json!({"watch_later":true}),
+    )
+    .await;
+    assert_eq!(
+        mark("season2", json!({"watched":true})).await.1,
+        json!({"episodes":2})
+    );
+    assert_eq!(
+        ok(&state, &alice, "/catalog/season2/state", "GET", Value::Null).await["watch_later"],
+        false
+    );
+    assert_eq!(
+        mark("season", json!({"watched":false})).await.1,
+        json!({"episodes":2})
+    );
+    assert_eq!(watched(&state, &alice).await, ["e3", "e4", "special"]);
+    assert!(watched(&state, &bob).await.is_empty());
+
+    for (id, body, status) in [
+        ("season", through.clone(), StatusCode::BAD_REQUEST),
+        ("show", json!({"watched":true}), StatusCode::BAD_REQUEST),
+        ("movie", json!({"watched":true}), StatusCode::BAD_REQUEST),
+        ("nothing", json!({"watched":true}), StatusCode::NOT_FOUND),
+    ] {
+        assert_eq!(mark(id, body).await.0, status, "{id}");
+    }
+}

@@ -1,11 +1,12 @@
 import { api, serverUrl } from '../api';
+import type { Probe } from './media-facts';
 import type { TitleStatus } from './status';
 
 export type CatalogFile = {
   id: string;
   edition: string;
   present: boolean;
-  probe: { format?: { duration?: string } };
+  probe: Probe;
 };
 export type CatalogItem = {
   id: string;
@@ -49,6 +50,12 @@ export type Episode = {
   position: number | null;
   duration: number | null;
   status: TitleStatus | null;
+  /** Pictures of the episode, best first. */
+  stills: string[];
+  /** Its Sonarr episode, for administrators. */
+  manager_id?: number | null;
+  /** Sonarr's file of the episode, for administrators. */
+  file?: { quality: string | null; size: number | null } | null;
 };
 export type Season = {
   number: number;
@@ -88,6 +95,12 @@ export const lookup = (kind: TitleKind, ref: string) =>
 export const loadFlags = (id: string) => api<Flags>(`${path(id)}/state`);
 export const setFlag = (id: string, key: keyof Flags, value: boolean) =>
   api<Flags>(`${path(id)}/state`, 'PUT', { [key]: value });
+/** Mark a season's episodes, or with `through` an episode and every one before it. */
+export const setWatched = (id: string, watched: boolean, through = false) =>
+  api<{ episodes: number }>(`${path(id)}/watched`, 'PUT', {
+    watched,
+    through,
+  });
 
 /**
  * Why Keep stops file changes to this item, or '' when nothing does. Keep on the

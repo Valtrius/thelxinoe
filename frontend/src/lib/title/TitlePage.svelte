@@ -176,6 +176,10 @@
       episodes[0]
     );
   });
+  // Seasons load from the library show, else from Sonarr by the title's reference.
+  const series = $derived(
+    item?.id ?? (reference && manager ? reference : null),
+  );
   // Seerr's own state, for titles Radarr and Sonarr don't track yet.
   const requestState = $derived(
     !status && seerr ? availability(seerr.mediaInfo?.status) : '',
@@ -583,6 +587,8 @@
     {#if kind === 'show'}<Seasons
         {seasons}
         show={name}
+        {series}
+        next={nextEpisode?.id}
         {admin}
         timezone={user.timezone}
         {focusSeason}

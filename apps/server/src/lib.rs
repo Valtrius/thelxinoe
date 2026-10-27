@@ -266,6 +266,10 @@ pub fn router(state: AppState) -> Router {
             get(user_media::get).put(user_media::set),
         )
         .route(
+            "/api/v1/catalog/{id}/watched",
+            axum::routing::put(user_media::set_watched),
+        )
+        .route(
             "/api/v1/playlists",
             get(playlists::list).post(playlists::create),
         )

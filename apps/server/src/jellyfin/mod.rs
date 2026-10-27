@@ -10,7 +10,7 @@ mod online;
 mod playback;
 mod profile;
 pub(crate) mod quick_connect;
-mod stills;
+pub(crate) mod stills;
 mod user_data;
 pub(crate) const API_VERSION: &str = "12.1.0";
 use crate::{

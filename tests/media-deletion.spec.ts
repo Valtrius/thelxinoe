@@ -102,6 +102,7 @@ async function installSeries(
                 position: null,
                 duration: null,
                 status: null,
+                stills: [],
               })),
           })),
       },

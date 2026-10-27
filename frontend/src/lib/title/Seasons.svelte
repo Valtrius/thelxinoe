@@ -1,19 +1,44 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte';
-  import { Check } from '@lucide/svelte';
-  import PlayIcon from '../ui/PlayIcon.svelte';
+  import {
+    CalendarClock,
+    Check,
+    CheckCheck,
+    CircleAlert,
+    CircleCheck,
+    CircleSlash,
+    Download,
+    EyeOff,
+    Zap,
+  } from '@lucide/svelte';
   import Button from '../ui/Button.svelte';
+  import ExclusiveChoiceGroup from '../ui/ExclusiveChoiceGroup.svelte';
   import ProgressBar from '../ui/ProgressBar.svelte';
-  import StatusBadge from './StatusBadge.svelte';
   import { dateFormat } from '../intl';
-  import { hasStatus } from './status';
-  import TitleMenu from './TitleMenu.svelte';
   import { showToast } from '../providers/toasts';
-  import { episodeLabel, setFlag, type Episode, type Season } from './catalog';
+  import EpisodeRow from './EpisodeRow.svelte';
+  import TitleMenu from './TitleMenu.svelte';
+  import {
+    episodeLabel,
+    setFlag,
+    setWatched,
+    type Episode,
+    type Season,
+  } from './catalog';
+  import {
+    phase,
+    shown,
+    summarize,
+    type EpisodeFilter,
+    type SeasonSummary,
+  } from './episodes';
+  import { searchEpisodes } from './sonarr';
 
   let {
     seasons,
     show,
+    series = null,
+    next = null,
     admin,
     timezone,
     focusSeason,
@@ -23,6 +48,10 @@
   } = $props<{
     seasons: Season[];
     show: string;
+    /** The library id or tmdb:/tvdb: reference the seasons load from. */
+    series?: string | null;
+    /** The episode Play on the title page starts. */
+    next?: string | null;
     admin: boolean;
     timezone: string;
     focusSeason?: number | null;
@@ -35,6 +64,9 @@
     busy = $state<string | null>(null),
     // Watched toggles show immediately; the reloaded seasons replace them.
     toggled = $state<Record<string, boolean>>({}),
+    filter = $state<EpisodeFilter>('all'),
+    marking = $state(false),
+    searching = $state(false),
     list = $state<HTMLElement>(),
     tabs = $state<HTMLElement>();
   // The linked season is chosen once; later refreshes keep the reader's own tab.
@@ -42,9 +74,50 @@
   const watched = (episode: Episode) =>
     (episode.id ? toggled[episode.id] : undefined) ?? episode.watched;
   const label = (episode: Episode) => episodeLabel(episode.title, show);
-  const season = $derived(
-    seasons.find((entry: Season) => entry.number === selected) ?? seasons[0],
+  const view = $derived(
+    seasons.map((entry: Season) => ({
+      ...entry,
+      episodes: entry.episodes.map((episode) => ({
+        ...episode,
+        watched: watched(episode),
+      })),
+    })),
   );
+  const summaries = $derived(
+    new Map<number, SeasonSummary>(
+      view.map((entry: Season) => [entry.number, summarize(entry)]),
+    ),
+  );
+  const season = $derived<Season | undefined>(
+    view.find((entry: Season) => entry.number === selected) ?? view[0],
+  );
+  const summary = $derived(season && summaries.get(season.number));
+  const library = $derived(
+    season?.episodes.filter((episode: Episode) => episode.id) ?? [],
+  );
+  const finished = $derived(
+    library.length > 0 && library.every((episode: Episode) => episode.watched),
+  );
+  const wanted = $derived(
+    season?.episodes.filter((episode: Episode) => phase(episode) === 'missing')
+      .length ?? 0,
+  );
+  // A season without missing episodes has no Missing filter to stay on.
+  const active = $derived<EpisodeFilter>(
+    filter === 'missing' && !(admin && summary?.missing) ? 'all' : filter,
+  );
+  const episodes = $derived(
+    season?.episodes.filter((episode: Episode) => shown(episode, active)) ?? [],
+  );
+  const year = (seconds: number) =>
+    dateFormat('en', { timeZone: timezone, year: 'numeric' }).format(
+      new Date(seconds * 1000),
+    );
+  const first = (entry: Season) =>
+    entry.episodes
+      .map((episode) => episode.air_date)
+      .filter((date): date is number => date !== null)
+      .sort((a, b) => a - b)[0];
 
   $effect(() => {
     const focus = focusSeason;
@@ -76,14 +149,6 @@
     );
   });
 
-  const airDate = (seconds: number) =>
-    dateFormat(undefined, {
-      timeZone: timezone,
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    }).format(new Date(seconds * 1000));
-
   async function toggleWatched(episode: Episode) {
     if (!episode.id) return;
     busy = episode.id;
@@ -104,11 +169,57 @@
     }
   }
 
+  async function markSeason() {
+    if (!season?.id) return;
+    marking = true;
+    const value = !finished;
+    try {
+      await setWatched(season.id, value);
+      for (const episode of library) toggled[episode.id!] = value;
+      changed();
+    } catch (caught) {
+      showToast({
+        key: `watched:${season.id}`,
+        tone: 'error',
+        title: season.title,
+        message: String(caught),
+      });
+    } finally {
+      marking = false;
+    }
+  }
+
+  async function searchMissing() {
+    if (!season || !series) return;
+    searching = true;
+    try {
+      const result = await searchEpisodes(series, {
+        season: season.number,
+        missing: true,
+      });
+      showToast({
+        key: `search:${series}:${season.number}`,
+        tone: 'success',
+        title: season.title,
+        message: `Sonarr is searching for ${result.episodes} missing ${result.episodes === 1 ? 'episode' : 'episodes'}.`,
+      });
+    } catch (caught) {
+      showToast({
+        key: `search:${series}:${season.number}`,
+        tone: 'error',
+        title: season.title,
+        message: String(caught),
+      });
+    } finally {
+      searching = false;
+    }
+  }
+
   // Arrow keys move between season tabs, as in any tab list.
   function navigate(event: KeyboardEvent) {
     const order = seasons.map((s: Season) => s.number);
     const index = order.indexOf(season?.number);
-    const next =
+    const target =
       event.key === 'ArrowRight'
         ? order[(index + 1) % order.length]
         : event.key === 'ArrowLeft'
@@ -118,138 +229,182 @@
             : event.key === 'End'
               ? order.at(-1)
               : undefined;
-    if (next === undefined) return;
+    if (target === undefined) return;
     event.preventDefault();
-    selected = next;
+    selected = target;
     void tick().then(() =>
       tabs?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus(),
     );
   }
 </script>
 
-{#if seasons.length}
+{#if view.length}
   <section class="mt-9" aria-label="Seasons">
-    <div class="mb-4 flex items-end justify-between gap-3 border-b border-line">
-      <div
-        bind:this={tabs}
-        class="flex min-w-0 gap-1 overflow-x-auto"
-        role="tablist"
-        aria-label="Seasons"
-        tabindex="-1"
-        onkeydown={navigate}
-      >
-        {#each seasons as entry (entry.number)}<button
-            id={`${ids}-tab-${entry.number}`}
-            role="tab"
-            aria-selected={entry.number === season?.number}
-            aria-controls={`${ids}-panel`}
-            tabindex={entry.number === season?.number ? 0 : -1}
+    <div
+      bind:this={tabs}
+      class="flex min-w-0 gap-1 overflow-x-auto border-b border-line"
+      role="tablist"
+      aria-label="Seasons"
+      tabindex="-1"
+      onkeydown={navigate}
+    >
+      {#each view as entry (entry.number)}
+        {@const counts = summaries.get(entry.number)!}
+        {@const done = counts.total > 0 && counts.watched === counts.total}
+        <button
+          id={`${ids}-tab-${entry.number}`}
+          role="tab"
+          aria-selected={entry.number === season?.number}
+          aria-controls={`${ids}-panel`}
+          tabindex={entry.number === season?.number ? 0 : -1}
+          class={[
+            '-mb-px flex shrink-0 items-center gap-2 border-b-2 px-4 pt-2 pb-3 text-xs font-semibold transition-colors hover:text-foreground',
+            entry.number === season?.number
+              ? 'border-accent text-accent'
+              : 'border-transparent text-muted',
+          ]}
+          onclick={() => (selected = entry.number)}
+          >{entry.title}<span
+            aria-hidden="true"
             class={[
-              'shrink-0 border-b-2 px-4 pt-2 pb-3 text-xs font-semibold transition-colors hover:text-foreground',
-              entry.number === season?.number
-                ? 'border-accent text-accent'
-                : 'border-transparent text-muted',
+              'inline-flex items-center gap-0.5 text-[10.5px] font-medium tabular-nums',
+              done ? 'text-success' : 'opacity-75',
             ]}
-            onclick={() => (selected = entry.number)}>{entry.title}</button
-          >{/each}
-      </div>
-      {#if season?.id}<div class="mb-1.5 shrink-0">
-          {#key season.id}<TitleMenu
-              id={season.id}
-              kind="season"
-              title={season.title}
-              {admin}
-              variant="row"
-              {changed}
-            />{/key}
-        </div>{/if}
+            >{#if done}<Check
+                size={11}
+                strokeWidth={2.5}
+              />{/if}{counts.premiere
+              ? year(counts.premiere)
+              : `${counts.watched}/${counts.total}`}</span
+          ></button
+        >
+      {/each}
     </div>
-    {#if season}
+    {#if season && summary}
       <div
         id={`${ids}-panel`}
         role="tabpanel"
         aria-labelledby={`${ids}-tab-${season.number}`}
       >
-        {#if hasStatus(season.status)}<p class="mb-3">
-            <StatusBadge status={season.status} {timezone} />
-          </p>{/if}
+        <div class="flex flex-wrap items-start justify-between gap-3 py-3.5">
+          <div class="min-w-0">
+            <p
+              class="mb-0 flex flex-wrap items-baseline gap-x-2 text-[13px] font-semibold"
+            >
+              {season.title}<span class="text-[11.5px] font-normal text-muted"
+                >{[
+                  first(season) && year(first(season)),
+                  `${summary.total} ${summary.total === 1 ? 'episode' : 'episodes'}`,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}</span
+              >
+            </p>
+            <p
+              class="mt-2 mb-0 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 text-[11px] text-muted"
+            >
+              <span class="inline-flex items-center gap-2"
+                ><span
+                  ><span class="font-semibold text-foreground"
+                    >{summary.watched}</span
+                  >/{summary.total} watched</span
+                ><ProgressBar
+                  class="h-0.75 w-15 bg-line"
+                  value={summary.total
+                    ? (summary.watched / summary.total) * 100
+                    : 0}
+                /></span
+              >{#if summary.available}<span
+                  class="inline-flex items-center gap-1.5 text-success"
+                  ><CircleCheck size={12} />{summary.available} available</span
+                >{/if}{#if summary.downloading}<span
+                  class="inline-flex items-center gap-1.5 text-accent"
+                  ><Download size={12} />{summary.downloading} downloading</span
+                >{/if}{#if summary.missing}<span
+                  class="inline-flex items-center gap-1.5 text-warning"
+                  ><CircleAlert size={12} />{summary.missing} missing</span
+                >{/if}{#if summary.unavailable}<span
+                  class="inline-flex items-center gap-1.5"
+                  ><CircleSlash size={12} />{summary.unavailable} not available</span
+                >{/if}{#if summary.upcoming}<span
+                  class="inline-flex items-center gap-1.5"
+                  ><CalendarClock size={12} />{summary.upcoming} upcoming</span
+                >{/if}
+            </p>
+          </div>
+          <div class="flex shrink-0 flex-wrap items-center gap-1.5">
+            {#if season.id && library.length}<Button
+                variant="secondary"
+                size="form"
+                loading={marking}
+                onclick={() => void markSeason()}
+                >{#if finished}<EyeOff size={15} />Mark season unwatched{:else}<CheckCheck
+                    size={15}
+                  />Mark season watched{/if}</Button
+              >{/if}
+            {#if admin && series && wanted}<Button
+                size="form"
+                loading={searching}
+                onclick={() => void searchMissing()}
+                ><Zap size={15} />Search missing</Button
+              >{/if}
+            {#key `${season.number}:${season.id}`}<TitleMenu
+                id={season.id}
+                kind="season"
+                title={season.title}
+                {admin}
+                sonarr={admin && series
+                  ? { series, season: season.number }
+                  : null}
+                {changed}
+              />{/key}
+          </div>
+        </div>
+        {#if summary.total > 1}<div class="mb-1 flex items-center">
+            <ExclusiveChoiceGroup
+              ariaLabel="Show episodes"
+              value={active}
+              choices={[
+                { value: 'all', label: `All ${summary.total}` },
+                {
+                  value: 'unwatched',
+                  label: `Unwatched ${summary.total - summary.watched}`,
+                },
+                ...(admin && summary.missing
+                  ? [
+                      {
+                        value: 'missing' as const,
+                        label: `Missing ${summary.missing}`,
+                      },
+                    ]
+                  : []),
+              ]}
+              onChange={(value) => (filter = value)}
+            />
+          </div>{/if}
         <ol
-          class="grid"
+          class="grid border-t border-line"
           bind:this={list}
           aria-label={`${season.title} episodes`}
         >
-          {#each season.episodes as episode (`${episode.season}:${episode.number}:${episode.id}`)}
-            <li
-              data-episode={episode.id ?? undefined}
-              class={[
-                'grid grid-cols-[2rem_minmax(0,1fr)_auto] items-start gap-x-3 border-b border-line py-3.5 last:border-b-0',
-                episode.id &&
-                  episode.id === focusEpisode &&
-                  'bg-accent-soft/50',
-                !episode.id && 'opacity-70',
-              ]}
-            >
-              {#if episode.available && episode.id}<Button
-                  variant="ghost"
-                  size="compact-icon"
-                  aria-label={`Play episode ${episode.number}: ${label(episode)}`}
-                  onclick={() => play(episode)}
-                  ><PlayIcon media={episode.id} /></Button
-                >{:else}<span
-                  class="grid size-7.5 place-items-center text-xs text-muted tabular-nums"
-                  >{episode.number}</span
-                >{/if}
-              <div class="min-w-0">
-                <p class="text-sm font-medium">
-                  <span class="mr-1 text-muted tabular-nums"
-                    >{episode.number}.</span
-                  >{label(episode)}
-                </p>
-                <p
-                  class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted"
-                >
-                  {#if episode.air_date && episode.status?.state !== 'upcoming'}<span
-                      >{airDate(episode.air_date)}</span
-                    >{/if}{#if episode.runtime}<span>{episode.runtime} min</span
-                    >{/if}{#if episode.status && episode.status.state !== 'available'}<StatusBadge
-                      status={episode.status}
-                      {timezone}
-                      compact
-                    />{/if}
-                </p>
-                {#if episode.overview}<p
-                    class="mt-1.5 line-clamp-2 max-w-190 text-xs leading-5 text-muted"
-                  >
-                    {episode.overview}
-                  </p>{/if}
-                {#if episode.position && episode.duration && !watched(episode)}<ProgressBar
-                    class="mt-2 h-0.75 w-40 bg-line"
-                    value={(episode.position / episode.duration) * 100}
-                  />{/if}
-              </div>
-              <div class="flex items-center gap-1">
-                {#if episode.id}<Button
-                    variant="ghost"
-                    size="compact-icon"
-                    class={watched(episode) ? 'text-accent' : ''}
-                    aria-pressed={watched(episode)}
-                    aria-label={`Watched: ${label(episode)}`}
-                    title={watched(episode) ? 'Mark unwatched' : 'Mark watched'}
-                    disabled={busy === episode.id}
-                    onclick={() => void toggleWatched(episode)}
-                    ><Check size={15} /></Button
-                  ><TitleMenu
-                    id={episode.id}
-                    kind="episode"
-                    title={label(episode)}
-                    {admin}
-                    variant="row"
-                    play={(fileId) => play(episode, fileId)}
-                    {changed}
-                  />{/if}
-              </div>
-            </li>
-          {/each}
+          {#each episodes as episode (`${episode.season}:${episode.number}:${episode.id}`)}
+            <EpisodeRow
+              {episode}
+              {show}
+              {series}
+              {admin}
+              {timezone}
+              next={!!episode.id && episode.id === next}
+              focused={!!episode.id && episode.id === focusEpisode}
+              watched={episode.watched}
+              busy={busy === episode.id}
+              toggle={() => void toggleWatched(episode)}
+              {play}
+              {changed}
+            />
+          {:else}<li class="py-6 text-sm text-muted">
+              No episode matches.
+            </li>{/each}
         </ol>
       </div>
     {/if}

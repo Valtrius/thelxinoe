@@ -28,6 +28,7 @@ pub(super) fn router() -> Router<AppState> {
         )
         .route("/api/v1/catalog/collections", get(collections))
         .route("/api/v1/catalog/{id}/artwork", get(artwork))
+        .route("/api/v1/catalog/{id}/still", get(still))
 }
 
 fn manager_kind(kind: &str) -> Option<&'static str> {
@@ -975,6 +976,22 @@ async fn artwork(
         query.width,
     )
     .await
+}
+
+/// A frame of a movie's or episode's library file.
+async fn still(
+    State(state): State<AppState>,
+    Path(media_id): Path<String>,
+    Query(query): Query<ArtGrant>,
+    request: Request<Body>,
+) -> Result<Response> {
+    grants::resolve(&state, &query.grant, "artwork", false)
+        .await?
+        .ok_or_else(ApiError::unauthorized)?;
+    if media_id.len() != 36 || !media_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return Err(ApiError::not_found());
+    }
+    crate::jellyfin::stills::serve(&state, &media_id, request).await
 }
 
 /// Serve one cached artwork file with its detected image type.

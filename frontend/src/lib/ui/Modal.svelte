@@ -18,7 +18,8 @@
     busy?: boolean;
     onClose: () => void;
     children: Snippet;
-    size?: 'default' | 'editor' | 'workflow';
+    /** wide: tables that need more room than a form. */
+    size?: 'default' | 'wide' | 'editor' | 'workflow';
     expanded?: boolean;
     actions?: Snippet;
     closeLabel?: string;
@@ -50,7 +51,7 @@
     ? `h-[min(850px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-7xl overflow-hidden p-0 open:flex open:flex-col compact:m-0 compact:h-dvh compact:max-h-dvh compact:w-full compact:max-w-none ${expanded ? 'm-0! h-dvh! max-h-dvh! w-full! max-w-none!' : ''}`
     : size === 'workflow'
       ? 'max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-5xl overflow-y-auto [scrollbar-gutter:stable] [overflow-anchor:none] p-5 compact:m-0 compact:h-dvh compact:max-h-dvh compact:w-full compact:max-w-none compact:overflow-hidden compact:[scrollbar-gutter:auto] compact:p-4'
-      : 'max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto p-5 compact:p-4'}"
+      : `max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] ${size === 'wide' ? 'max-w-4xl' : 'max-w-2xl'} overflow-y-auto p-5 compact:p-4`}"
   onkeydown={(event) => {
     if (event.key === 'Escape') event.stopPropagation();
   }}
