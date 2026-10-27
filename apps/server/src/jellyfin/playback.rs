@@ -271,6 +271,7 @@ pub(super) async fn info_source(
             .map(track_index)
             .unwrap_or(-1)
     );
+    let container = dto["Container"].as_str().unwrap_or("").to_owned();
     if let Some(streams) = dto["MediaStreams"].as_array_mut() {
         // Use the client's advertised external text format. First-party web
         // playback continues to receive WebVTT.
@@ -282,11 +283,24 @@ pub(super) async fn info_source(
                 p["Method"] == "External" && matches!(p["Format"].as_str(), Some("srt" | "subrip"))
             });
         for stream in streams {
-            if stream["Type"] == "Subtitle"
-                && stream["IsTextSubtitleStream"] == true
-                && let Some(track) = tracks
-                    .iter()
-                    .find(|t| Some(track_index(t)) == stream["Index"].as_i64())
+            let Some(track) = tracks.iter().find(|t| {
+                stream["Type"] == "Subtitle" && Some(track_index(t)) == stream["Index"].as_i64()
+            }) else {
+                continue;
+            };
+            // As in Jellyfin, a client that reads a track from the original file gets it
+            // there; extracting it for External delivery reads the whole file first.
+            if playback["mode"] == "direct"
+                && track.path.is_none()
+                && super::profile::embeds_subtitle(
+                    &profile,
+                    &track.codec,
+                    &track.language,
+                    &container,
+                )
+            {
+                stream["DeliveryMethod"] = json!("Embed");
+            } else if stream["IsTextSubtitleStream"] == true
                 && let Some(sub) = playback["subtitles"]
                     .as_array()
                     .and_then(|a| a.iter().find(|s| s["id"] == track.id))

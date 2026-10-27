@@ -239,6 +239,47 @@ fn hls(
                     })
         })
 }
+/// Jellyfin's delivery choice for a subtitle stored in a direct-played file: the client
+/// reads the track itself when one of its Embed profiles names the track's format, or
+/// any format a text track converts to.
+pub fn embeds_subtitle(profile: &Value, codec: &str, language: &str, container: &str) -> bool {
+    // Jellyfin's names for FFprobe's bitmap subtitle codecs.
+    let codec = match codec {
+        "dvb_subtitle" => "dvbsub",
+        "dvb_teletext" => "dvbtxt",
+        "dvd_subtitle" => "dvdsub",
+        "hdmv_pgs_subtitle" => "pgssub",
+        codec => codec,
+    };
+    let text_format = |format: &str| {
+        let format = format.to_ascii_lowercase();
+        format.contains("microdvd")
+            || !(["pgs", "dvdsub", "vobsub", "dvbsub"]
+                .iter()
+                .any(|bitmap| format.contains(bitmap))
+                || ["sup", "sub"].contains(&format.as_str()))
+    };
+    let styled = |format: &str| {
+        ["ass", "ssa"]
+            .iter()
+            .any(|s| format.eq_ignore_ascii_case(s))
+    };
+    let text = !codec.is_empty() && text_format(codec);
+    profile["SubtitleProfiles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| {
+            p["Method"] == "Embed"
+                && matches(&p["Container"], container)
+                && matches(&p["Language"], language)
+        })
+        .filter_map(|p| p["Format"].as_str())
+        .any(|format| {
+            (format.eq_ignore_ascii_case(codec) && text == text_format(format))
+                || (text && !styled(codec) && !styled(format))
+        })
+}
 /// The highest conversion quality whose video and 192 kbps audio fit a client's bitrate limit.
 pub fn quality_within(max: i64) -> Option<&'static str> {
     [
@@ -742,5 +783,42 @@ mod tests {
             bounded_quality(&source, &direct, Some(1_000_000)).unwrap(),
             None
         );
+    }
+    #[test]
+    fn direct_play_embeds_the_subtitles_a_client_reads_from_the_file() {
+        // Wholphin's ExoPlayer profile, PGS and ASS options off.
+        let mut profile = json!({"SubtitleProfiles":[]});
+        for (format, methods) in [
+            ("srt", &["Embed", "External"][..]),
+            ("subrip", &["Embed", "External"]),
+            ("pgssub", &["Encode"]),
+            ("ass", &["Encode"]),
+        ] {
+            for method in methods {
+                profile["SubtitleProfiles"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"Format":format,"Method":method}));
+            }
+        }
+        assert!(embeds_subtitle(&profile, "subrip", "fre", "mkv"));
+        // Another text format converts to SRT; a styled or bitmap one does not.
+        assert!(embeds_subtitle(&profile, "mov_text", "eng", "mp4"));
+        for codec in ["ass", "hdmv_pgs_subtitle", "dvd_subtitle"] {
+            assert!(!embeds_subtitle(&profile, codec, "eng", "mkv"), "{codec}");
+        }
+        profile["SubtitleProfiles"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"Format":"pgssub","Method":"Embed"}));
+        assert!(embeds_subtitle(&profile, "hdmv_pgs_subtitle", "eng", "mkv"));
+        // A profile can limit embedding to some containers and languages.
+        let limited = json!({"SubtitleProfiles":[{"Format":"srt","Method":"Embed","Container":"mkv","Language":"eng,fre"}]});
+        assert!(embeds_subtitle(&limited, "subrip", "fre", "mkv"));
+        assert!(!embeds_subtitle(&limited, "subrip", "fre", "mp4"));
+        assert!(!embeds_subtitle(&limited, "subrip", "ger", "mkv"));
+        let external = json!({"SubtitleProfiles":[{"Format":"srt","Method":"External"}]});
+        assert!(!embeds_subtitle(&external, "subrip", "fre", "mkv"));
+        assert!(!embeds_subtitle(&Value::Null, "subrip", "fre", "mkv"));
     }
 }
