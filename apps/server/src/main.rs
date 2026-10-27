@@ -108,6 +108,11 @@ async fn main() -> Result<()> {
         thelxinoe_server::segments::run,
     ));
     workers.spawn(supervise(
+        "subtitles",
+        state.clone(),
+        thelxinoe_server::subtitles::run,
+    ));
+    workers.spawn(supervise(
         "operations",
         state.clone(),
         thelxinoe_server::operations::run,

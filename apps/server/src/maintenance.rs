@@ -1,5 +1,5 @@
-//! Daily database housekeeping: finished jobs, expired sign-in credentials, old tool runs,
-//! stale segment fingerprints and files missing for a month.
+//! Daily housekeeping: finished jobs, expired sign-in credentials, old tool runs, stale
+//! segment fingerprints, files missing for a month and cached artwork and subtitles.
 
 #[path = "storage/maintenance.rs"]
 mod storage;
@@ -20,6 +20,9 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 async fn prune(state: &AppState) -> anyhow::Result<()> {
     if let Err(error) = crate::artwork::prune(&state.config.cache).await {
         tracing::warn!(%error, "Card artwork cache cleanup failed");
+    }
+    if let Err(error) = crate::subtitles::prune(state).await {
+        tracing::warn!("Subtitle cache cleanup failed: {error:#}");
     }
     let started = now();
     let mut removed = 0;

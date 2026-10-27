@@ -28,6 +28,11 @@ pub async fn source(state: &AppState, media: &str, file: Option<&str>) -> Result
         .await?
         .ok_or_else(ApiError::not_found)
 }
+/// Whether background work may read media: nothing has played in the last two minutes and
+/// no job is running or due.
+pub(crate) async fn idle(state: &AppState) -> anyhow::Result<bool> {
+    storage::idle(&state.db).await
+}
 async fn user_preferences(state: &AppState, p: &Principal) -> Result<Preferences> {
     let user = p.user.id.clone();
     Ok(storage::user_preferences(user, &state.db)
@@ -556,6 +561,15 @@ pub async fn subtitle(
         .into_iter()
         .find(|t| t.id == track && t.kind == "subtitle" && t.supported)
         .ok_or_else(ApiError::not_found)?;
+    let input = match &track.path {
+        Some(path) => path.clone(),
+        None => crate::subtitles::track(&state, &source, &track)
+            .await
+            .map_err(|error| {
+                tracing::warn!(file = %source.id, "Subtitle extraction failed: {error:#}");
+                ApiError::conflict("The subtitle track could not be extracted")
+            })?,
+    };
     let _slot = state
         .subtitle_slots
         .acquire()
@@ -566,11 +580,7 @@ pub async fn subtitle(
     let mut command = tokio::process::Command::new(&tools.ffmpeg.path);
     command
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"])
-        .arg(track.path.as_ref().unwrap_or(&source.path));
-    if let Some(index) = track.index {
-        command.args(["-map", &format!("0:{index}")]);
-    }
-    command
+        .arg(&input)
         .args(["-f", format, "pipe:1"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

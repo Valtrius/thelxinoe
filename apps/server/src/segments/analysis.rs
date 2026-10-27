@@ -2,12 +2,10 @@
 mod storage;
 
 use super::*;
+use crate::playback::idle;
 use std::{process::Stdio, time::Duration};
 use thelxinoe_playback::Source;
 
-async fn idle(state: &AppState) -> anyhow::Result<bool> {
-    storage::idle(&state.db).await
-}
 pub async fn run(state: AppState) -> anyhow::Result<()> {
     storage::run_write_segment_analysis(&state.db).await?;
     state.tools.wait_ready().await;

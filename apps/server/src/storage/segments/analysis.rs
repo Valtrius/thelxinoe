@@ -2,10 +2,6 @@
 use super::*;
 use thelxinoe_database::Database;
 
-pub(super) async fn idle(db: &Database) -> anyhow::Result<bool> {
-    db.read("segments.analysis.idle", |db|Ok(!db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE state IN ('ready','playing','paused') AND updated_at>?1-120) OR EXISTS(SELECT 1 FROM jobs WHERE state='running' OR (state='queued' AND available_at<=?1))",[now()],|r|r.get::<_,bool>(0))?)).await
-}
-
 pub(super) async fn run_write_segment_analysis(db: &Database) -> anyhow::Result<()> {
     db.write("segments.analysis.run_write_segment_analysis", |db| {
         db.execute(

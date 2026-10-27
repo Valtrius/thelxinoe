@@ -12,6 +12,10 @@ pub(super) async fn source(
     }).await
 }
 
+pub(super) async fn idle(db: &Database) -> anyhow::Result<bool> {
+    db.read("playback.idle", |db|Ok(!db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE state IN ('ready','playing','paused') AND updated_at>?1-120) OR EXISTS(SELECT 1 FROM jobs WHERE state='running' OR (state='queued' AND available_at<=?1))",[now()],|r|r.get::<_,bool>(0))?)).await
+}
+
 pub(super) async fn user_preferences(
     user: String,
     db: &Database,
