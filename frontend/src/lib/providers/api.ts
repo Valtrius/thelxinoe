@@ -98,7 +98,7 @@ export function downloadEvent(payload: {
   downloaded_bytes: number;
   total_bytes?: number | null;
   eta_seconds?: number | null;
-  media_kind?: 'video' | 'audio' | 'media' | null;
+  media_kind?: 'video' | 'audio' | 'media' | 'processing' | null;
   width?: number | null;
   height?: number | null;
   frame_rate?: number | null;
@@ -109,9 +109,13 @@ export function downloadEvent(payload: {
     download: {
       ...previous,
       videoId: payload.video_id,
-      status: (['queued', 'waiting_for_space', 'downloading', 'ready'].includes(
-        payload.state,
-      )
+      status: ([
+        'queued',
+        'waiting_for_space',
+        'downloading',
+        'processing',
+        'ready',
+      ].includes(payload.state)
         ? payload.state
         : 'failed') as YoutubeDownload['status'],
       fileSizeBytes: payload.size ?? 0,

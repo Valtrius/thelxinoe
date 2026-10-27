@@ -69,9 +69,11 @@ export function youtubeVideoPresentation(
   const totalBytes = downloadEvent?.totalBytes ?? activeDownload?.totalBytes;
   const downloadedBytes =
     downloadEvent?.downloadedBytes ?? activeDownload?.downloadedBytes ?? 0;
-  const downloadPercent = totalBytes
-    ? Math.min(100, (downloadedBytes / totalBytes) * 100)
-    : null;
+  // Putting the streams together reports no progress of its own.
+  const downloadPercent =
+    totalBytes && activeDownload?.status !== 'processing'
+      ? Math.min(100, (downloadedBytes / totalBytes) * 100)
+      : null;
   // Formats are named like YouTube names them: by the short side, so a vertical
   // 1080×1920 Short is 1080p, followed by the frame rate, as in 2160p60.
   const resolution =
@@ -106,7 +108,7 @@ export function youtubeVideoPresentation(
         break;
       }
       case 'processing':
-        downloadLabel = 'Finishing download';
+        downloadLabel = 'Processing download';
         break;
       case 'interrupted':
         downloadLabel = 'Download paused';

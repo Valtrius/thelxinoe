@@ -55,6 +55,31 @@ describe('YouTube download format', () => {
   });
 });
 
+describe('YouTube download progress', () => {
+  it('names the stream being downloaded', () => {
+    const presentation = downloaded({
+      status: 'downloading',
+      mediaKind: 'audio',
+      downloadedBytes: 25,
+      totalBytes: 100,
+    });
+    expect(presentation.downloadLabel).toBe('Downloading audio 25%');
+    expect(presentation.downloadPercent).toBe(25);
+  });
+
+  it('shows no percentage while the streams are put together', () => {
+    const presentation = downloaded({
+      status: 'processing',
+      mediaKind: 'processing',
+      downloadedBytes: 100,
+      totalBytes: 100,
+    });
+    expect(presentation.downloadLabel).toBe('Processing download');
+    expect(presentation.downloadPercent).toBeNull();
+    expect(presentation.downloadPending).toBe(true);
+  });
+});
+
 describe('YouTube download retry', () => {
   it('names when a failed download is attempted again', () => {
     const retryAt = '2026-10-25T14:32:00Z';

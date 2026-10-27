@@ -181,7 +181,7 @@ export interface YoutubeDownload {
   downloadedBytes?: number;
   totalBytes?: number | null;
   etaSeconds?: number | null;
-  mediaKind?: 'video' | 'audio' | 'media' | null;
+  mediaKind?: 'video' | 'audio' | 'media' | 'processing' | null;
   videoId: string;
   status:
     | 'waiting_for_space'
@@ -210,7 +210,7 @@ export interface YoutubeDownloadEvent {
   downloadedBytes: number;
   totalBytes?: number | null;
   etaSeconds?: number | null;
-  mediaKind?: 'video' | 'audio' | 'media' | null;
+  mediaKind?: 'video' | 'audio' | 'media' | 'processing' | null;
   notice?: string | null;
 }
 

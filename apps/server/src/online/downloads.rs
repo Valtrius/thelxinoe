@@ -83,6 +83,18 @@ pub(super) fn format(probe: Option<&str>) -> Format {
     }
 }
 
+/// The progress kind of a download whose streams yt-dlp is putting together.
+const PROCESSING: &str = "processing";
+
+/// A download's state as clients see it: one yt-dlp is putting together is processing.
+pub(super) fn client_state<'a>(state: &'a str, media_kind: Option<&str>) -> &'a str {
+    if state == "downloading" && media_kind == Some(PROCESSING) {
+        PROCESSING
+    } else {
+        state
+    }
+}
+
 pub async fn remove(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -218,7 +230,9 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 /// Free disk space a download needs to start.
 const START_SPACE: u64 = 3 * 1024 * 1024 * 1024;
 /// A download is bounded by its progress, not its length, so slow links still finish:
-/// yt-dlp reports progress every second while bytes arrive, and reports its retries.
+/// yt-dlp reports progress every second while bytes arrive, and reports its retries. While
+/// FFmpeg puts the streams together yt-dlp says nothing, and the files it writes show the
+/// progress instead; a long video's can take minutes.
 const STALLED: Duration = Duration::from_secs(300);
 /// A download waiting for space is tried again after this long even when its capacity looks
 /// unchanged, for changes `capacity` can't see.
@@ -251,12 +265,23 @@ async fn next(state: &AppState, parked: &mut Parked) -> anyhow::Result<()> {
         return Ok(());
     };
     let admitted = crate::auto_delete::admit(state, &video, &generation).await;
-    let status = match admitted {
-        Ok(true) => download(state, &video, &generation, &bundle)
-            .await
-            .unwrap_or("failed"),
-        Ok(false) => "waiting_for_space",
-        Err(_) => "failed",
+    let outcome = match &admitted {
+        Ok(true) => download(state, &video, &generation, &bundle).await,
+        Ok(false) => Ok("waiting_for_space"),
+        Err(error) => Err(anyhow::anyhow!("Could not make room: {error:#}")),
+    };
+    let (status, reason) = match outcome {
+        Ok(status) => {
+            let reason = reason(status);
+            if reason.is_some() {
+                tracing::warn!(video, status, "YouTube download failed");
+            }
+            (status, reason)
+        }
+        Err(error) => {
+            tracing::warn!(video, "YouTube download failed: {error:#}");
+            ("failed", Some(UNFINISHED))
+        }
     };
     if status != "ready" {
         // No playback can reference a generation until it is ready.
@@ -275,6 +300,7 @@ async fn next(state: &AppState, parked: &mut Parked) -> anyhow::Result<()> {
     }
     storage::finish_download(
         status,
+        reason,
         video.clone(),
         generation,
         retry(status, retries),
@@ -297,6 +323,22 @@ async fn next(state: &AppState, parked: &mut Parked) -> anyhow::Result<()> {
         .await?;
     Ok(())
 }
+
+/// What users are told about a download that ended with `status`. yt-dlp's own words stay
+/// private, as they can carry URLs and tokens.
+fn reason(status: &str) -> Option<&'static str> {
+    match status {
+        "failed" => Some("yt-dlp could not download this video"),
+        "network_blocked" => Some("YouTube is blocking public access from this server's network"),
+        "extractor_authentication_required" => {
+            Some("This video cannot be downloaded with public access")
+        }
+        "unavailable" => Some("This video is unavailable with public access"),
+        _ => None,
+    }
+}
+/// What users are told about a download the server itself could not finish.
+const UNFINISHED: &str = "The download could not be finished; the server log has the details";
 
 /// The delay before a download that ended with `status`, after `retries` retries, is attempted
 /// again. A video that is unavailable or needs an account would fail the same way.
@@ -339,12 +381,22 @@ fn format_selection(excluded: &[&str]) -> String {
     format!("bv*{allowed}+ba/b{allowed}/bv*+ba/b")
 }
 
-fn parse_progress(line: &str) -> Option<(i64, Option<i64>, Option<i64>, &'static str)> {
-    let parts = line
-        .strip_prefix("THELXINOE_PROGRESS:")?
-        .trim()
-        .split('\t')
-        .collect::<Vec<_>>();
+/// What a yt-dlp progress line reports.
+#[derive(Debug, PartialEq)]
+enum Progress {
+    /// The bytes of a stream so far, its size, the seconds left and whether it is the video
+    /// or the audio.
+    Download((i64, Option<i64>, Option<i64>, &'static str)),
+    /// Every stream is downloaded and yt-dlp is putting them together.
+    Processing,
+}
+
+fn parse_progress(line: &str) -> Option<Progress> {
+    let report = line.strip_prefix("THELXINOE_PROGRESS:")?.trim();
+    if report == PROCESSING {
+        return Some(Progress::Processing);
+    }
+    let parts = report.split('\t').collect::<Vec<_>>();
     let number = |index: usize| {
         parts
             .get(index)?
@@ -353,7 +405,7 @@ fn parse_progress(line: &str) -> Option<(i64, Option<i64>, Option<i64>, &'static
             .filter(|n| n.is_finite() && *n >= 0.0 && *n < i64::MAX as f64)
             .map(|n| n as i64)
     };
-    Some((
+    Some(Progress::Download((
         number(0)?,
         number(1).or_else(|| number(2)),
         number(3),
@@ -362,7 +414,7 @@ fn parse_progress(line: &str) -> Option<(i64, Option<i64>, Option<i64>, &'static
         } else {
             "video"
         },
-    ))
+    )))
 }
 
 async fn publish_progress(state: &AppState, video: &str) -> anyhow::Result<()> {
@@ -436,6 +488,10 @@ async fn download(
             .map(Into::into),
         );
         args.push(bundle.ffmpeg.path.clone().into_os_string());
+        args.extend([
+            "--progress-template".into(),
+            format!("postprocess:THELXINOE_PROGRESS:{PROCESSING}").into(),
+        ]);
         args.extend(["-f".into(), selection.clone().into()]);
         args.extend(["--format-sort".into(), format_sort(&quality).into()]);
         if let Some(budget) = budget {
@@ -448,26 +504,31 @@ async fn download(
             format!("https://www.youtube.com/watch?v={video}").into(),
         ]);
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(16);
+        let activity = process::Activity::new(STALLED);
         let execution = process::run_progress(
             state.tools.temporary()?,
             &bundle.yt_dlp.path,
             &args,
-            STALLED,
+            &activity,
             Duration::MAX,
             1024 * 1024,
             Some(progress_tx),
         );
         tokio::pin!(execution);
         let mut interval = tokio::time::interval(Duration::from_secs(2));
+        // The download's files, with their sizes and change times, as last seen.
+        let mut files = Vec::new();
         let output = loop {
             tokio::select! {
                 result=&mut execution => break result?,
                 Some(line)=progress_rx.recv()=> {
-                    if let Some(progress) = parse_progress(&line) {
-                        let id=video.to_owned(); let version=generation.to_owned();
-                        let changed=storage::save_progress(&state.db, id, version, progress).await?;
-                        if changed==1 {publish_progress(state, video).await?;}
-                    }
+                    let id=video.to_owned(); let version=generation.to_owned();
+                    let changed=match parse_progress(&line) {
+                        Some(Progress::Download(progress))=>storage::save_progress(&state.db, id, version, progress).await?,
+                        Some(Progress::Processing)=>storage::save_processing(&state.db, id, version).await?,
+                        None=>0,
+                    };
+                    if changed==1 {publish_progress(state, video).await?;}
                 }
                 _=interval.tick()=> {
                     let video=video.to_owned();
@@ -475,8 +536,19 @@ async fn download(
                     let interested=storage::has_interest(&state.db, video, generation).await?;
                     ensure!(interested&&enabled(state).await?,"Download cancelled after its interest or permission changed");
                     if fs2::available_space(&directory)?<=1024*1024*1024 {return Ok("waiting_for_space");}
+                    let mut seen=Vec::new();
                     let mut entries=tokio::fs::read_dir(&directory).await?;
-                    while let Some(entry)=entries.next_entry().await? {ensure!(entry.metadata().await?.is_file(),"Unexpected download output");}
+                    while let Some(entry)=entries.next_entry().await? {
+                        // yt-dlp renames and removes its files as it goes.
+                        let metadata=match tokio::fs::symlink_metadata(entry.path()).await {
+                            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>continue,
+                            metadata=>metadata?,
+                        };
+                        ensure!(metadata.is_file(),"Unexpected download output");
+                        seen.push((entry.file_name(),metadata.len(),metadata.modified().ok()));
+                    }
+                    seen.sort();
+                    if seen!=files {files=seen;activity.record();}
                 }
             }
         };
