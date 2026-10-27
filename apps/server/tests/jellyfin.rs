@@ -2209,6 +2209,150 @@ async fn local_video_plays_through_each_negotiated_delivery_for_its_own_device_s
 }
 
 #[tokio::test]
+async fn direct_play_leaves_embedded_subtitles_to_clients_that_read_them() {
+    let (temp, state, _) = fixture().await;
+    let (feature, _) = local_library(temp.path(), &state).await;
+    let caption = temp.path().join("caption.srt");
+    std::fs::write(&caption, "1\n00:00:01,000 --> 00:00:03,000\nBonjour\n").unwrap();
+    let subtitled = feature.with_file_name("Subtitled (2022).mkv");
+    run(
+        "ffmpeg",
+        &[
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            feature.to_str().unwrap(),
+            "-i",
+            caption.to_str().unwrap(),
+            "-map",
+            "0",
+            "-map",
+            "1",
+            "-c",
+            "copy",
+            "-c:s",
+            "srt",
+            "-metadata:s:s:0",
+            "language=fre",
+            subtitled.to_str().unwrap(),
+        ],
+    );
+    for root in thelxinoe_catalog::roots(&state.db).await.unwrap() {
+        thelxinoe_catalog::scan(&state.db, root, state.tools.runtime.media().unwrap())
+            .await
+            .unwrap();
+    }
+    let token = login(&state, "alice", DEVICE).await;
+    let alice = [("X-Emby-Token", token.as_str())];
+    let (_, page) = call(
+        &state,
+        "/Items?IncludeItemTypes=Movie",
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    let movie = page["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["Name"] == "Subtitled")
+        .unwrap()["Id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let info = format!("/Items/{movie}/PlaybackInfo");
+    // Wholphin's ExoPlayer reads SubRip from the file or as a separate download.
+    let request = |container: &str, methods: &[&str]| {
+        let subtitles = methods
+            .iter()
+            .flat_map(|method| {
+                ["srt", "subrip"].map(|format| json!({"Format":format,"Method":method}))
+            })
+            .collect::<Vec<_>>();
+        json!({"SubtitleStreamIndex":3,"DeviceProfile":{
+            "DirectPlayProfiles":[{"Type":"Video","Container":container,"VideoCodec":"h264","AudioCodec":"aac,ac3"}],
+            "TranscodingProfiles":[{"Type":"Video","Container":"ts","Protocol":"hls","VideoCodec":"h264","AudioCodec":"aac"}],
+            "SubtitleProfiles":subtitles}})
+    };
+    let subtitle = |session: &Value| {
+        let offer = &session["MediaSources"][0];
+        let stream = offer["MediaStreams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["Type"] == "Subtitle")
+            .unwrap()
+            .clone();
+        (offer["SupportsDirectPlay"].clone(), stream)
+    };
+
+    // The player selects the track inside the file it plays; nothing is extracted.
+    let (status, direct) = call(
+        &state,
+        &info,
+        "POST",
+        request("mkv", &["Embed", "External"]),
+        &alice,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{direct}");
+    let (direct_play, stream) = subtitle(&direct);
+    assert_eq!(direct_play, true);
+    assert_eq!(
+        (
+            &stream["Index"],
+            &stream["Codec"],
+            &stream["DeliveryMethod"],
+            &stream["IsExternal"]
+        ),
+        (&json!(3), &json!("subrip"), &json!("Embed"), &json!(false))
+    );
+    assert!(stream["DeliveryUrl"].is_null(), "{stream}");
+
+    // A client that only loads separate subtitle files gets the extracted track.
+    let (status, external) =
+        call(&state, &info, "POST", request("mkv", &["External"]), &alice).await;
+    assert_eq!(status, StatusCode::OK, "{external}");
+    let (direct_play, stream) = subtitle(&external);
+    assert_eq!(direct_play, true);
+    assert_eq!(
+        (
+            &stream["Codec"],
+            &stream["DeliveryMethod"],
+            &stream["IsExternal"]
+        ),
+        (&json!("srt"), &json!("External"), &json!(true))
+    );
+    let (status, _, body) = send(
+        &state,
+        stream["DeliveryUrl"].as_str().unwrap(),
+        "GET",
+        Value::Null,
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("Bonjour"));
+
+    // HLS carries no subtitle track, so a converted stream keeps External delivery.
+    let (status, remux) = call(
+        &state,
+        &info,
+        "POST",
+        request("mp4", &["Embed", "External"]),
+        &alice,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{remux}");
+    let (direct_play, stream) = subtitle(&remux);
+    assert_eq!(direct_play, false);
+    assert_eq!(stream["DeliveryMethod"], "External");
+}
+
+#[tokio::test]
 async fn universal_audio_streams_a_local_track_and_reports_progress_per_device_session() {
     let (temp, state, _) = fixture().await;
     let (_, track_path) = local_library(temp.path(), &state).await;
