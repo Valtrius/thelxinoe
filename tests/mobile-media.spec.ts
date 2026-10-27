@@ -114,12 +114,16 @@ test('mobile watchlists stay below pinned playback and preserve the desktop side
     await drawer
       .getByRole('button', { name: 'Watchlist settings', exact: true })
       .click();
-    await expect(
-      drawer.getByRole('dialog', { name: 'Watchlist settings', exact: true }),
-    ).toBeVisible();
+    const settings = drawer.getByRole('dialog', {
+      name: 'Watchlist settings',
+      exact: true,
+    });
+    await expect(settings).toBeVisible();
+    // The menu's backdrop covers its button and takes the press that closes it.
     await drawer
       .getByRole('button', { name: 'Watchlist settings', exact: true })
-      .click();
+      .click({ force: true });
+    await expect(settings).toBeHidden();
     await page.screenshot({
       path: info.outputPath(`mobile-watchlist-${width}.png`),
     });

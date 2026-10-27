@@ -3,6 +3,7 @@
   import { DropdownMenu } from 'bits-ui';
   import { Check } from '@lucide/svelte';
   import Button from './ui/Button.svelte';
+  import MenuBackdrop, { ignoreBackdrop } from './ui/MenuBackdrop.svelte';
   import { eyebrowTextClass } from './ui/styles';
 
   let {
@@ -37,15 +38,23 @@
       {disabled}
     >
       {#snippet child({ props })}
-        <Button {...props} variant="player" size="icon" class="option-button">
+        <!-- Above every option menu's backdrop, so one press moves between menus. -->
+        <Button
+          {...props}
+          variant="player"
+          size="icon"
+          class="option-button relative z-[4]"
+        >
           {@render icon()}
         </Button>
       {/snippet}
     </DropdownMenu.Trigger>
+    {#if open}<MenuBackdrop class="z-[3]" close={() => setOpen(false)} />{/if}
     <DropdownMenu.ContentStatic
       class="option-menu absolute right-0 bottom-[calc(100%+12px)] z-[4] max-h-[max(60px,calc(var(--player-height)-124px))] w-max min-w-[140px] max-w-[min(280px,60cqw)] overflow-y-auto border border-line bg-surface-strong p-1 text-foreground shadow-card [scrollbar-width:thin]"
       aria-label={label}
       preventScroll={false}
+      onInteractOutside={ignoreBackdrop}
     >
       <div
         class={['px-2.5 pt-1.75 pb-1.25', eyebrowTextClass]}

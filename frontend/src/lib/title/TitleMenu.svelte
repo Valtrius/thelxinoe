@@ -24,6 +24,7 @@
     Zap,
   } from '@lucide/svelte';
   import Button from '../ui/Button.svelte';
+  import MenuBackdrop, { ignoreBackdrop } from '../ui/MenuBackdrop.svelte';
   import { startActivity } from '../activity';
   import { refreshAttention } from '../attention';
   import { relativeTime } from '../providers/utils';
@@ -269,11 +270,13 @@
       {/snippet}
     </DropdownMenu.Trigger>
     <DropdownMenu.Portal>
+      {#if open}<MenuBackdrop close={() => (open = false)} />{/if}
       <DropdownMenu.Content
         align="end"
         sideOffset={4}
         collisionPadding={8}
         preventScroll={false}
+        onInteractOutside={ignoreBackdrop}
         class="z-50 grid max-h-[min(30rem,calc(100dvh-1rem))] min-w-52 overflow-y-auto border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
         aria-label={`Actions for ${title}`}
         onCloseAutoFocus={() => {

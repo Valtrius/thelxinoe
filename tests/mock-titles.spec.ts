@@ -320,6 +320,41 @@ test('returning from a title restores where the library grid was scrolled', asyn
   expect(errors).toEqual([]);
 });
 
+for (const touch of [false, true])
+  test.describe(touch ? 'tap' : 'click', () => {
+    test.use({ hasTouch: touch });
+
+    test('pressing away from a library menu only closes it', async ({
+      page,
+    }) => {
+      const errors = track(page);
+      await page.goto('/#library/movies');
+      const first = card(page, 'movie-0');
+      const below = card(page, 'movie-1').locator('.card-primary');
+      const url = page.url();
+      // Forced, as a user presses wherever the card shows, covered or not.
+      const pressBelow = () =>
+        touch ? below.tap({ force: true }) : below.click({ force: true });
+
+      await first.hover();
+      await first.getByRole('button', { name: /^More actions for / }).click();
+      await expect(page.getByRole('menu')).toBeVisible();
+      await pressBelow();
+      await expect(page.getByRole('menu')).toHaveCount(0);
+      expect(page.url()).toBe(url);
+
+      await page
+        .getByRole('button', { name: 'Filter movies', exact: true })
+        .click();
+      const filters = page.getByRole('dialog', { name: 'Filter movies' });
+      await expect(filters).toBeVisible();
+      await pressBelow();
+      await expect(filters).toHaveCount(0);
+      expect(page.url()).toBe(url);
+      expect(errors).toEqual([]);
+    });
+  });
+
 test('Home shelves keep every tile landscape without cropping posters', async ({
   page,
 }, info) => {

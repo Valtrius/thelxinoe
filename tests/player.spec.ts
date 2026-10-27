@@ -1404,6 +1404,14 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
     page.getByRole('button', { name: 'Close player' }),
   ).toBeFocused();
   await expect(page.locator('.player-controls')).toHaveCSS('opacity', '1');
+  // A press on the video while a menu is open only closes the menu.
+  await page.getByRole('button', { name: 'Audio', exact: true }).click();
+  await expect(page.getByRole('menu', { name: 'Audio' })).toBeVisible();
+  await page.locator('video').click({ force: true });
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  expect(
+    await page.locator('video').evaluate((v: HTMLVideoElement) => v.paused),
+  ).toBe(false);
   await page.getByRole('button', { name: 'Pause', exact: true }).click();
   const volume = page.getByRole('slider', { name: 'Playback volume' });
   await volume.fill('0.23');
