@@ -12,7 +12,7 @@
     Ban,
   } from '@lucide/svelte';
   import { api, type User } from '../api';
-  import { forgetSeerrStatus, seerrStatus } from './status';
+  import { forgetSeerrStatus, seerrStatus, seerrTitle } from './status';
   import { inBackground } from '../page-readiness';
   import { navigationCache } from '../navigation-cache';
   import { attention, acknowledgeAttention } from '../attention';
@@ -118,11 +118,30 @@
       .map((item) => `${item.id}:${item.revision}`)
       .join('\n'),
   );
+  // The attention the shown list was read for, and what the list acknowledged
+  // since. Its own acknowledgements are no reason to read it again.
+  let readAttention: string[] | undefined;
+  let acknowledged: string[] = [];
   $effect(() => {
-    if (tab !== 'requests' || selected || !configured) return;
+    if (tab !== 'requests' || selected || !configured) {
+      readAttention = undefined;
+      return;
+    }
     // Track source revisions without restarting loads for unrelated menu changes.
-    void requestAttention;
-    untrack(() => void loadRequests(requestedPage));
+    const current = requestAttention.split('\n').filter(Boolean);
+    untrack(() => {
+      if (
+        readAttention &&
+        current.every((entry) => readAttention!.includes(entry)) &&
+        readAttention.every(
+          (entry) => current.includes(entry) || acknowledged.includes(entry),
+        )
+      )
+        return;
+      readAttention = current;
+      acknowledged = [];
+      void loadRequests(requestedPage);
+    });
   });
   // Thelxinoe's own acquisition requests have no list here any more; opening
   // Requests is when their decisions are seen.
@@ -330,7 +349,8 @@
     if (publish) searchChanged(query);
     searchTimer = setTimeout(() => void search(), 300);
   }
-  async function loadRequests(nextPage = 1) {
+  // `reread` asks Seerr for the titles again, for a reader's own refresh.
+  async function loadRequests(nextPage = 1, reread = false) {
     requestedPage = nextPage;
     const version = ++requestGeneration;
     requestLoading = true;
@@ -342,7 +362,7 @@
       }>(`/seerr/requests?page=${nextPage}`);
       const details = await Promise.allSettled(
         result.results.map((r) =>
-          api<Media>(`/seerr/${r.type || r.media.mediaType}/${r.media.tmdbId}`),
+          seerrTitle(r.type || r.media.mediaType, r.media.tmdbId, reread),
         ),
       );
       if (!active || version !== requestGeneration) return;
@@ -372,8 +392,10 @@
               request.attention?.id === entry.id &&
               request.attention.revision === entry.revision,
           )
-        )
+        ) {
+          acknowledged.push(`${entry.id}:${entry.revision}`);
           void acknowledgeAttention(entry);
+        }
       }
     } catch (caught) {
       if (version === requestGeneration) error = String(caught);
@@ -396,7 +418,7 @@
   function changeTab(value: string) {
     if ((value === 'requests') !== showRequests)
       requestsChanged(value === 'requests');
-    if (value === 'requests' && tab === value) void loadRequests();
+    if (value === 'requests' && tab === value) void loadRequests(1, true);
     tab = value;
     if (value === 'requests') {
       query = '';
@@ -489,7 +511,7 @@
           size="sm"
           onclick={() =>
             void (tab === 'requests'
-              ? loadRequests(requestPage)
+              ? loadRequests(requestPage, true)
               : query.trim()
                 ? search()
                 : load())}>Try again</Button
@@ -520,7 +542,7 @@
           variant="ghost"
           size="sm"
           disabled={requestLoading}
-          onclick={() => void loadRequests(requestPage)}
+          onclick={() => void loadRequests(requestPage, true)}
           ><RefreshCw size={14} /> Refresh</Button
         >
       </div>

@@ -176,3 +176,31 @@ it('invalidates changed resources without treating YouTube browse or playback ke
   expect(catalog).toHaveBeenCalledTimes(3);
   expect(youtube).toHaveBeenCalledTimes(3);
 });
+
+it('shows snapshots at once after progress reports but drops them when playback changes state', async () => {
+  const load = vi.fn(async () => ['continue watching']);
+  const pending = deferred<string[]>();
+  await navigationCache.read('catalog', '/me/home', load, vi.fn());
+  invalidatePageWrite('/playback/id/progress');
+  const accept = vi.fn();
+  const reading = navigationCache.read(
+    'catalog',
+    '/me/home',
+    () => pending.promise,
+    accept,
+  );
+  expect(accept).toHaveBeenCalledWith(['continue watching']);
+  pending.resolve(['moved']);
+  await reading;
+  expect(accept).toHaveBeenLastCalledWith(['moved']);
+  invalidatePageEvent('playback.changed', true);
+  accept.mockClear();
+  await navigationCache.read('catalog', '/me/home', load, accept);
+  expect(accept).toHaveBeenCalledTimes(2);
+  expect(load).toHaveBeenCalledTimes(2);
+  invalidatePageEvent('playback.changed');
+  accept.mockClear();
+  await navigationCache.read('catalog', '/me/home', load, accept);
+  expect(accept).toHaveBeenCalledTimes(1);
+  expect(load).toHaveBeenCalledTimes(3);
+});

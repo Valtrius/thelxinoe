@@ -41,6 +41,19 @@ export function activityDescription(items: ActivityItem[]) {
   ].join('\n');
 }
 
+const none: never[] = [];
+// Each card finds its entries by media id instead of scanning every entry.
+export function byMedia<T extends { media_ids: string[] }>(entries: T[]) {
+  const index = new Map<string, T[]>();
+  for (const entry of entries)
+    for (const id of entry.media_ids) {
+      const list = index.get(id);
+      if (!list) index.set(id, [entry]);
+      else if (list.at(-1) !== entry) list.push(entry);
+    }
+  return (id: string): T[] => index.get(id) ?? none;
+}
+
 export function setActivityConnected(value: boolean) {
   connected.set(value);
 }

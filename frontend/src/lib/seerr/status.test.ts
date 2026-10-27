@@ -4,7 +4,7 @@ const api = vi.hoisted(() => vi.fn());
 vi.mock('../api', () => ({ api }));
 
 import { invalidateSession } from '../session';
-import { forgetSeerrStatus, seerrStatus } from './status';
+import { forgetSeerrStatus, seerrStatus, seerrTitle } from './status';
 
 describe('Seerr status', () => {
   beforeEach(() => {
@@ -38,5 +38,24 @@ describe('Seerr status', () => {
     await seerrStatus();
     await seerrStatus();
     expect(api).toHaveBeenCalledTimes(4);
+  });
+
+  it('reads each request title once a session unless asked again', async () => {
+    api.mockRejectedValueOnce(new Error('Seerr is unreachable'));
+    await expect(seerrTitle('movie', 1)).rejects.toThrow();
+    api.mockResolvedValue({ id: 1, title: 'Arrival' });
+    await seerrTitle('movie', 1);
+    await expect(seerrTitle('movie', 1)).resolves.toEqual({
+      id: 1,
+      title: 'Arrival',
+    });
+    expect(api).toHaveBeenCalledTimes(2);
+    expect(api).toHaveBeenLastCalledWith('/seerr/movie/1');
+    await seerrTitle('tv', 1);
+    await seerrTitle('movie', 1, true);
+    expect(api).toHaveBeenCalledTimes(4);
+    invalidateSession();
+    await seerrTitle('movie', 1);
+    expect(api).toHaveBeenCalledTimes(5);
   });
 });

@@ -13,7 +13,7 @@
   import { cancelVerification, type AuthOptions } from './lib/authentication';
   import { statsClass } from './lib/ui/styles';
   import { onMount, tick, untrack } from 'svelte';
-  import { SvelteURL } from 'svelte/reactivity';
+  import { SvelteMap, SvelteURL } from 'svelte/reactivity';
   import {
     players,
     prefetchVideoPlayer,
@@ -355,10 +355,28 @@
   function startEvents() {
     const ownsSession = captureSession();
     events?.close();
+    // Players report every few seconds, repeating their state while it holds.
+    const playbackStates = new SvelteMap<string, string>();
     events = new Events(
       (event) => {
         if (!ownsSession()) return;
-        invalidatePageEvent(event.kind);
+        // A report that repeats its session's state only moves a position. It
+        // moves a playing video's card in place; lists reload when playback
+        // pauses or stops.
+        const playback =
+          event.kind === 'playback.changed'
+            ? (event.payload as { id?: string; state?: string })
+            : undefined;
+        const progressReport =
+          !!playback &&
+          (playback.state === 'playing' ||
+            (!!playback.id &&
+              playbackStates.get(playback.id) === playback.state));
+        if (playback?.id && playback.state) {
+          if (playback.state === 'stopped') playbackStates.delete(playback.id);
+          else playbackStates.set(playback.id, playback.state);
+        }
+        invalidatePageEvent(event.kind, progressReport);
         if (
           ['online.configuration.changed', 'server.reconnected'].includes(
             event.kind,
@@ -428,12 +446,6 @@
             })
             .catch((e) => (error = String(e)));
         }
-        // Progress reports arrive every few seconds while something plays. They
-        // move a playing video's card in place; lists reload when playback
-        // pauses or stops.
-        const progressReport =
-          event.kind === 'playback.changed' &&
-          (event.payload as { state?: string }).state === 'playing';
         if (
           [
             'media-state.changed',

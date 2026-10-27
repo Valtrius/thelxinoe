@@ -5,6 +5,7 @@
   import Button from '../ui/Button.svelte';
   import ProgressBar from '../ui/ProgressBar.svelte';
   import StatusBadge from './StatusBadge.svelte';
+  import { dateFormat } from '../intl';
   import { hasStatus } from './status';
   import TitleMenu from './TitleMenu.svelte';
   import { showToast } from '../providers/toasts';
@@ -76,7 +77,7 @@
   });
 
   const airDate = (seconds: number) =>
-    new Intl.DateTimeFormat(undefined, {
+    dateFormat(undefined, {
       timeZone: timezone,
       day: 'numeric',
       month: 'short',

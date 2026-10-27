@@ -1,6 +1,7 @@
 import { api } from '../api';
 import { trackPageWork } from '../page-readiness';
 import { captureSession } from '../session';
+import type { Media, MediaKind } from './types';
 
 export type SeerrStatus = { configured: boolean; ready?: boolean };
 
@@ -33,4 +34,26 @@ export function seerrStatus(): Promise<SeerrStatus> {
 
 export function forgetSeerrStatus() {
   cached = undefined;
+}
+
+const titles = new Map<string, { current: () => boolean; media: Media }>();
+
+// A request's name and poster don't change, so the requests list reads each
+// title once a session, unless the reader asks to read it again.
+export async function seerrTitle(
+  kind: MediaKind,
+  id: number,
+  reread = false,
+): Promise<Media> {
+  const key = `${kind}/${id}`;
+  const cached = titles.get(key);
+  if (cached?.current() && !reread) return cached.media;
+  const current = captureSession();
+  const media = await api<Media>(`/seerr/${key}`);
+  if (current()) {
+    titles.delete(key);
+    titles.set(key, { current, media });
+    if (titles.size > 200) titles.delete(titles.keys().next().value!);
+  }
+  return media;
 }

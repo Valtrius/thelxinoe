@@ -5,7 +5,7 @@
   import { DropdownMenu } from 'bits-ui';
   import { api } from './api';
   import { navigationCache } from './navigation-cache';
-  import { activity } from './activity';
+  import { activity, byMedia } from './activity';
   import { LatestRequest } from './latest-request';
   import {
     attention,
@@ -120,6 +120,8 @@
     } | null>(null);
   let generation = 0;
   const detailRequests = new LatestRequest();
+  const activityOf = $derived(byMedia($activity));
+  const attentionOf = $derived(byMedia($attention));
   let search = $state('');
   let searchTimer: ReturnType<typeof setTimeout>;
   onDestroy(() => {
@@ -191,6 +193,9 @@
       query = searchQuery ?? '',
       group = collectionId ?? '';
     untrack(() => {
+      // Searching or opening an album reads no crumb the trail already shows.
+      const known = new Map(breadcrumbs.map((crumb) => [crumb.id, crumb]));
+      const crumb = id ? known.get(id) : undefined;
       generation++;
       busy = true;
       closeDetails();
@@ -201,20 +206,25 @@
       const current = detailRequests.begin();
       void (async () => {
         try {
-          const ancestry = await Promise.all(
-            parents.map((parent) => api<Item>(`/catalog/${parent}`)),
-          );
+          const [ancestry, item] = await Promise.all([
+            Promise.all(
+              parents.map(
+                (parent) =>
+                  known.get(parent) ?? api<Item>(`/catalog/${parent}`),
+              ),
+            ),
+            id && !crumb
+              ? api<Item & NonNullable<typeof details>>(`/catalog/${id}`)
+              : null,
+          ]);
           if (!current()) return;
           breadcrumbs = ancestry.map(({ id, title, kind }) => ({
             id,
             title,
             kind,
           }));
-          if (id) {
-            const item = await api<Item & NonNullable<typeof details>>(
-              `/catalog/${id}`,
-            );
-            if (!current()) return;
+          if (crumb) breadcrumbs = [...breadcrumbs, crumb];
+          else if (item) {
             if (['movie', 'episode', 'track'].includes(item.kind)) {
               selected = item;
               details = item;
@@ -449,22 +459,15 @@
   >
     {#each items as item (item.id)}<LibraryCard
         {item}
-        activity={$activity.filter((entry) =>
-          entry.media_ids.includes(item.id),
-        )}
-        attention={$attention.filter((entry) =>
-          entry.media_ids.includes(item.id),
-        )}
-        attentionError={$attention
-          .filter((entry) => entry.media_ids.includes(item.id))
+        activity={activityOf(item.id)}
+        attention={attentionOf(item.id)}
+        attentionError={attentionOf(item.id)
           .map((entry) => $attentionErrors[entry.id])
           .filter(Boolean)
           .join('\n')}
         onSeen={() => {
-          for (const entry of $attention.filter(
-            (entry) =>
-              entry.media_ids.includes(item.id) &&
-              (entry.target !== 'music' || item.kind === 'album'),
+          for (const entry of attentionOf(item.id).filter(
+            (entry) => entry.target !== 'music' || item.kind === 'album',
           ))
             void acknowledgeAttention(entry);
         }}

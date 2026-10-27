@@ -9,7 +9,6 @@ import type { MediaChoice } from '../playback';
 import type {
   AppError,
   KickChannel,
-  KickSnapshot,
   TwitchLiveStream,
   YoutubeDownload,
   YoutubeDownloadEvent,
@@ -392,9 +391,6 @@ export const api = {
       };
     });
   },
-  kickSnapshot: async (): Promise<KickSnapshot> => ({
-    channels: kickChannels(await request<KickFeed>('/online/kick')),
-  }),
   async addKickTrackedChannel(channel: string): Promise<KickChannel> {
     const added = await request<{ slug: string }>(
       '/online/kick/channels',

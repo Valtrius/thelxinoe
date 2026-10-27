@@ -1,3 +1,4 @@
+import { dateFormat } from '../intl';
 import type { YoutubeGrouping, YoutubeVideo } from './types';
 
 export interface YoutubeVideoGroup {
@@ -19,7 +20,7 @@ function startOfWeek(date: Date): Date {
 }
 
 function formatDate(date: Date): string {
-  return new Intl.DateTimeFormat(undefined, {
+  return dateFormat(undefined, {
     weekday: 'long',
     day: 'numeric',
     month: 'short',
@@ -31,12 +32,12 @@ function formatRange(start: Date, end: Date): string {
   const sameMonth =
     start.getMonth() === end.getMonth() &&
     start.getFullYear() === end.getFullYear();
-  const startLabel = new Intl.DateTimeFormat(undefined, {
+  const startLabel = dateFormat(undefined, {
     day: 'numeric',
     month: sameMonth ? undefined : 'short',
     year: start.getFullYear() === end.getFullYear() ? undefined : 'numeric',
   }).format(start);
-  const endLabel = new Intl.DateTimeFormat(undefined, {
+  const endLabel = dateFormat(undefined, {
     day: 'numeric',
     month: 'short',
     year: 'numeric',
@@ -85,7 +86,7 @@ function groupLabel(
     return `${prefix} · ${formatRange(keyDate, end)}`;
   }
   if (grouping === 'month' || grouping === 'smart') {
-    return new Intl.DateTimeFormat(undefined, {
+    return dateFormat(undefined, {
       month: 'long',
       year: 'numeric',
     }).format(keyDate);
