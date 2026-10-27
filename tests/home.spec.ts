@@ -505,6 +505,89 @@ test('Home actions preserve resume positions and local editions, and launch live
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('Home YouTube cards restart videos and mark them watched with undo', async ({
+  page,
+}) => {
+  const { fixture, data } = await homeFixture(page);
+  const inProgress = data.youtube.continue_watching;
+  const marks: { videoId: string; watched: boolean }[] = [];
+  const launches: { media_id: string; position?: number }[] = [];
+  await page.route('**/api/v1/online/youtube/videos/*', (route) => {
+    const videoId = new URL(route.request().url()).pathname.split('/').at(-1)!;
+    const { watched } = route.request().postDataJSON();
+    marks.push({ videoId, watched });
+    data.youtube.continue_watching = watched ? [] : inProgress;
+    return route.fulfill({ json: { saved: true } });
+  });
+  await page.route('**/api/v1/catalog/*/playback', (route) =>
+    route.fulfill({
+      json: {
+        sources: [],
+        progress: [],
+        watched: false,
+        preferences: {
+          quality: 'auto',
+          audio_language: 'eng',
+          subtitle_language: 'eng',
+          subtitles: false,
+          replay_gain: 'track',
+        },
+      },
+    }),
+  );
+  await page.route('**/api/v1/playback', (route) => {
+    launches.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 503,
+      json: { error: { message: 'Playback fixture unavailable' } },
+    });
+  });
+  await page.goto('/');
+  const card = page.locator(
+    '[data-layout-key="home-continue:youtube:abcdefghijk"]',
+  );
+  const actions = card.getByRole('button', {
+    name: 'More actions for Direct-link video',
+    exact: true,
+  });
+  await actions.click();
+  await expect(page.getByRole('menuitem')).toHaveText([
+    'Play from beginning',
+    'Mark watched',
+    'Copy YouTube URL',
+    'Open in browser',
+  ]);
+  await page.getByRole('menuitem', { name: 'Play from beginning' }).click();
+  await expect
+    .poll(() => launches.at(-1))
+    .toMatchObject({ media_id: 'youtube:abcdefghijk', position: 0 });
+  await page.getByRole('button', { name: 'Close player', exact: true }).click();
+
+  await actions.click();
+  await page.getByRole('menuitem', { name: 'Mark watched' }).click();
+  await expect(card).toHaveCount(0);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(card).toBeVisible();
+  expect(marks).toEqual([
+    { videoId: 'abcdefghijk', watched: true },
+    { videoId: 'abcdefghijk', watched: false },
+  ]);
+
+  await page
+    .getByRole('region', { name: 'YouTube subscriptions', exact: true })
+    .getByRole('button', {
+      name: 'More actions for New subscription upload',
+      exact: true,
+    })
+    .click();
+  await page.getByRole('menuitem', { name: 'Mark watched' }).click();
+  await expect
+    .poll(() => marks.at(-1))
+    .toEqual({ videoId: 'lmnopqrstuv', watched: true });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('Home and Discover preserve default, saved and detail-link navigation', async ({
   page,
 }) => {
