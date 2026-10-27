@@ -104,11 +104,12 @@ pub(super) async fn scan_with_progress_write_media_files(
             let source_file=if old.is_some(){Some(&file_id)}else if candidates.len()==1 && fingerprint_counts.get(&file.fingerprint)==Some(&1){Some(&candidates[0].0)}else{None};
             let previous:Vec<String>=if let Some(source)=source_file{tx.prepare("SELECT media_id FROM media_sources WHERE file_id=?1")?.query_map([source],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?}else{Vec::new()};
             let changed=tx.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,edition,present,scanned_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10) ON CONFLICT(path) DO UPDATE SET generation=excluded.generation,size=excluded.size,modified=excluded.modified,fingerprint=excluded.fingerprint,probe=excluded.probe,edition=excluded.edition,present=1,scanned_at=excluded.scanned_at,ownership=CASE WHEN generation=excluded.generation THEN ownership ELSE 'unresolved' END WHERE media_files.generation IS NOT excluded.generation OR media_files.size IS NOT excluded.size OR media_files.modified IS NOT excluded.modified OR media_files.fingerprint IS NOT excluded.fingerprint OR media_files.probe IS NOT excluded.probe OR media_files.edition IS NOT excluded.edition OR media_files.present=0",params![file_id,root.id,file.path,generation,file.size,file.modified,file.fingerprint,file.probe.to_string(),file.edition,now()])?;
-            // An unchanged file keeps its row and its media links as they are.
-            if changed==0 {continue;}
+            let trailer=file.probe["thelxinoe_local_trailer"].as_bool()==Some(true);
+            // An unchanged file keeps its row and its media links as they are, unless how files
+            // are identified changed and it now stands for other entries.
+            if changed==0 && (trailer || placed(&tx,&previous,&file.identities)?) {continue;}
             tx.execute("DELETE FROM media_sources WHERE file_id=?1",[&file_id])?;
             tx.execute("DELETE FROM local_trailers WHERE file_id=?1",[&file_id])?;
-            let trailer=file.probe["thelxinoe_local_trailer"].as_bool()==Some(true);
             let linked=place(&tx,&root.id,&file_id,&file.identities,&previous,trailer,&mut vacated)?;
             vacated.extend(previous.into_iter().filter(|media|!linked.contains(media)));
         }
@@ -117,10 +118,35 @@ pub(super) async fn scan_with_progress_write_media_files(
     }).await
 }
 
-/// Places a changed file's identities, parents first, and links the file to the playable
-/// ones. The entry the file stood for keeps its id, and with it watch state, favorites and
-/// history, while its title and place follow the file; unless another present file still
-/// stands for it, or its new identity already has an entry of its own.
+/// Whether the entries a file is linked to are the playable ones it identifies as.
+fn placed(
+    tx: &rusqlite::Connection,
+    linked: &[String],
+    identities: &[identity::Identity],
+) -> anyhow::Result<bool> {
+    let mut current = Vec::with_capacity(linked.len());
+    for media in linked {
+        current.push(tx.query_row(
+            "SELECT kind,evidence_key FROM media WHERE id=?1",
+            [media],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )?);
+    }
+    let mut wanted = identities
+        .iter()
+        .filter(|item| item.playable)
+        .map(|item| (item.kind.clone(), item.key.clone()))
+        .collect::<Vec<_>>();
+    current.sort();
+    wanted.sort();
+    wanted.dedup();
+    Ok(current == wanted)
+}
+
+/// Places a changed or re-identified file's identities, parents first, and links the file to
+/// the playable ones. The entry the file stood for keeps its id, and with it watch state,
+/// favorites and history, while its title and place follow the file; unless another present
+/// file still stands for it, or its new identity already has an entry of its own.
 fn place(
     tx: &rusqlite::Connection,
     root: &str,

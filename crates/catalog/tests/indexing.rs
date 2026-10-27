@@ -571,6 +571,71 @@ async fn a_renamed_episode_keeps_its_entry_and_watch_state_at_its_new_number() -
     Ok(())
 }
 
+// Files named before and after a naming change are one show, and a show an earlier rule split
+// off is regrouped although its files are unchanged: episodes keep their entries and watch
+// state, and the emptied show goes.
+#[tokio::test]
+async fn a_series_folder_regroups_its_unchanged_files() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (db, root, media, tools) = library(temp.path(), "shows").await?;
+    let series = media.join("Show (2019) {imdb-tt1}");
+    std::fs::create_dir_all(series.join("Season 1"))?;
+    std::fs::create_dir_all(series.join("Season 01"))?;
+    std::fs::write(series.join("Season 1/Show - S01E01.wav"), wav(1))?;
+    std::fs::write(series.join("Season 01/Show (2019) - S01E02.wav"), wav(2))?;
+    scan(&db, root.clone(), tools.media()?).await?;
+    let shows = || {
+        count(
+            &db,
+            "SELECT COUNT(*) FROM media WHERE kind IN ('show','season')",
+        )
+    };
+    assert_eq!(shows().await?, 2);
+    // The first episode as the file-name rule placed it, under a show of its own.
+    let episode = db
+        .write("test.fixture", |c| {
+            let episode: String = c.query_row(
+                "SELECT id FROM media WHERE evidence_key='show (2019):s1:e1'",
+                [],
+                |r| r.get(0),
+            )?;
+            c.execute(
+                "INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('old','root','show','show','Show',1)",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('old-s1','root','season','old','show:s1','Season 1',1,1)",
+                [],
+            )?;
+            c.execute(
+                "UPDATE media SET evidence_key='show:s1:e1',parent_id='old-s1' WHERE id=?1",
+                [&episode],
+            )?;
+            c.execute(
+                "INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice',?1,1,1)",
+                [&episode],
+            )?;
+            Ok(episode)
+        })
+        .await?;
+    scan(&db, root, tools.media()?).await?;
+    let regrouped = db
+        .read("test.regrouped", move |c| {
+            Ok(c.query_row(
+                "SELECT e.evidence_key,sh.title,u.watched FROM media e JOIN media s ON s.id=e.parent_id JOIN media sh ON sh.id=s.parent_id JOIN media_state u ON u.media_id=e.id AND u.user_id='alice' WHERE e.id=?1",
+                [&episode],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)),
+            )?)
+        })
+        .await?;
+    assert_eq!(
+        regrouped,
+        ("show (2019):s1:e1".into(), "Show (2019)".into(), true)
+    );
+    assert_eq!(shows().await?, 2, "the split-off show and season go");
+    Ok(())
+}
+
 // Retagging a track's album moves the same entry under the new album, and the album left
 // without tracks goes.
 #[tokio::test]
