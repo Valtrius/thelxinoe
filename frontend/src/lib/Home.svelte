@@ -34,6 +34,7 @@
   import MediaSkeleton from './ui/MediaSkeleton.svelte';
   import LiveCard from './providers/components/ui/LiveCard.svelte';
   import LiveCardBadge from './providers/components/ui/LiveCardBadge.svelte';
+  import LibraryVideoMenu from './providers/components/youtube/LibraryVideoMenu.svelte';
   import PlatformIcon from './ui/PlatformIcon.svelte';
 
   let { user, revision, accountRevision, playing, play, navigate, details } =
@@ -60,6 +61,7 @@
     duration?: number;
     fileId?: string;
     last_played?: number;
+    video?: YoutubeVideo;
   };
   type Library = {
     continue_watching: Item[];
@@ -140,6 +142,7 @@
       position: video.positionSeconds,
       duration: video.durationSeconds ?? undefined,
       last_played: video.last_played,
+      video,
     };
   }
   const continuing = $derived(
@@ -510,7 +513,11 @@
           details={item.kind === 'youtube'
             ? undefined
             : () => details(item.id, item.kind)}
-        />
+          >{#snippet menu()}{#if item.video}<LibraryVideoMenu
+                video={item.video}
+                restart={() => playItem(item)}
+              />{/if}{/snippet}</LibraryCard
+        >
       {/each}
     </MediaRow>
   {:else if initialLoading.library || initialLoading.youtube}
@@ -555,7 +562,11 @@
               keyPrefix="home-youtube"
               open={() => playItem(item)}
               play={() => playItem(item)}
-            />
+              >{#snippet menu()}{#if item.video}<LibraryVideoMenu
+                    video={item.video}
+                    restart={() => playItem(item)}
+                  />{/if}{/snippet}</LibraryCard
+            >
           {/each}
         </MediaRow>
       {:else if initialLoading.youtube}
