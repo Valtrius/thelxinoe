@@ -233,6 +233,8 @@ impl Preferences {
         Ok(())
     }
 }
+/// The FFprobe codecs of the text subtitles the server converts to WebVTT and SRT.
+pub const TEXT_SUBTITLES: [&str; 6] = ["subrip", "webvtt", "ass", "ssa", "mov_text", "text"];
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Track {
     pub id: String,
@@ -326,9 +328,7 @@ impl Source {
                 id: format!("embedded-{index}"),
                 index: Some(index),
                 kind: kind.into(),
-                supported: kind == "audio"
-                    || ["subrip", "webvtt", "ass", "ssa", "mov_text", "text"]
-                        .contains(&codec.as_str()),
+                supported: kind == "audio" || TEXT_SUBTITLES.contains(&codec.as_str()),
                 codec,
                 language: stream["tags"]["language"].as_str().unwrap_or("und").into(),
                 title: stream["tags"]["title"].as_str().unwrap_or("").into(),
