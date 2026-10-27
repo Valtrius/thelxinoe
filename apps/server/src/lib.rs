@@ -38,6 +38,7 @@ mod realtime;
 pub mod security;
 pub mod segments;
 mod statistics;
+pub mod subtitles;
 mod timezones;
 pub mod tools;
 mod transcoding;
