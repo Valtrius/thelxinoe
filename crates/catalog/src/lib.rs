@@ -147,12 +147,13 @@ where
     let base = PathBuf::from(&root.path)
         .canonicalize()
         .context("Library is unavailable")?;
+    let walked = base.clone();
     let (entries, unreadable) = tokio::task::spawn_blocking(move || -> Result<_> {
         let mut entries = Vec::new();
         // A folder the server can't read, such as lost+found or #recycle, is skipped and
         // keeps what it had. An unreadable root or an unknown location still fails the scan.
         let mut unreadable = Vec::new();
-        for entry in walkdir::WalkDir::new(&base).follow_links(false) {
+        for entry in walkdir::WalkDir::new(&walked).follow_links(false) {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => match error.path().filter(|_| error.depth() > 0) {
@@ -168,7 +169,7 @@ where
             };
             if entry.file_type().is_file() && supported(entry.path()) {
                 let path = entry.path().canonicalize()?;
-                if !path.starts_with(&base) {
+                if !path.starts_with(&walked) {
                     bail!("File escapes library root");
                 }
                 entries.push(path);
@@ -199,7 +200,7 @@ where
     for (done, path) in entries.into_iter().enumerate() {
         let path_string = path.to_string_lossy().to_string();
         let old = storage::scan_with_progress_read_media_files(path_string.clone(), db).await?;
-        match index(&path, old, &root, &tools).await {
+        match index(&path, &base, old, &root, &tools).await {
             Ok(Indexed::File(file)) => indexed.push(*file),
             Ok(Indexed::Gone) => {}
             Ok(Indexed::Changing) => {
@@ -252,6 +253,7 @@ where
 }
 async fn index(
     path: &Path,
+    base: &Path,
     old: Option<(i64, String, String, String)>,
     root: &Root,
     tools: &thelxinoe_tools::MediaTools,
@@ -326,7 +328,7 @@ async fn index(
     } else {
         path.to_path_buf()
     };
-    let (identities, edition) = identity::identify(&root.kind, &identity_path, &probe)?;
+    let (identities, edition) = identity::identify(&root.kind, base, &identity_path, &probe)?;
     Ok(Indexed::File(Box::new(IndexedFile {
         path: path.to_string_lossy().to_string(),
         size,
