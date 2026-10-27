@@ -8,6 +8,7 @@ mod bindings;
 mod connections;
 mod controls;
 mod domain;
+mod episodes;
 mod failures;
 mod indexers;
 pub(crate) mod libraries;
@@ -121,6 +122,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(requests::router())
         .merge(bindings::router())
         .merge(controls::router())
+        .merge(episodes::router())
         .merge(quality::router())
         .merge(recyclarr::router())
         .merge(seerr::router())

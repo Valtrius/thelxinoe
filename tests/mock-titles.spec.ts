@@ -540,3 +540,87 @@ test('Keep on a series covers its seasons and episodes and blocks their deletion
   await expect(dialog).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test('episode rows show stills, mark seasons watched and search Sonarr', async ({
+  page,
+}) => {
+  const errors = track(page);
+  await page.goto('/#library/shows/show-0');
+  await page.getByRole('tab', { name: 'Season 2' }).click();
+  const list = page.getByRole('list', { name: 'Season 2 episodes' });
+  await expect(list.locator('img').first()).toHaveAttribute(
+    'src',
+    /\/mock-art\/video\//,
+  );
+  const missing = list
+    .getByRole('listitem')
+    .filter({ has: page.locator('[data-title-status="missing"]') });
+
+  // Interactive search lists Sonarr's releases, rejected ones on request.
+  await missing.getByRole('button', { name: 'Interactive search…' }).click();
+  const dialog = page.getByRole('dialog', {
+    name: /^Interactive search · S02E05/,
+  });
+  await expect(dialog.getByText('Best match')).toBeVisible();
+  await expect(dialog).toContainText('1 rejected hidden');
+  await dialog.getByText('Show rejected').click();
+  await expect(
+    dialog.getByText('720p HDTV is not wanted in profile HD-1080p'),
+  ).toBeVisible();
+  await dialog
+    .getByRole('button', { name: /^Download: Show\.S02E05\.1080p/ })
+    .click();
+  await expect(page.getByText('Sent to the download client.')).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Search missing' }).click();
+  await expect(
+    page.getByText('Sonarr is searching for 1 missing episode.'),
+  ).toBeVisible();
+  await missing.getByRole('button', { name: /^More actions for / }).click();
+  const menu = page.getByRole('menu');
+  await expect(
+    menu.getByRole('menuitem', { name: 'Automatic search' }),
+  ).toBeVisible();
+  await expect(
+    menu.getByRole('menuitemcheckbox', { name: 'Monitored' }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await expect(menu.getByText(/^Last searched /)).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await page.getByRole('button', { name: 'Mark season watched' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Mark season unwatched' }),
+  ).toBeVisible();
+  await expect(
+    list.getByRole('button', { name: /^Watched: / }).first(),
+  ).toHaveAttribute('aria-pressed', 'true');
+
+  // Members mark what they watched but see none of Sonarr's actions.
+  await view(page, 'user');
+  await page.goto('/#library/shows/show-0');
+  await page.getByRole('tab', { name: 'Season 2' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Search missing' }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Interactive search…' }),
+  ).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Season 1' }).click();
+  await page
+    .getByRole('list', { name: 'Season 1 episodes' })
+    .getByRole('button', { name: 'More actions for The Signal', exact: true })
+    .click();
+  await page.getByRole('menuitem', { name: 'Mark watched up to here' }).click();
+  await expect(
+    page.getByText('Marked watched up to this episode.'),
+  ).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Season 1' })).toContainText(
+    '3/4',
+  );
+  await page.getByRole('button', { name: 'Unwatched 1' }).click();
+  await expect(
+    page.getByRole('list', { name: 'Season 1 episodes' }).getByRole('listitem'),
+  ).toHaveCount(1);
+  expect(errors).toEqual([]);
+});

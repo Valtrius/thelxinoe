@@ -15,7 +15,8 @@
     type CatalogFile,
   } from './catalog';
 
-  export type TitleDialogKind = 'match' | 'timestamps' | 'mapping' | 'delete';
+  export type TitleDialogKind =
+    'match' | 'timestamps' | 'mapping' | 'delete' | 'replace';
   let {
     dialog,
     id,
@@ -23,6 +24,7 @@
     title,
     files = [],
     kept = '',
+    replace,
     close,
     changed,
   } = $props<{
@@ -33,6 +35,8 @@
     files?: CatalogFile[];
     /** Why Keep blocks deleting these files, if it does. */
     kept?: string;
+    /** Searches for another release once a `replace` dialog deleted the files. */
+    replace?: () => Promise<unknown>;
     close: () => void;
     changed?: () => void;
   }>();
@@ -43,15 +47,17 @@
     error = $state(''),
     pending = $state<{ id: string; files: number } | null>(null);
   const deleteLabel = $derived(
-    kind === 'show'
-      ? 'Delete series files'
-      : kind === 'season'
-        ? 'Delete season files'
-        : 'Delete files',
+    dialog === 'replace'
+      ? 'Delete and search again'
+      : kind === 'show'
+        ? 'Delete series files'
+        : kind === 'season'
+          ? 'Delete season files'
+          : 'Delete files',
   );
 
   onMount(() => {
-    if (dialog !== 'delete' || kept) return;
+    if ((dialog !== 'delete' && dialog !== 'replace') || kept) return;
     preparing = true;
     prepareOperation(id, 'delete')
       .then((operation) => (pending = operation))
@@ -71,7 +77,9 @@
     });
     try {
       await executeOperation(pending.id);
+      pending = null;
       changed?.();
+      await replace?.();
       close();
     } catch (caught) {
       error = String(caught);
@@ -118,9 +126,11 @@
       </p>
     {:else if pending}
       <p class="text-sm">
-        Delete {pending.files}
-        {pending.files === 1 ? 'file' : 'files'} from disk and stop Radarr or Sonarr
-        from downloading {pending.files === 1 ? 'it' : 'them'} again?
+        {#if dialog === 'replace'}Delete {pending.files}
+          {pending.files === 1 ? 'file' : 'files'} from disk and search Sonarr for
+          another release?{:else}Delete {pending.files}
+          {pending.files === 1 ? 'file' : 'files'} from disk and stop Radarr or Sonarr
+          from downloading {pending.files === 1 ? 'it' : 'them'} again?{/if}
       </p>
     {:else if preparing}<ContentSkeleton label="Checking files" />{/if}
     {#snippet actions()}

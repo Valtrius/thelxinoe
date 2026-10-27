@@ -147,6 +147,9 @@ function aggregate(episodes, monitored = true) {
     : { ...base, state: 'unmonitored', inactive: true };
 }
 
+const managerId = (show, season, number) =>
+  (show + 1) * 10000 + season * 100 + number;
+
 /** Seasons of a library show or of a Sonarr-only series, raw states. */
 function seasonsOf(s, show) {
   const series =
@@ -166,6 +169,9 @@ function seasonsOf(s, show) {
       watched: false,
       position: null,
       duration: null,
+      stills: [],
+      manager_id: series.tvdb * 100 + i + 1,
+      file: null,
       raw: { state: 'upcoming' },
     }));
     return [
@@ -197,6 +203,12 @@ function seasonsOf(s, show) {
           watched: Boolean(s.mediaStates[item.id]?.watched),
           position: item.position || null,
           duration: item.position ? item.duration : null,
+          stills: item.artwork_url ? [item.artwork_url] : [],
+          manager_id: managerId(index, number, item.metadata.episode_number),
+          file:
+            item.available === false
+              ? null
+              : { quality: 'WEBDL-1080p', size: 1_900_000_000 },
           raw: { state: item.available === false ? 'missing' : 'available' },
         }));
       const sonarr = extras
@@ -213,6 +225,10 @@ function seasonsOf(s, show) {
           watched: false,
           position: null,
           duration: null,
+          stills:
+            extra.state === 'upcoming' ? [] : [art('video', extra.number)],
+          manager_id: managerId(index, number, extra.number),
+          file: null,
           raw: extra,
         }));
       const episodes = [...library, ...sonarr];
@@ -384,8 +400,114 @@ function managerTitle(item, index, kind) {
   };
 }
 
+const releases = (code) => [
+  {
+    guid: `${code}-web`,
+    indexer_id: 1,
+    indexer: 'Usenet Indexer',
+    title: `Show.${code}.1080p.WEB-DL.DDP5.1.H.264-GROUP`,
+    size: 2_400_000_000,
+    protocol: 'usenet',
+    quality: 'WEBDL-1080p',
+    score: 1250,
+    seeders: null,
+    leechers: null,
+    published: now() - 2 * day,
+    full_season: false,
+    approved: true,
+    rejections: [],
+  },
+  {
+    guid: `${code}-uhd`,
+    indexer_id: 2,
+    indexer: 'Torrent Indexer',
+    title: `Show.${code}.2160p.WEB-DL.DV.HDR.H.265-GROUP`,
+    size: 7_900_000_000,
+    protocol: 'torrent',
+    quality: 'WEBDL-2160p',
+    score: 900,
+    seeders: 214,
+    leechers: 12,
+    published: now() - 2 * day,
+    full_season: false,
+    approved: true,
+    rejections: [],
+  },
+  {
+    guid: `${code}-hdtv`,
+    indexer_id: 2,
+    indexer: 'Torrent Indexer',
+    title: `Show.${code}.720p.HDTV.x264-GROUP`,
+    size: 900_000_000,
+    protocol: 'torrent',
+    quality: 'HDTV-720p',
+    score: 0,
+    seeders: 12,
+    leechers: 1,
+    published: now() - 3 * day,
+    full_season: false,
+    approved: false,
+    rejections: ['720p HDTV is not wanted in profile HD-1080p'],
+  },
+];
+
+/** Sonarr actions on a library show's or Sonarr-only series' episodes. */
+function seriesApi(s, c, id, action) {
+  const { method, query, body, json, fail } = c;
+  const ref = id.match(/^(tmdb|tvdb):(\d+)$/);
+  const show = ref
+    ? s.titles.series.find((entry) => entry[ref[1]] === Number(ref[2]))
+    : s.library.find((entry) => entry.id === id && entry.kind === 'show')
+      ? id
+      : null;
+  if (!show) return fail(404, 'Series not found');
+  const episodes = seasonsOf(s, show).flatMap((season) => season.episodes);
+  const known = (ids) =>
+    ids.length > 0 &&
+    ids.every((episode) => episodes.some((e) => e.manager_id === episode));
+  if (action === 'search' && method === 'POST') {
+    if (body.episodes?.length) {
+      if (!known(body.episodes))
+        return fail(409, 'Sonarr no longer lists an episode of this series');
+      return json({ episodes: body.episodes.length });
+    }
+    if (!body.missing) return json({ episodes: null });
+    const missing = episodes.filter(
+      (episode) =>
+        episode.season === body.season &&
+        episodeStatus(episode).state === 'missing',
+    );
+    if (!missing.length)
+      return fail(409, 'No episode of this season is missing');
+    return json({ episodes: missing.length });
+  }
+  if (action === 'monitor' && method === 'PUT')
+    return known(body.episodes ?? [])
+      ? json({ saved: true })
+      : fail(409, 'Sonarr no longer lists an episode of this series');
+  const episode = action.match(/^episodes\/(\d+)$/);
+  if (episode && method === 'GET')
+    return known([Number(episode[1])])
+      ? json({ monitored: true, last_search: now() - 2 * 3600 })
+      : fail(409, 'Sonarr no longer lists an episode of this series');
+  if (action === 'releases' && method === 'GET') {
+    const target = episodes.find(
+      (e) => e.manager_id === Number(query.get('episode')),
+    );
+    const code = target
+      ? `S${String(target.season).padStart(2, '0')}E${String(target.number).padStart(2, '0')}`
+      : `S${String(query.get('season')).padStart(2, '0')}`;
+    return json({ items: releases(code) });
+  }
+  if (action === 'releases' && method === 'POST')
+    return json({ submitted: true });
+  return false;
+}
+
 export async function titlesApi(s, c) {
   const { path, query, json, fail } = c;
+  const series = path.match(/^\/admin\/series\/([^/]+)\/(.+)$/);
+  if (series) return seriesApi(s, c, decodeURIComponent(series[1]), series[2]);
   if (path === '/catalog/lookup') {
     const kind = query.get('kind');
     const ref = query.get('ref') ?? '';
@@ -436,6 +558,10 @@ export async function titlesApi(s, c) {
         episodes: episodes.map((episode) => {
           const shown = { ...episode };
           delete shown.raw;
+          if (!admin) {
+            delete shown.manager_id;
+            delete shown.file;
+          }
           return { ...shown, status: collapse(episodeStatus(episode), admin) };
         }),
       })),

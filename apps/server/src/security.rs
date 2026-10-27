@@ -298,7 +298,7 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
         // are exposed. Service workers must never take control of Thelxinoe.
         response.headers_mut().insert("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; worker-src 'none'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'".parse().unwrap());
     } else {
-        response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://image.tmdb.org https://static-cdn.jtvnw.net https://yt3.ggpht.com https://yt3.googleusercontent.com https://kick.com https://*.kick.com https://*.kickcdn.com; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'".parse().unwrap());
+        response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://image.tmdb.org https://artworks.thetvdb.com https://static-cdn.jtvnw.net https://yt3.ggpht.com https://yt3.googleusercontent.com https://kick.com https://*.kick.com https://*.kickcdn.com; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'".parse().unwrap());
     }
     if context.secure {
         response.headers_mut().insert(

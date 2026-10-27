@@ -69,6 +69,47 @@ struct Image {
     #[serde(deserialize_with = "lenient")]
     cover_type: String,
     url: Option<String>,
+    remote_url: Option<String>,
+}
+/// Browsers load episode stills straight from TheTVDB, as they load TMDB artwork, so
+/// no other address a manager lists is passed on.
+const SCREENSHOTS: &str = "https://artworks.thetvdb.com/";
+fn screenshot<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    let images = Option::<Vec<Image>>::deserialize(deserializer)?.unwrap_or_default();
+    Ok(images
+        .into_iter()
+        .filter(|image| image.cover_type == "screenshot")
+        .flat_map(|image| [image.remote_url, image.url])
+        .flatten()
+        .find(|url| {
+            url.starts_with(SCREENSHOTS)
+                && url.len() <= 1024
+                && !url.contains(|c: char| c.is_whitespace() || c.is_control())
+        }))
+}
+/// The Sonarr file of an episode, reduced to what its row shows.
+#[derive(Clone, Debug, Default, Hash, PartialEq, Serialize)]
+pub(crate) struct EpisodeFile {
+    quality: Option<String>,
+    size: Option<i64>,
+}
+fn episode_file<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<EpisodeFile>, D::Error> {
+    let file = Option::<Value>::deserialize(deserializer)?.filter(Value::is_object);
+    Ok(file.map(|file| EpisodeFile {
+        quality: file
+            .pointer("/quality/quality/name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_owned),
+        size: file["size"]
+            .as_f64()
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(|v| v as i64),
+    }))
 }
 #[derive(Clone, Debug, Default, Deserialize, Hash)]
 #[serde(rename_all = "camelCase", default)]
@@ -240,6 +281,10 @@ pub(crate) struct Episode {
     #[serde(deserialize_with = "lenient")]
     has_file: bool,
     runtime: Option<i64>,
+    #[serde(rename = "images", deserialize_with = "screenshot")]
+    screenshot: Option<String>,
+    #[serde(deserialize_with = "episode_file")]
+    episode_file: Option<EpisodeFile>,
     #[serde(skip)]
     air: Option<i64>,
 }
@@ -574,7 +619,11 @@ async fn poll(
                         None => match c
                             .fetch::<Vec<Episode>>(
                                 "episode",
-                                &[("seriesId", series.id.to_string())],
+                                &[
+                                    ("seriesId", series.id.to_string()),
+                                    ("includeImages", "true".into()),
+                                    ("includeEpisodeFile", "true".into()),
+                                ],
                             )
                             .await
                         {
@@ -1390,12 +1439,27 @@ struct Group<'a> {
     watched: Vec<bool>,
     episodes: Vec<(i64, Value)>,
 }
+/// An episode's pictures, best first: its TheTVDB still, then a frame of its library file.
+fn stills(screenshot: Option<&str>, library: Option<&str>, grant: &str) -> Vec<String> {
+    screenshot
+        .map(str::to_owned)
+        .into_iter()
+        .chain(library.map(|id| format!("/api/v1/catalog/{id}/still?grant={grant}")))
+        .collect()
+}
+/// What administrators also see of an episode: its Sonarr identity and file.
+fn administered(value: &mut Value, upstream: Option<&Episode>) {
+    value["manager_id"] = json!(upstream.map(|e| e.id));
+    value["file"] = json!(upstream.and_then(|e| e.episode_file.as_ref()));
+}
+
 /// Library seasons merged with Sonarr's episode list; Specials come last.
 fn seasons_value(
     found: Option<Found<'_>>,
     library: &[LibrarySeason],
     admin: bool,
     now: i64,
+    grant: &str,
 ) -> Value {
     let mut groups = BTreeMap::<i64, Group<'_>>::new();
     let mut linked = HashSet::new();
@@ -1430,15 +1494,24 @@ fn seasons_value(
                 .or(upstream.map(|e| e.episode_number))
                 .unwrap_or(0);
             group.watched.push(episode.watched);
-            group.episodes.push((episode_number, json!({
+            let mut value = json!({
                 "id":episode.id,"season":number,"number":episode_number,
                 "title":upstream.and_then(|e| e.title.as_deref()).unwrap_or(episode.title.as_str()),
                 "overview":upstream.and_then(|e| e.overview.as_deref()).or(episode.overview.as_deref()),
                 "air_date":upstream.and_then(|e| e.air).or(episode.air),
                 "runtime":upstream.and_then(|e| e.runtime).or(episode.runtime),
                 "available":episode.available,"watched":episode.watched,
-                "position":episode.position,"duration":episode.duration,"status":status
-            })));
+                "position":episode.position,"duration":episode.duration,"status":status,
+                "stills":stills(
+                    upstream.and_then(|e| e.screenshot.as_deref()),
+                    episode.available.then_some(episode.id.as_str()),
+                    grant,
+                )
+            });
+            if admin {
+                administered(&mut value, upstream);
+            }
+            group.episodes.push((episode_number, value));
         }
     }
     if let Some(found) = found {
@@ -1452,21 +1525,23 @@ fn seasons_value(
         {
             let status =
                 episode_status(found.inventory, found.title, episode, false, now).for_viewer(admin);
+            let mut value = json!({
+                "id":null,"season":episode.season_number,"number":episode.episode_number,
+                "title":episode.title.clone().filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| format!("Episode {}", episode.episode_number)),
+                "overview":episode.overview,"air_date":episode.air,
+                "runtime":episode.runtime,"available":false,"watched":false,
+                "position":null,"duration":null,"status":status,
+                "stills":stills(episode.screenshot.as_deref(), None, grant)
+            });
+            if admin {
+                administered(&mut value, Some(episode));
+            }
             groups
                 .entry(episode.season_number)
                 .or_default()
                 .episodes
-                .push((
-                    episode.episode_number,
-                    json!({
-                        "id":null,"season":episode.season_number,"number":episode.episode_number,
-                        "title":episode.title.clone().filter(|t| !t.trim().is_empty())
-                            .unwrap_or_else(|| format!("Episode {}", episode.episode_number)),
-                        "overview":episode.overview,"air_date":episode.air,
-                        "runtime":episode.runtime,"available":false,"watched":false,
-                        "position":null,"duration":null,"status":status
-                    }),
-                ));
+                .push((episode.episode_number, value));
         }
     }
     let mut groups = groups
@@ -1499,6 +1574,43 @@ fn seasons_value(
     json!({"seasons":seasons})
 }
 
+/// A show by library id or `tmdb:`/`tvdb:` reference: its catalog link, if the library
+/// has it, and the library episodes Sonarr's list can match.
+struct Show {
+    reference: Option<Ref>,
+    link: Option<Link>,
+    present: Vec<Present>,
+}
+impl Show {
+    async fn load(state: &AppState, id: &str) -> Result<Self> {
+        let reference = Ref::parse(id);
+        let media = match reference {
+            Some(reference) => storage::lookup(&state.db, "show".into(), reference).await?,
+            None => Some(id.to_owned()),
+        };
+        let mut catalog = match media {
+            Some(media) => storage::catalog(&state.db, vec![media]).await?,
+            None => Catalog::default(),
+        };
+        let link = catalog.links.into_iter().find(|link| link.kind == "show");
+        let present = link
+            .as_ref()
+            .and_then(|link| catalog.present.remove(&link.id))
+            .unwrap_or_default();
+        Ok(Self {
+            reference,
+            link,
+            present,
+        })
+    }
+    fn series<'a>(&self, snapshot: &'a Snapshot) -> Option<Found<'a>> {
+        self.link
+            .as_ref()
+            .and_then(|link| find(snapshot, "sonarr", link))
+            .or_else(|| self.reference.and_then(|r| find_ref(snapshot, "sonarr", r)))
+    }
+}
+
 async fn seasons(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1506,31 +1618,87 @@ async fn seasons(
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::Browse).await?;
     let snapshot = snapshot(&state);
-    let reference = Ref::parse(&id);
-    let show = match reference {
-        Some(reference) => storage::lookup(&state.db, "show".into(), reference).await?,
-        None => Some(id),
-    };
-    let link = match &show {
-        Some(show) => storage::catalog(&state.db, vec![show.clone()])
-            .await?
-            .links
-            .into_iter()
-            .find(|link| link.kind == "show"),
-        None => None,
-    };
-    let found = link
-        .as_ref()
-        .and_then(|link| find(&snapshot, "sonarr", link))
-        .or_else(|| reference.and_then(|r| find_ref(&snapshot, "sonarr", r)));
-    if link.is_none() && found.is_none() {
+    let show = Show::load(&state, &id).await?;
+    let found = show.series(&snapshot);
+    if show.link.is_none() && found.is_none() {
         return Err(ApiError::not_found());
     }
-    let library = match &link {
+    let library = match &show.link {
         Some(link) => storage::show(&state.db, link.id.clone(), p.user.id.clone()).await?,
         None => Vec::new(),
     };
-    Ok(Json(seasons_value(found, &library, admin(&p), now())))
+    let grant = crate::grants::artwork(&state, &p).await?;
+    Ok(Json(seasons_value(
+        found,
+        &library,
+        admin(&p),
+        now(),
+        &grant,
+    )))
+}
+
+/// A Sonarr series and its cached episodes, for administrator actions on them.
+pub(super) struct Series {
+    pub(super) service: String,
+    pub(super) id: i64,
+    pub(super) seasons: Vec<i64>,
+    pub(super) episodes: Vec<SeriesEpisode>,
+}
+pub(super) struct SeriesEpisode {
+    pub(super) id: i64,
+    pub(super) season: i64,
+    /// Aired and wanted, but neither here nor downloading: what a missing search fetches.
+    pub(super) missing: bool,
+}
+/// The Sonarr series of a library show or `tmdb:`/`tvdb:` reference.
+pub(super) async fn series(state: &AppState, id: &str) -> Result<Series> {
+    let show = Show::load(state, id).await?;
+    let snapshot = snapshot(state);
+    let found = show.series(&snapshot).ok_or_else(|| {
+        if show.link.is_some() {
+            ApiError::conflict("Sonarr does not list this series")
+        } else {
+            ApiError::not_found()
+        }
+    })?;
+    Ok(series_value(
+        found,
+        &present_ids(found, &show.present),
+        now(),
+    ))
+}
+fn series_value(found: Found<'_>, present: &HashSet<i64>, now: i64) -> Series {
+    let episodes = found
+        .inventory
+        .episodes
+        .get(&found.title.id)
+        .into_iter()
+        .flatten()
+        .map(|episode| SeriesEpisode {
+            id: episode.id,
+            season: episode.season_number,
+            missing: episode_status(
+                found.inventory,
+                found.title,
+                episode,
+                present.contains(&episode.id),
+                now,
+            )
+            .state
+                == Phase::Missing,
+        })
+        .collect();
+    Series {
+        service: found.inventory.service.clone(),
+        id: found.title.id,
+        seasons: found
+            .title
+            .seasons
+            .iter()
+            .map(|s| s.season_number)
+            .collect(),
+        episodes,
+    }
 }
 
 #[derive(Deserialize)]

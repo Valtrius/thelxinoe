@@ -207,7 +207,7 @@ export async function installMockApi(page, currentState, events) {
                   ? 'account.profile.changed'
                   : path.startsWith('/playlists')
                     ? 'playlists.changed'
-                    : /^\/catalog\/[^/]+\/state$/.test(path)
+                    : /^\/catalog\/[^/]+\/(state|watched)$/.test(path)
                       ? 'media-state.changed'
                       : /^\/catalog\/roots\/[^/]+\/scan$/.test(path)
                         ? null

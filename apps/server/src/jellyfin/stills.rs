@@ -27,7 +27,7 @@ static SLOTS: Semaphore = Semaphore::const_new(2);
 static LOCKS: [Mutex<()>; 64] = [const { Mutex::const_new(()) }; 64];
 
 /// Serve the still of a media item's first file, extracting it once per file version.
-pub(super) async fn serve(state: &AppState, media: &str, request: Request) -> Result<Response> {
+pub(crate) async fn serve(state: &AppState, media: &str, request: Request) -> Result<Response> {
     let source = crate::playback::source(state, media, None).await?;
     let video = source.probe["streams"]
         .as_array()

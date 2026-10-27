@@ -90,6 +90,53 @@ pub(crate) async fn set_for(
         .await?;
     get_for(state, p, media).await
 }
+#[derive(Deserialize)]
+pub struct Watched {
+    watched: bool,
+    /// With an episode: every episode before it in its series too.
+    #[serde(default)]
+    through: bool,
+}
+/// Mark every episode of a season, or an episode and the ones before it, at once.
+pub async fn set_watched(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(media): Path<String>,
+    Json(input): Json<Watched>,
+) -> Result<Json<Value>> {
+    let p = security::principal(&state, &headers).await?;
+    let keys = crate::media_resources::for_media(&state.db, &media).await?;
+    let _files = state
+        .media_resources
+        .read(&keys.iter().map(String::as_str).collect::<Vec<_>>())
+        .await;
+    let _lease = state.media_operations.read().await;
+    let changed = storage::set_watched(
+        p.user.id.clone(),
+        media.clone(),
+        input.watched,
+        input.through,
+        &state.db,
+    )
+    .await?;
+    let changed = match changed {
+        storage::Marked::Missing => return Err(ApiError::not_found()),
+        storage::Marked::Unsupported => {
+            return Err(ApiError::bad(
+                "Mark a season, an episode, or an episode and those before it",
+            ));
+        }
+        storage::Marked::Episodes(count) => count,
+    };
+    state
+        .emit(
+            Some(p.user.id.clone()),
+            "media-state.changed",
+            json!({"media_id":media}),
+        )
+        .await?;
+    Ok(Json(json!({"episodes":changed})))
+}
 pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     let mut home = home_for(&state, &p).await?;
