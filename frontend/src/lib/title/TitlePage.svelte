@@ -10,6 +10,7 @@
     Star,
   } from '@lucide/svelte';
   import { api, type User } from '../api';
+  import { inBackground } from '../page-readiness';
   import type { MediaChoice } from '../playback';
   import Button from '../ui/Button.svelte';
   import PlayIcon from '../ui/PlayIcon.svelte';
@@ -205,7 +206,8 @@
       const media = await api<Media>(path);
       if (request !== generation) return;
       seerr = media;
-      void api<Results>(`${path}/recommendations`)
+      // The row at the foot of the page arrives after it shows.
+      void inBackground(() => api<Results>(`${path}/recommendations`))
         .then((result) => {
           if (request === generation)
             related = result.results.map((entry) => ({

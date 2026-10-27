@@ -83,6 +83,26 @@ function documentStyles() {
   });
 }
 
+// Elements that have scrolled, so a copy restores their positions without
+// reading every element's, which stalls the click on a large grid.
+const scrolledElements = new Set<Element>();
+if (typeof document !== 'undefined')
+  document.addEventListener(
+    'scroll',
+    (event) => {
+      if (event.target instanceof Element) scrolledElements.add(event.target);
+    },
+    { capture: true, passive: true },
+  );
+
+// The copy's element at the same place as `element` in its original.
+function counterpart(source: Element, copy: Element, element: Element) {
+  const path: number[] = [];
+  for (let node = element; node !== source; node = node.parentElement!)
+    path.unshift([...node.parentElement!.children].indexOf(node));
+  return path.reduce((node, index) => node.children[index], copy);
+}
+
 // A still copy of the outgoing content plays the leave animation, so the
 // incoming page can mount and request its data underneath it straight away.
 // It sits beside the original, fixed over the scroller, so neither scrolling
@@ -95,19 +115,41 @@ function depart(source: HTMLElement): Departure {
   const top = bounds.top + viewport.clientTop;
   const rect = source.getBoundingClientRect();
   const copy = source.cloneNode(true) as HTMLElement;
-  const originals = [source, ...source.querySelectorAll('*')];
-  const copies = [copy, ...copy.querySelectorAll('*')];
   const scrolled: [Element, number, number][] = [];
-  copies.forEach((element, index) => {
-    const original = originals[index];
-    if (original.scrollTop || original.scrollLeft)
-      scrolled.push([element, original.scrollTop, original.scrollLeft]);
-    // Cloning keeps typed input values but not choices made by script.
-    if (
-      original instanceof HTMLSelectElement &&
-      element instanceof HTMLSelectElement
+  for (const element of scrolledElements) {
+    if (!element.isConnected) scrolledElements.delete(element);
+    else if (
+      source.contains(element) &&
+      (element.scrollTop || element.scrollLeft)
     )
-      element.selectedIndex = original.selectedIndex;
+      scrolled.push([
+        counterpart(source, copy, element),
+        element.scrollTop,
+        element.scrollLeft,
+      ]);
+  }
+  // Cloning keeps typed input values but not choices made by script.
+  const selects = copy.querySelectorAll('select');
+  source.querySelectorAll('select').forEach((select, index) => {
+    selects[index].selectedIndex = select.selectedIndex;
+  });
+  // Cards well outside the viewport never show while the copy leaves. Empty
+  // stand-ins of their size keep its layout without laying out their content.
+  const margin = bounds.height / 4;
+  const cards = copy.querySelectorAll<HTMLElement>('[data-layout-key]');
+  source.querySelectorAll('[data-layout-key]').forEach((card, index) => {
+    const box = card.getBoundingClientRect();
+    if (
+      box.bottom >= bounds.top - margin &&
+      box.top <= bounds.bottom + margin &&
+      box.right >= bounds.left - margin &&
+      box.left <= bounds.right + margin
+    )
+      return;
+    // The computed size is the card's own, before any zoom on its grid.
+    const { width, height } = getComputedStyle(card);
+    cards[index].replaceChildren();
+    Object.assign(cards[index].style, { width, height });
   });
   for (const dialog of copy.querySelectorAll('dialog')) dialog.remove();
   Object.assign(copy.style, {

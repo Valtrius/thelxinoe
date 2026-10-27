@@ -1,10 +1,8 @@
 <script lang="ts">
   import MediaSkeleton from '../../../ui/MediaSkeleton.svelte';
-  import { LatestRequest } from '../../../latest-request';
-  import { untrack } from 'svelte';
   import { Plus, RefreshCw } from '@lucide/svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { api, normalizeError } from '../../api';
+  import { api, kickChannels, normalizeError, type KickFeed } from '../../api';
   import { createCardGridWheelHandler } from '../../../card-grid-wheel';
   import { scaleCardScope } from '../../../card-grid-zoom';
   import { createLayoutMotion } from '../../../layout-motion';
@@ -32,25 +30,25 @@
     activeSessions,
     cardColumns,
     metadataConfigured,
-    dataRevision,
+    feed,
     onNavigateSettings,
     onCardColumnsChange,
   }: {
     admin: boolean;
     connected: boolean;
-    onAccountChanged: () => void;
+    onAccountChanged: () => Promise<void>;
     syncStatus: SyncStatus;
     playback: PlaybackDiagnostics;
     activeSessions: PlaybackSession[];
     cardColumns: number;
     metadataConfigured: boolean;
-    dataRevision: number;
+    /** The channels the page read with the account, or null until it has. */
+    feed: KickFeed | null;
     onNavigateSettings: (section: 'kick' | 'tools') => void;
     onCardColumnsChange: (columns: number) => void;
   } = $props();
 
-  let channels = $state<KickChannel[]>([]);
-  let loading = $state(true);
+  const channels = $derived(feed ? kickChannels(feed) : []);
   let error = $state<AppError | null>(null);
   let lastSyncErrorFingerprint = $state<string | null>(null);
   let channelInput = $state('');
@@ -62,17 +60,15 @@
     connecting = true;
     try {
       await request('/online/kick/connect', 'POST');
-      onAccountChanged();
+      await onAccountChanged();
     } catch (caught) {
       error = normalizeError(caught);
     } finally {
       connecting = false;
     }
   }
-  let observedDataRevision = $state<number | null>(null);
   const layoutMotion = createLayoutMotion();
   const connectLayoutMotion = layoutMotion.connect;
-  const requests = new LatestRequest();
   const pendingSlugs = new SvelteSet<string>();
   const playbackReady = $derived(
     playback.mpv.detected && playback.streamlink.detected,
@@ -116,22 +112,6 @@
       !syncStatus.isRefreshing &&
       !syncStatus.stale,
   );
-
-  $effect(() => {
-    const expectedConfiguration = metadataConfigured;
-    untrack(() => void load(expectedConfiguration));
-  });
-
-  $effect(() => {
-    const revision = dataRevision;
-    if (observedDataRevision === null) {
-      observedDataRevision = revision;
-      return;
-    }
-    if (revision === observedDataRevision) return;
-    observedDataRevision = revision;
-    untrack(() => void load());
-  });
 
   $effect(() => {
     if (channels.length > 0 && !playbackReady) {
@@ -191,21 +171,6 @@
     });
   });
 
-  async function load(expectedConfiguration = metadataConfigured) {
-    const current = requests.begin();
-    loading = channels.length === 0;
-    error = null;
-    try {
-      const snapshot = await api.kickSnapshot();
-      if (expectedConfiguration !== metadataConfigured || !current()) return;
-      channels = snapshot.channels;
-    } catch (caught) {
-      if (current()) error = normalizeError(caught);
-    } finally {
-      if (current()) loading = false;
-    }
-  }
-
   async function refresh() {
     error = null;
     try {
@@ -224,8 +189,7 @@
     try {
       const added = await api.addKickTrackedChannel(value);
       channelInput = '';
-      await load();
-      onAccountChanged();
+      await onAccountChanged();
       showToast({
         key: 'kick-channel-added',
         tone: 'success',
@@ -249,7 +213,7 @@
     error = null;
     try {
       await api.removeKickTrackedChannel(channel.slug);
-      await load();
+      await onAccountChanged();
     } catch (caught) {
       error = normalizeError(caught);
     } finally {
@@ -381,7 +345,7 @@
     class="relative pt-3 pr-3"
     data-feed-content
   >
-    {#if loading}
+    {#if !feed}
       <MediaSkeleton
         label="Loading Kick channels"
         layout="feed"
@@ -393,7 +357,7 @@
         title="Kick action failed"
         message={error.message}
         actionLabel="Retry"
-        onAction={load}
+        onAction={() => void onAccountChanged()}
       />
     {:else if channels.length === 0}
       <p class="py-12 text-center text-sm text-muted">No tracked channels.</p>

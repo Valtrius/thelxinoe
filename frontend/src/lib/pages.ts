@@ -144,5 +144,14 @@ export async function preloadPage(route: AppRoute) {
     await pages.library();
   else if (route.section === 'Playlists') await pages.playlists();
   else if (route.section === 'Statistics') await pages.statistics();
-  else await pages.providers();
+  // The platform's view loads beside its page, not once the account arrives.
+  else
+    await Promise.all([
+      pages.providers(),
+      route.section === 'YouTube'
+        ? providerPages.YoutubeView()
+        : route.section === 'Twitch'
+          ? providerPages.TwitchView()
+          : providerPages.KickView(),
+    ]);
 }

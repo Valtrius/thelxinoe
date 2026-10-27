@@ -1,3 +1,5 @@
+import { dateFormat } from './intl';
+
 // Presentation for audit action keys. Categories follow the key's first
 // segment so dynamic families such as `stack.*` or `media.*.*` stay grouped.
 export const auditCategories = [
@@ -210,7 +212,7 @@ export function auditDays<T extends { created_at?: number }>(
       existing.rows.push(row);
       continue;
     }
-    const date = new Intl.DateTimeFormat('en', {
+    const date = dateFormat('en', {
       timeZone,
       weekday: 'long',
       month: 'long',

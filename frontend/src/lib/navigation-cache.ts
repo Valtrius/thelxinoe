@@ -1,7 +1,7 @@
 import { inBackground, trackPageWork } from './page-readiness';
 
 export type PageSource = 'catalog' | 'discover' | 'youtube' | 'twitch' | 'kick';
-type Entry = { source: PageSource; json: string; at: number };
+type Entry = { source: PageSource; json: string; at: number; stale?: boolean };
 type Pending = { source: PageSource; value: Promise<unknown> };
 
 export class NavigationCache {
@@ -29,6 +29,13 @@ export class NavigationCache {
       if (sources.includes(entry.source)) this.pending.delete(key);
   }
 
+  // Keeps the snapshots, so pages still show them at once, but rereads them
+  // behind the page on its next read.
+  expire(...sources: PageSource[]) {
+    for (const entry of this.entries.values())
+      if (sources.includes(entry.source)) entry.stale = true;
+  }
+
   private remove(key: string) {
     const previous = this.entries.get(key);
     if (previous) this.bytes -= (key.length + previous.json.length) * 2;
@@ -54,7 +61,7 @@ export class NavigationCache {
       this.entries.set(cacheKey, cached);
     }
     const restored = cached ? accept(JSON.parse(cached.json) as T) : undefined;
-    if (cached && Date.now() - cached.at < freshFor)
+    if (cached && !cached.stale && Date.now() - cached.at < freshFor)
       return Promise.resolve(restored);
     const read = () =>
       trackPageWork(() => {
@@ -115,7 +122,13 @@ export class NavigationCache {
 
 export const navigationCache = new NavigationCache();
 
-export function invalidatePageEvent(kind: string) {
+// `progress` marks a playback report that repeats its session's state: it only
+// moves a position, which pages may show a moment late.
+export function invalidatePageEvent(kind: string, progress = false) {
+  if (progress) {
+    navigationCache.expire('catalog', 'youtube');
+    return;
+  }
   if (kind === 'server.reconnected' || kind === 'account.profile.changed') {
     navigationCache.invalidate(
       'catalog',
@@ -176,6 +189,10 @@ export function invalidatePageWrite(path: string) {
       'twitch',
       'kick',
     );
-  if (/^\/playback(?:\/[^/]+\/progress|\/[^/]+)?$/.test(path))
+  // A player reports its position every few seconds; its state changes arrive
+  // as events.
+  if (/^\/playback\/[^/]+\/progress$/.test(path))
+    navigationCache.expire('catalog', 'youtube');
+  else if (/^\/playback(?:\/[^/]+)?$/.test(path))
     navigationCache.invalidate('catalog', 'youtube');
 }

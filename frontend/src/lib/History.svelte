@@ -12,6 +12,7 @@
     auditLabel,
     type AuditCategory,
   } from './audit-events';
+  import { dateFormat } from './intl';
   import { LatestRequest } from './latest-request';
   import { time } from './playback';
   import type { StatisticsPlatform, StatisticsRange } from './statistics/types';
@@ -161,7 +162,7 @@
   function date(value?: number) {
     return value === undefined
       ? ''
-      : new Intl.DateTimeFormat('en', {
+      : dateFormat('en', {
           dateStyle: 'medium',
           timeStyle: 'short',
           timeZone: user.timezone,

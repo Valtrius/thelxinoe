@@ -295,7 +295,9 @@
         revisionReady = true;
         return;
       }
-      forceData = true;
+      // Library and YouTube events change the YouTube feed. Twitch and Kick
+      // feeds change with their account's sync, which the read compares.
+      if (platform === 'youtube') forceData = true;
       void load();
     });
   });
@@ -458,13 +460,13 @@
       />{:then { default: KickView }}<KickView
         {admin}
         connected={!!kick?.connected}
-        onAccountChanged={() => void load()}
+        onAccountChanged={load}
         {syncStatus}
         {playback}
         {activeSessions}
         {cardColumns}
         metadataConfigured={!!kick?.configured}
-        {dataRevision}
+        feed={kick}
         onNavigateSettings={navigateSettings}
         onCardColumnsChange={(video_columns) =>
           updateAppearance({ video_columns })}

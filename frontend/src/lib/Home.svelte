@@ -17,7 +17,11 @@
     type OnlineAccount,
     type KickFeed,
   } from './providers/api';
-  import type { YoutubeVideo, TwitchLiveStream } from './providers/types';
+  import type {
+    YoutubeProgressEvent,
+    YoutubeVideo,
+    TwitchLiveStream,
+  } from './providers/types';
   import { twitchPreview, twitchPreviewSet } from './providers/utils';
   import { LatestRequest } from './latest-request';
   import { RefreshTask } from './refresh-task';
@@ -25,7 +29,7 @@
   import Button from './ui/Button.svelte';
   import Notice from './ui/Notice.svelte';
   import LibraryCard from './ui/LibraryCard.svelte';
-  import { activity } from './activity';
+  import { activity, byMedia } from './activity';
   import MediaRow from './ui/MediaRow.svelte';
   import MediaSkeleton from './ui/MediaSkeleton.svelte';
   import LiveCard from './providers/components/ui/LiveCard.svelte';
@@ -123,6 +127,7 @@
     kick: new RefreshTask(() => loadKick($providers.kick), 60_000),
   };
   const pending = new SvelteSet<string>();
+  const activityOf = $derived(byMedia($activity));
   const busy = $derived(Object.values(loading).some(Boolean));
   function youtubeItem(video: YoutubeVideo & { last_played?: number }): Item {
     return {
@@ -383,7 +388,24 @@
     Object.values(reads).forEach((read) => void read.refresh());
   }
   onMount(() => {
-    const changed = () => void reads.youtube.refresh();
+    // A report moves the card of a video already in progress. A video that
+    // starts or changes watched state changes the rows instead.
+    const changed = (event: Event) => {
+      const progress = (event as CustomEvent<YoutubeProgressEvent>).detail;
+      const index = youtube.continue_watching.findIndex(
+        (video) => video.videoId === progress.videoId,
+      );
+      const video = youtube.continue_watching[index];
+      if (!video || video.isWatched !== progress.isWatched) {
+        void reads.youtube.refresh();
+        return;
+      }
+      youtube.continue_watching[index] = {
+        ...video,
+        positionSeconds: progress.positionSeconds,
+        watchedPercentage: progress.watchedPercentage,
+      };
+    };
     const stops = Object.values(reads).map((read) => read.start(false));
     window.addEventListener('thelxinoe-youtube-progress', changed);
     return () => {
@@ -480,9 +502,7 @@
       {#each continuing as item (item.id)}
         <LibraryCard
           {item}
-          activity={$activity.filter((entry) =>
-            entry.media_ids.includes(item.id),
-          )}
+          activity={activityOf(item.id)}
           landscape
           keyPrefix="home-continue"
           open={() => playItem(item, true)}
@@ -508,9 +528,7 @@
           {#each library.next_up as item (item.id)}
             <LibraryCard
               {item}
-              activity={$activity.filter((entry) =>
-                entry.media_ids.includes(item.id),
-              )}
+              activity={activityOf(item.id)}
               landscape
               keyPrefix="home-next"
               open={() => playItem(item)}
@@ -532,9 +550,7 @@
           {#each youtube.next_up.map(youtubeItem) as item (item.id)}
             <LibraryCard
               {item}
-              activity={$activity.filter((entry) =>
-                entry.media_ids.includes(item.id),
-              )}
+              activity={activityOf(item.id)}
               landscape
               keyPrefix="home-youtube"
               open={() => playItem(item)}
@@ -610,9 +626,7 @@
         {#each shelf.items as item (item.id)}
           <LibraryCard
             {item}
-            activity={$activity.filter((entry) =>
-              entry.media_ids.includes(item.id),
-            )}
+            activity={activityOf(item.id)}
             landscape
             keyPrefix={`home-${shelf.label}`}
             open={() => details(item.id, item.kind)}

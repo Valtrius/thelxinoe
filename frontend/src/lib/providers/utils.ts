@@ -1,4 +1,5 @@
 import { createSubscriber } from 'svelte/reactivity';
+import { dateFormat, numberFormat, relativeTimeFormat } from '../intl';
 import type { Route } from './types';
 
 export const routes: Route[] = [
@@ -36,7 +37,7 @@ export function relativeTime(value?: string | null, now = Date.now()): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return 'Unknown';
   const seconds = Math.round((timestamp - now) / 1000);
-  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const formatter = relativeTimeFormat({ numeric: 'auto' });
   if (Math.abs(seconds) < 60) return formatter.format(seconds, 'second');
   const minutes = Math.round(seconds / 60);
   if (Math.abs(minutes) < 60) return formatter.format(minutes, 'minute');
@@ -68,7 +69,7 @@ export function liveNow(): number {
 }
 
 export function formatViewers(viewers: number): string {
-  return new Intl.NumberFormat(undefined, {
+  return numberFormat({
     notation: viewers >= 1000 ? 'compact' : 'standard',
     maximumFractionDigits: 1,
   }).format(viewers);
@@ -91,7 +92,7 @@ export function localDateTime(value?: string | null): string {
   if (!value) return 'an unknown time';
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return 'an unknown time';
-  return new Intl.DateTimeFormat(undefined, {
+  return dateFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(timestamp);

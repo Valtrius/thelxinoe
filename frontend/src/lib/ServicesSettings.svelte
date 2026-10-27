@@ -16,6 +16,7 @@
   import { activity as runningActivity, startActivity } from './activity';
   import { api, ApiError, desktop } from './api';
   import { RefreshTask } from './refresh-task';
+  import { inBackground } from './page-readiness';
   import { followLink, routeHref, sectionRoute } from './navigation';
   import Button from './ui/Button.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
@@ -373,13 +374,16 @@
     detailLoading[kind] = true;
     detailErrors[kind] = '';
     try {
-      if (manager(kind) && runtime(kind)?.running !== false)
+      if (manager(kind) && runtime(kind)?.running !== false) {
         await loadManagerOptions(kind);
-      else if (
+        selectedRead = kind;
+      } else if (
         supportService(kind) &&
         (kind === 'prowlarr' || kind === 'nzbget')
-      )
+      ) {
         await refreshSupport(kind);
+        selectedRead = kind;
+      }
     } catch (error) {
       detailErrors[kind] = String(error);
     } finally {
@@ -511,8 +515,17 @@
     }
   }
   const reads = new RefreshTask(refreshData, 4000);
-  const refresh = reads.refresh;
+  // The selected service itself is asked when it is chosen and after a change,
+  // made here or reported by an event, not on every poll.
+  let changed = true;
+  let selectedRead: ServiceKind | undefined;
+  const refresh = () => {
+    changed = true;
+    return reads.refresh();
+  };
   async function refreshData() {
+    const reread = changed;
+    changed = false;
     await Promise.all([
       loadManagers(),
       loadSupport(),
@@ -520,10 +533,26 @@
       loadStack(),
       loadStages(),
       loadConnections(),
+      loadContainers(),
     ]);
-    await loadContainers();
-    void loadSelectedData();
+    // The panel shows its own skeleton while it loads.
+    if (reread || selectedRead !== selectedKind)
+      void inBackground(() => loadSelectedData());
   }
+  // NZBGet's queue moves on its own.
+  const queueReads = new RefreshTask(
+    () => (selectedKind === 'nzbget' ? loadSelectedData() : Promise.resolve()),
+    4000,
+  );
+  let observedRevision: number | undefined;
+  $effect(() => {
+    const next = revision;
+    untrack(() => {
+      if (observedRevision !== undefined && observedRevision !== next)
+        void refresh();
+      observedRevision = next;
+    });
+  });
   let connectionLoad = 0;
   async function loadConnections() {
     const request = ++connectionLoad;
@@ -779,7 +808,10 @@
     await loadUpdateData();
   }
 
-  onMount(() => reads.start());
+  onMount(() => {
+    const stops = [reads.start(), queueReads.start(false)];
+    return () => stops.forEach((stop) => stop());
+  });
 </script>
 
 <section

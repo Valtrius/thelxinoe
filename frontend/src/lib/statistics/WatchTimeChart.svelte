@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dateFormat } from '../intl';
   import { eyebrowTextClass } from '../ui/styles';
   import { visibleSources } from './helpers';
   import { chartTooltipPosition } from './helpers';
@@ -46,18 +47,18 @@
   function periodLabel(periodStart: string, compact = false) {
     const value = new Date(`${periodStart}T12:00:00`);
     if (interval === 'month') {
-      return new Intl.DateTimeFormat(undefined, {
+      return dateFormat(undefined, {
         month: compact ? 'short' : 'long',
         year: compact ? '2-digit' : 'numeric',
       }).format(value);
     }
     if (interval === 'week') {
-      return new Intl.DateTimeFormat(undefined, {
+      return dateFormat(undefined, {
         month: 'short',
         day: 'numeric',
       }).format(value);
     }
-    return new Intl.DateTimeFormat(undefined, {
+    return dateFormat(undefined, {
       month: compact ? undefined : 'short',
       day: 'numeric',
       weekday: compact ? undefined : 'short',

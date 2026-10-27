@@ -126,6 +126,11 @@
     void $providers;
     if (!providerEnabled(platform)) platform = 'all';
   });
+  // Reconnecting reads the providers again; only a change in which are enabled
+  // changes the statistics.
+  const enabledProviders = $derived(
+    `${$providers.youtube}:${$providers.twitch}:${$providers.kick}`,
+  );
   $effect(() => {
     const selection = [
       range,
@@ -134,7 +139,7 @@
       user.id,
       user.role,
       timezone,
-      $providers,
+      enabledProviders,
     ];
     void selection;
     const task = new RefreshTask(() => loadOverview(overview !== null), 30_000);

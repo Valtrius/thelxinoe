@@ -1,3 +1,5 @@
+import { dateFormat } from '../intl';
+
 // Radarr/Sonarr state the server caches for each title. Regular users never see
 // `missing`, `unmonitored` or `monitored`; the server collapses them to
 // `unavailable` before replying.
@@ -31,15 +33,12 @@ export type StatusTone = 'success' | 'accent' | 'warning' | 'muted';
 export const isTitleRef = (id: string) => /^(tmdb|tvdb):\d+$/.test(id);
 
 function yearIn(date: Date, timezone: string) {
-  return new Intl.DateTimeFormat('en', {
-    timeZone: timezone,
-    year: 'numeric',
-  }).format(date);
+  return dateFormat('en', { timeZone: timezone, year: 'numeric' }).format(date);
 }
 
 export function day(seconds: number, timezone: string, now: number) {
   const date = new Date(seconds * 1000);
-  return new Intl.DateTimeFormat(undefined, {
+  return dateFormat(undefined, {
     timeZone: timezone,
     day: 'numeric',
     month: 'short',

@@ -289,10 +289,6 @@ export interface KickLiveStream {
   fetchedAt: string;
 }
 
-export interface KickSnapshot {
-  channels: KickChannel[];
-}
-
 export interface ExecutableDiagnostic {
   kind: string;
   detected: boolean;
