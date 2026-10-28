@@ -628,7 +628,10 @@ async fn maintain_once(state: &AppState) -> anyhow::Result<()> {
     // Only runtimes already published before the database observation are eligible.
     let candidates = state.playback.runs().await;
     let streams = crate::online::streams::sessions(state).await;
-    let active = storage::expire_sessions(&state.db).await?;
+    let (active, changed) = storage::expire_sessions(&state.db).await?;
+    if changed {
+        state.notify_events();
+    }
     let ids = active.keys().cloned().collect::<Vec<_>>();
     for stopped in state.playback.maintain(&candidates, &ids).await? {
         let handle = &stopped.handle;
