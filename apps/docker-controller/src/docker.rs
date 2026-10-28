@@ -45,11 +45,50 @@ pub(crate) async fn ensure_pinned_image(image: &str) -> Result<Value> {
     match engine(&path).await {
         Ok(value) => Ok(value),
         Err((StatusCode::NOT_FOUND, _)) => {
-            pull_image(image, |_| Ok(())).await?;
+            registry_retries(|| pull_image(image, |_| Ok(()))).await?;
             engine(&path).await
         }
         Err(error) => Err(error),
     }
+}
+/// Seconds between attempts. Registries reset connections, time out and rate-limit for a
+/// minute or two when many hosts update at the same hour.
+const REGISTRY_RETRIES: [u64; 4] = [5, 15, 30, 60];
+/// Run a registry operation again while it fails in a way that passes.
+pub(crate) async fn registry_retries<T, F>(mut attempt: impl FnMut() -> F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    for wait in REGISTRY_RETRIES {
+        match attempt().await {
+            Err(error) if transient(&error) => {
+                eprintln!("Registry request will retry in {wait} s: {}", error.1);
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            }
+            result => return result,
+        }
+    }
+    attempt().await
+}
+/// Refusals, missing images and full storage stay; anything else Docker or the registry
+/// failed at, and rate limits, may pass.
+fn transient((status, message): &Failure) -> bool {
+    let message = message.to_ascii_lowercase();
+    let permanent = [
+        "authoriz",
+        "denied",
+        "not found",
+        "not available",
+        "manifest unknown",
+        "storage is full",
+        "no space",
+    ]
+    .iter()
+    .any(|reason| message.contains(reason));
+    !permanent
+        && (*status == StatusCode::SERVICE_UNAVAILABLE
+            || message.contains("rate limit")
+            || message.contains("toomanyrequests"))
 }
 pub(crate) async fn pull_image(
     image: &str,
@@ -622,6 +661,46 @@ mod tests {
             detail("GET https://admin:hunter2@radarr:7878/api failed: Authorization: Bearer abc"),
             "GET https://[redacted]@radarr:7878/api failed: Authorization: Bearer [redacted]"
         );
+    }
+    #[test]
+    fn registry_failures_retry_only_when_they_may_pass() {
+        let path = "/distribution/lscr.io/linuxserver/radarr:latest/json";
+        for (status, message, retry) in [
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Get \"https://lscr.io/v2/\": net/http: TLS handshake timeout",
+                true,
+            ),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "toomanyrequests: retry-after: 747.919µs, allowed: 44000/minute",
+                true,
+            ),
+            (
+                StatusCode::UNAUTHORIZED,
+                "unauthorized: authentication required",
+                false,
+            ),
+            (StatusCode::NOT_FOUND, "manifest unknown", false),
+        ] {
+            let failure = engine_failure(&reqwest::Method::GET, path, status, message);
+            assert_eq!(transient(&failure), retry, "{message}");
+        }
+        for (category, retry) in [
+            ("Image registry rate limit exceeded", true),
+            ("Image download timed out", true),
+            ("Image download transport failed", true),
+            ("Image registry authorization failed", false),
+            ("Image registry manifest not found", false),
+            ("Docker image storage is full", false),
+        ] {
+            let failure = pull_failure("image", "stream", category);
+            assert_eq!(transient(&failure), retry, "{category}");
+        }
+        assert!(!transient(&(
+            StatusCode::CONFLICT,
+            "Controller does not hold the Docker mutation lease".into()
+        )));
     }
     #[test]
     fn worker_limits_avoid_settings_engines_refuse() {

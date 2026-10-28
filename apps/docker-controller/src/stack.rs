@@ -706,54 +706,40 @@ pub(crate) async fn stable_image(t: templates::Template) -> Result<String> {
     if let Some(image) = templates::pinned_image(t)? {
         return Ok(image);
     }
-    for attempt in 0..3 {
-        if let Ok(descriptor) =
-            engine(&format!("/distribution/{}:{}/json", t.repository, t.tag)).await
-            && let Some(digest) = descriptor["Descriptor"]["digest"].as_str().filter(|v| {
-                v.starts_with("sha256:")
-                    && v.len() == 71
-                    && v[7..].bytes().all(|b| b.is_ascii_hexdigit())
-            })
-        {
-            return Ok(format!("{}@{digest}", t.repository));
-        }
-        if attempt < 2 {
-            tokio::time::sleep(std::time::Duration::from_secs(2 * (attempt + 1))).await;
-        }
-    }
-    Err(conflict(
-        "Could not resolve the current service image. Check Docker registry access and retry setup",
-    ))
+    let path = format!("/distribution/{}:{}/json", t.repository, t.tag);
+    let descriptor = crate::docker::registry_retries(|| engine(&path)).await;
+    descriptor
+        .ok()
+        .and_then(|descriptor| {
+            descriptor["Descriptor"]["digest"]
+                .as_str()
+                .filter(|v| {
+                    v.starts_with("sha256:")
+                        && v.len() == 71
+                        && v[7..].bytes().all(|b| b.is_ascii_hexdigit())
+                })
+                .map(|digest| format!("{}@{digest}", t.repository))
+        })
+        .ok_or_else(|| {
+            conflict(
+                "Could not resolve the current service image. Check Docker registry access and retry setup",
+            )
+        })
 }
 async fn pull_image(image: &str) -> Result<()> {
-    if engine(&format!("/images/{image}/json")).await.is_ok() {
-        return Ok(());
+    // Someone waits on an installation, so its retries share one budget.
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(240),
+        crate::docker::ensure_pinned_image(image),
+    )
+    .await
+    {
+        Ok(result) => result.map(|_| ()),
+        Err(_) => Err((
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "Image download retry budget expired".into(),
+        )),
     }
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(240);
-    let mut last = unavailable();
-    for attempt in 0..3 {
-        match tokio::time::timeout_at(deadline, crate::docker::pull_image(image, |_| Ok(()))).await
-        {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(error)) => last = error,
-            Err(_) => {
-                return Err((
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    "Image download retry budget expired".into(),
-                ));
-            }
-        }
-        if ["authorization", "not found", "storage is full"]
-            .iter()
-            .any(|reason| last.1.contains(reason))
-        {
-            return Err(last);
-        }
-        if attempt < 2 {
-            tokio::time::sleep(std::time::Duration::from_secs(2 * (attempt + 1))).await;
-        }
-    }
-    Err(last)
 }
 async fn releases() -> Result<Json<Value>> {
     let mut pending = tokio::task::JoinSet::new();
