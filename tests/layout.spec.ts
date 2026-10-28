@@ -1248,13 +1248,13 @@ for (const state of [
           exact: true,
         }),
       ).toBeEnabled();
-    if (state === 'recovery-required')
-      await expect(
-        page.getByRole('button', {
-          name: 'Recover before activation',
-          exact: true,
-        }),
-      ).toBeEnabled();
+    // A blocked check that restored its service leaves nothing to recover.
+    const recover = page.getByRole('button', {
+      name: 'Recover before activation',
+      exact: true,
+    });
+    if (state === 'recovery-required') await expect(recover).toBeEnabled();
+    if (state === 'blocked') await expect(recover).toHaveCount(0);
     const service = page.getByRole('article', { name: 'Radarr service' });
     await expect(
       service.locator('.rail-identity:not(.inactive) .service-status'),

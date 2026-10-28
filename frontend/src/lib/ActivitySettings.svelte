@@ -31,8 +31,18 @@
     complete: 'ok',
     failed: 'bad',
   };
+  const pinned = $derived(
+    new Set(
+      $attention
+        .filter((item) => item.target === 'jobs')
+        .map((item) => item.resource),
+    ),
+  );
+  // Failures stay on top until they are dismissed; the sort keeps each group's order.
   const visible = $derived(
-    jobs.filter((job) => state === 'all' || job.state === state),
+    jobs
+      .filter((job) => state === 'all' || job.state === state)
+      .sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id))),
   );
 </script>
 

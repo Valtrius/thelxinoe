@@ -650,6 +650,70 @@ test('service labels stay inside their tabs across the sidebar breakpoint', asyn
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('job failures stay on top of background jobs until dismissed', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'jobs',
+  });
+  await page.route('**/api/v1/admin/jobs', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          { id: 'newest', kind: 'Newest refresh', state: 'complete' },
+          { id: 'old-failure', kind: 'Old failure', state: 'failed' },
+          {
+            id: 'failed',
+            kind: 'Failed update',
+            state: 'failed',
+            error: 'Image registry rate limit exceeded',
+          },
+        ],
+      },
+    }),
+  );
+  let dismissed = false;
+  await page.route('**/api/v1/me/attention**', (route) => {
+    if (route.request().method() === 'PUT') {
+      dismissed = true;
+      return route.fulfill({ json: { saved: true } });
+    }
+    return route.fulfill({
+      json: {
+        items: dismissed
+          ? []
+          : [
+              {
+                id: 'job:failed',
+                severity: 'error',
+                message: 'A background job failed.',
+                target: 'jobs',
+                resource: 'failed',
+                revision: '1:1',
+                dismissible: true,
+                media_ids: [],
+              },
+            ],
+        activity: [],
+      },
+    });
+  });
+  await page.goto('/');
+  const rows = page.locator('.settings-card .setting-row');
+  await expect(rows.first()).toContainText('Failed update');
+  await expect(rows.nth(1)).toContainText('Newest refresh');
+  await expect(rows.nth(2)).toContainText('Old failure');
+  await rows
+    .first()
+    .getByRole('button', { name: 'Dismiss failure', exact: true })
+    .click();
+  await expect(rows.first()).toContainText('Newest refresh');
+  await expect(rows.last()).toContainText('Failed update');
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('activity and audit filters preserve real actions and older-page queries', async ({
   page,
 }, testInfo) => {

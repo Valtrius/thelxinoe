@@ -277,6 +277,18 @@ async fn run_locked(state: &AppState, key: &str, action: &str) -> Result<()> {
         .flatten()
         .find(|u| u["id"] == key)
         .cloned();
+    // The controller refused this attempt before journaling it, so it changed nothing.
+    if action == "recover" && existing.is_none() {
+        progress(state, key, "rolled-back", None, None).await?;
+        state
+            .emit(
+                None,
+                "service.update.changed",
+                json!({"id":key,"state":"rolled-back"}),
+            )
+            .await?;
+        return Ok(());
+    }
     let submit = match action {
         "preflight" => existing.is_none(),
         "activate" => existing.as_ref().is_some_and(|v| v["stage"] == "ready"),
@@ -463,10 +475,21 @@ async fn check_releases(state: &AppState, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Seconds before an automatic attempt that ended blocked without a verdict on its
+/// candidate (registry outage, busy service) is tried again: the next window, typically.
+const UNVERIFIED_RETRY: i64 = 6 * 3600;
+
 async fn schedule_updates(state: &AppState) -> Result<()> {
     let server_policy = crate::product::configured_policy(state).await?;
     let mut due = Vec::new();
     for candidate in storage::discovered_candidates(&state.db).await? {
+        if candidate
+            .blocked
+            .as_ref()
+            .is_some_and(|(_, updated)| now() - updated < UNVERIFIED_RETRY)
+        {
+            continue;
+        }
         let inherited = candidate.policy == "inherit";
         let mode = if inherited {
             &server_policy.policy
@@ -488,7 +511,24 @@ async fn schedule_updates(state: &AppState) -> Result<()> {
         return Ok(());
     }
     let stack = controller(state, "", None).await?;
+    let verdicts = if due.iter().any(|candidate| candidate.blocked.is_some()) {
+        controller(state, "/updates", None).await.ok()
+    } else {
+        None
+    };
     for candidate in due {
+        // A candidate that failed its checks stays blocked; without verdicts, keep waiting.
+        if let Some((attempt, _)) = &candidate.blocked
+            && verdicts.as_ref().is_none_or(|verdicts| {
+                verdicts["items"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|u| u["id"] == attempt.as_str() && u["classification"] == "incompatible")
+            })
+        {
+            continue;
+        }
         let current = stack["items"]
             .as_array()
             .into_iter()

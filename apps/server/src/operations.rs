@@ -174,6 +174,12 @@ async fn attention(
     let p = security::principal(&state, &headers).await?;
     Ok(Json(attention_storage::summary(&state.db, p).await?))
 }
+pub(crate) async fn attention_jobs(
+    state: &AppState,
+    principal: thelxinoe_core::Principal,
+) -> anyhow::Result<Vec<String>> {
+    attention_storage::jobs(&state.db, principal).await
+}
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Acknowledgment {

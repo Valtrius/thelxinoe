@@ -498,6 +498,91 @@ async fn automatic_scheduling_uses_cached_discovery_at_window_open_and_worker_re
     );
 }
 
+// A registry outage at window open must not hold an image back until a newer one appears.
+#[tokio::test]
+async fn automatic_attempts_retry_unverified_candidates_in_a_later_window_only() {
+    let (_temp, state, _cookie) = fixture().await;
+    managed(&state, "automatic").await;
+    allow_maintenance_now(&state).await;
+    check_releases(&state, false).await.unwrap();
+    let queue = thelxinoe_jobs::Queue(state.db.clone());
+    schedule_updates(&state).await.unwrap();
+    let mut job = queue.claim_services().await.unwrap().unwrap();
+    let mut verdicts = Vec::new();
+    for (classification, retried) in [("unable-to-verify", true), ("incompatible", false)] {
+        let key = job.payload["id"].as_str().unwrap().to_owned();
+        progress(
+            &state,
+            &key,
+            "blocked",
+            None,
+            Some("Image registry rate limit exceeded".into()),
+        )
+        .await
+        .unwrap();
+        queue.finish(&job, None).await.unwrap();
+        verdicts.push(json!({"id":key,"stage":"blocked","classification":classification}));
+        state
+            .managers
+            .docker
+            .lock()
+            .unwrap()
+            .insert("stack/updates".into(), json!({ "items": verdicts }));
+        schedule_updates(&state).await.unwrap();
+        assert!(queue.claim_services().await.unwrap().is_none());
+        state
+            .db
+            .write("test.later_window", |db| {
+                db.execute(
+                    "UPDATE service_updates SET updated_at=updated_at-?1",
+                    [UNVERIFIED_RETRY],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        schedule_updates(&state).await.unwrap();
+        match queue.claim_services().await.unwrap() {
+            Some(retry) => job = retry,
+            None => assert!(!retried, "{classification}"),
+        }
+    }
+}
+
+// The controller refused this preflight before it journaled anything.
+#[tokio::test]
+async fn recovering_an_attempt_the_controller_never_journaled_settles_it() {
+    let (_temp, state, cookie) = fixture().await;
+    let service = managed(&state, "notify").await;
+    let key = id();
+    let insert = key.clone();
+    state.db.write("test.refused_preflight", move |db| {
+        db.execute("INSERT INTO service_updates(id,service_id,state,error,created_at,updated_at,automatic,candidate) VALUES (?1,?2,'blocked','Could not resolve the current service image',1,1,1,'repository@new')", params![insert, service])?;
+        Ok(())
+    }).await.unwrap();
+    state
+        .managers
+        .docker
+        .lock()
+        .unwrap()
+        .insert("stack/updates".into(), json!({"items":[]}));
+    let recover = call(
+        &state,
+        &format!("/api/v1/admin/service-updates/{key}/recover"),
+        "POST",
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(recover.0, StatusCode::OK, "{}", recover.2);
+    let queue = thelxinoe_jobs::Queue(state.db.clone());
+    let job = queue.claim_services().await.unwrap().unwrap();
+    assert!(run_job(&state, &job).await.unwrap());
+    let value = storage::list(&state.db).await.unwrap();
+    assert_eq!(value["items"][0]["state"], "rolled-back");
+    assert!(value["items"][0]["error"].is_null());
+}
+
 #[tokio::test]
 async fn matching_images_do_not_queue_updates_and_missing_releases_surface_errors() {
     let (_temp, state, _cookie) = fixture().await;

@@ -201,15 +201,18 @@ pub(super) struct DiscoveredCandidate {
     pub window_start: u8,
     pub window_end: u8,
     pub image: String,
+    /// The latest automatic attempt at this image that ended blocked, and when.
+    pub blocked: Option<(String, i64)>,
 }
 
 pub(super) async fn discovered_candidates(
     db: &Database,
 ) -> anyhow::Result<Vec<DiscoveredCandidate>> {
     db.read("managers.updates.discovered_candidates", |db| {
-        Ok(db.prepare("SELECT p.service_id,p.policy,p.window_start,p.window_end,p.candidate FROM service_update_policy p JOIN stack_provisions s ON s.id=p.service_id WHERE s.state='complete' AND s.hold IS NULL AND p.candidate IS NOT NULL AND p.error IS NULL AND NOT EXISTS(SELECT 1 FROM service_updates u WHERE u.service_id=p.service_id AND (u.state NOT IN ('committed','rolled-back','blocked','runtime-failure') OR (u.automatic=1 AND u.candidate=p.candidate AND u.state IN ('blocked','rolled-back','runtime-failure'))))")?
+        Ok(db.prepare("SELECT p.service_id,p.policy,p.window_start,p.window_end,p.candidate,b.id,b.updated_at FROM service_update_policy p JOIN stack_provisions s ON s.id=p.service_id LEFT JOIN service_updates b ON b.id=(SELECT u.id FROM service_updates u WHERE u.service_id=p.service_id AND u.automatic=1 AND u.candidate=p.candidate AND u.state='blocked' ORDER BY u.updated_at DESC,u.rowid DESC LIMIT 1) WHERE s.state='complete' AND s.hold IS NULL AND p.candidate IS NOT NULL AND p.error IS NULL AND NOT EXISTS(SELECT 1 FROM service_updates u WHERE u.service_id=p.service_id AND (u.state NOT IN ('committed','rolled-back','blocked','runtime-failure') OR (u.automatic=1 AND u.candidate=p.candidate AND u.state IN ('rolled-back','runtime-failure'))))")?
             .query_map([], |row| Ok(DiscoveredCandidate {
                 service_id: row.get(0)?, policy: row.get(1)?, window_start: row.get(2)?, window_end: row.get(3)?, image: row.get(4)?,
+                blocked: row.get::<_, Option<String>>(5)?.zip(row.get::<_, Option<i64>>(6)?),
             }))?.collect::<rusqlite::Result<Vec<_>>>()?)
     }).await
 }

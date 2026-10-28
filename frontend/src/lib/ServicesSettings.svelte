@@ -1829,7 +1829,8 @@
                         updateAction(update.id, 'activate'),
                       )}>Install verified update</Button
                   >{/if}
-                {#if ['blocked', 'recovery-required', 'rollback-activating'].includes(update.state)}<Button
+                <!-- A blocked check normally restored its service; one left updating needs recovery. -->
+                {#if ['recovery-required', 'rollback-activating'].includes(update.state) || (update.state === 'blocked' && live?.phase === 'updating')}<Button
                     variant="secondary"
                     size="sm"
                     disabled={busy}
