@@ -376,6 +376,8 @@ fn normalize(kind: &str, row: &Value) -> Value {
             value["tvdb_id"] = row["tvdbId"].clone();
             value["tmdb_id"] = row["tmdbId"].clone();
             value["imdb_id"] = row["imdbId"].clone();
+            // Auto-delete only removes a season once it has every episode this summary counts.
+            value["seasons"] = row["seasons"].clone();
         }
         "artist" => {
             value["name"] = row["artistName"].clone();
