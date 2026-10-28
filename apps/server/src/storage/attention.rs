@@ -269,6 +269,20 @@ pub(super) async fn summary(
     .await
 }
 
+/// Jobs whose failure still asks this user for attention.
+pub(super) async fn jobs(db: &Database, principal: Principal) -> anyhow::Result<Vec<String>> {
+    db.read("attention.jobs", move |db| {
+        Ok(
+            collect(db, &principal.user.id, principal.user.role == Role::Admin)?
+                .into_iter()
+                .filter(|item| item.target == AttentionTarget::Jobs)
+                .filter_map(|item| item.resource)
+                .collect(),
+        )
+    })
+    .await
+}
+
 /// A digest of every user's summary, read in one snapshot. Comparing digests finds
 /// whose attention changed without writing anything.
 pub(super) async fn digests(db: &Database) -> anyhow::Result<HashMap<String, [u8; 32]>> {

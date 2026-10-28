@@ -326,6 +326,51 @@ async fn attention_is_private_live_and_diagnostics_exclude_secret_material() {
         1
     );
 }
+async fn listed_jobs(state: &crate::AppState, cookie: &str) -> Vec<String> {
+    call(state, "/api/v1/admin/jobs", "GET", json!({}), cookie)
+        .await
+        .2["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|job| job["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+#[tokio::test]
+async fn job_list_keeps_failures_awaiting_dismissal_beyond_the_latest_jobs() {
+    let (_temp, state, alice) = fixture().await;
+    state.db.write("test.jobs", |db| {
+        db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+        db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,completed_at,error,created_at) VALUES ('failed','service.update','update','{}','failed',1,?1,'Image registry rate limit exceeded',1)", [thelxinoe_core::now()])?;
+        for index in 0..100 {
+            db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,completed_at,created_at) VALUES (?1,'metadata.refresh','media','{}','complete',1,1,?2)", rusqlite::params![format!("refresh-{index}"), 2 + index])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let jobs = listed_jobs(&state, &alice).await;
+    assert_eq!(jobs.len(), 101);
+    assert_eq!(jobs.last().unwrap(), "failed");
+    let notices = call(&state, "/api/v1/me/attention", "GET", json!({}), &alice)
+        .await
+        .2;
+    let revision = notices["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == "job:failed")
+        .unwrap()["revision"]
+        .clone();
+    let dismissed = call(
+        &state,
+        "/api/v1/me/attention/job:failed",
+        "PUT",
+        json!({ "revision": revision }),
+        &alice,
+    )
+    .await;
+    assert_eq!(dismissed.0, StatusCode::OK, "{}", dismissed.2);
+    assert_eq!(listed_jobs(&state, &alice).await.len(), 100);
+}
 #[tokio::test]
 async fn user_deletion_revokes_personal_state_and_preserves_shared_data() {
     let (_temp, state, alice) = fixture().await;

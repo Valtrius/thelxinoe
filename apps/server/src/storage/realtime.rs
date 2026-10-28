@@ -16,6 +16,8 @@ pub(super) async fn events(
     }).await
 }
 
-pub(super) async fn jobs(db: &Database) -> anyhow::Result<Vec<Value>> {
-    db.read("realtime.jobs", |db|Ok(db.prepare("SELECT id,kind,state,attempts,error,created_at FROM jobs ORDER BY created_at DESC LIMIT 100")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"attempts":r.get::<_,i64>(3)?,"error":r.get::<_,Option<String>>(4)?,"created_at":r.get::<_,i64>(5)?})))?.collect::<std::result::Result<Vec<_>,_>>()?)).await
+/// The latest jobs and any of `pinned` older than them.
+pub(super) async fn jobs(db: &Database, pinned: Vec<String>) -> anyhow::Result<Vec<Value>> {
+    let pinned = serde_json::to_string(&pinned)?;
+    db.read("realtime.jobs", move |db|Ok(db.prepare("SELECT id,kind,state,attempts,error,created_at FROM jobs WHERE id IN (SELECT id FROM jobs ORDER BY created_at DESC LIMIT 100) OR id IN (SELECT value FROM json_each(?1)) ORDER BY created_at DESC")?.query_map([pinned],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"attempts":r.get::<_,i64>(3)?,"error":r.get::<_,Option<String>>(4)?,"created_at":r.get::<_,i64>(5)?})))?.collect::<std::result::Result<Vec<_>,_>>()?)).await
 }

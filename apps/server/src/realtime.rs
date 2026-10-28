@@ -56,7 +56,9 @@ pub async fn events(
     }))
 }
 pub async fn jobs(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
-    security::require(&state, &headers, Capability::ManageServer).await?;
-    let rows = storage::jobs(&state.db).await?;
+    let p = security::require(&state, &headers, Capability::ManageServer).await?;
+    // A failure still awaiting dismissal stays listed however many jobs followed it.
+    let pinned = crate::operations::attention_jobs(&state, p).await?;
+    let rows = storage::jobs(&state.db, pinned).await?;
     Ok(Json(json!({"items":rows})))
 }
