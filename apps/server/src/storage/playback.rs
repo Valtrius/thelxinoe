@@ -157,7 +157,7 @@ pub(super) async fn report(
         // Clients move a playing video's progress from the event instead of reloading their lists.
         let mut change=json!({"id":key,"state":input.state,"media_id":media,"position":position,"duration":duration});
         if let Some(video)=media.strip_prefix("youtube:") {
-            crate::online::downloads::record_state(&tx,&user,video,position,duration)?;
+            crate::online::downloads::record_state(&tx,&user,video,position,duration,stopped)?;
             change["watched"]=json!(tx.query_row("SELECT watched FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![user,video],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false));
         } else if !crate::online::live::domain(&media) {
             tx.execute("INSERT INTO edition_progress VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id,media_id,edition) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at",params![user,media,edition,position,duration,now()])?;
@@ -186,8 +186,27 @@ pub(super) async fn fail(id: String, db: &Database) -> anyhow::Result<()> {
     .await
 }
 
+/// Playback that ends without a final report, like a closed tab, still marks its video watched
+/// past the threshold. Returns whether it recorded events.
+fn finish_abandoned_videos(db: &rusqlite::Connection, cutoff: i64) -> anyhow::Result<bool> {
+    let ended=db.prepare("SELECT p.id,p.user_id,p.youtube_video_id,p.position,p.duration FROM playback_sessions p JOIN youtube_state s ON s.user_id=p.user_id AND s.video_id=p.youtube_video_id WHERE p.state IN ('ready','playing','paused') AND p.updated_at<=?1 AND p.duration>0 AND p.position>=p.duration*0.9 AND s.watched=0")?.query_map([cutoff],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,f64>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, user, video, position, duration) in &ended {
+        db.execute(
+            "UPDATE youtube_state SET watched=1,updated_at=?3 WHERE user_id=?1 AND video_id=?2",
+            params![user, video, now()],
+        )?;
+        crate::storage::record_event(
+            db,
+            Some(user),
+            "playback.changed",
+            &json!({"id":id,"state":"stopped","media_id":format!("youtube:{video}"),"position":position,"duration":duration,"watched":true}),
+        )?;
+    }
+    Ok(!ended.is_empty())
+}
+
 pub(super) async fn maintain_write_playback_sessions(db: &Database) -> anyhow::Result<()> {
-    db.write("playback.maintain_write_playback_sessions", |db|{db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused')",[])?;crate::history::finish_stale(db)?;Ok(())}).await
+    db.write("playback.maintain_write_playback_sessions", |db|{finish_abandoned_videos(db,i64::MAX)?;db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused')",[])?;crate::history::finish_stale(db)?;Ok(())}).await
 }
 
 pub(super) async fn fail_generation(
@@ -205,12 +224,15 @@ pub(super) async fn fail_generation(
     }).await
 }
 
+/// Returns the active sessions' generations and whether expiry recorded events.
 pub(super) async fn expire_sessions(
     db: &Database,
-) -> anyhow::Result<std::collections::HashMap<String, String>> {
+) -> anyhow::Result<(std::collections::HashMap<String, String>, bool)> {
     db.write("playback.expire_sessions", |db| {
-        db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused') AND updated_at<=?1",[now()-120])?;
+        let cutoff=now()-120;
+        let changed=finish_abandoned_videos(db,cutoff)?;
+        db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused') AND updated_at<=?1",[cutoff])?;
         crate::history::finish_stale(db)?;
-        Ok(db.prepare("SELECT p.id,p.generation FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.state IN ('ready','playing','paused') AND s.expires_at>?1")?.query_map([now()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<std::result::Result<std::collections::HashMap<_,_>,_>>()?)
+        Ok((db.prepare("SELECT p.id,p.generation FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.state IN ('ready','playing','paused') AND s.expires_at>?1")?.query_map([now()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<std::result::Result<std::collections::HashMap<_,_>,_>>()?,changed))
     }).await
 }
