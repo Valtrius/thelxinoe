@@ -480,7 +480,9 @@ test('Home actions preserve resume positions and local editions, and launch live
   ] as const) {
     await page
       .getByRole('region', { name: region, exact: true })
-      .getByRole('button', { name: `Play ${title}`, exact: true })
+      .locator('article')
+      .filter({ has: page.getByRole('heading', { name: title, exact: true }) })
+      .locator('.card-primary')
       .click();
     await expect.poll(() => launches.at(-1)).toMatchObject(expected);
     await page

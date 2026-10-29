@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
+import { hold } from './helpers/touch';
 
 test.beforeEach(async ({ request }) => {
   await request.post('/__mock/reset');
@@ -324,23 +325,48 @@ for (const touch of [false, true])
   test.describe(touch ? 'tap' : 'click', () => {
     test.use({ hasTouch: touch });
 
-    test('pressing away from a library menu only closes it', async ({
+    test('library menus open on a press and pressing away only closes them', async ({
       page,
     }) => {
       const errors = track(page);
       await page.goto('/#library/movies');
       const first = card(page, 'movie-0');
       const below = card(page, 'movie-1').locator('.card-primary');
+      const menu = page.getByRole('menu');
       const url = page.url();
+      const press = (target: Locator) =>
+        touch ? target.tap() : target.click();
       // Forced, as a user presses wherever the card shows, covered or not.
       const pressBelow = () =>
         touch ? below.tap({ force: true }) : below.click({ force: true });
 
-      await first.hover();
-      await first.getByRole('button', { name: /^More actions for / }).click();
-      await expect(page.getByRole('menu')).toBeVisible();
+      // Touch devices hide the card's buttons and open its menu on a long press.
+      if (touch)
+        await hold(page, first.locator('.card-primary'), () =>
+          expect(
+            menu.getByRole('menuitem', { name: 'Mark watched' }),
+          ).toBeVisible(),
+        );
+      else {
+        await first.hover();
+        await first.getByRole('button', { name: /^More actions for / }).click();
+      }
+      await expect(menu).toBeVisible();
+      expect(page.url()).toBe(url);
       await pressBelow();
-      await expect(page.getByRole('menu')).toHaveCount(0);
+      await expect(menu).toHaveCount(0);
+      expect(page.url()).toBe(url);
+
+      // A tap opens this menu on its pointerup; the tap's click must not close it.
+      await press(
+        page.getByRole('button', {
+          name: 'Movies library actions',
+          exact: true,
+        }),
+      );
+      await expect(menu).toBeVisible();
+      await pressBelow();
+      await expect(menu).toHaveCount(0);
       expect(page.url()).toBe(url);
 
       await page

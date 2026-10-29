@@ -275,6 +275,41 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
     await page.route('**/api/v1/catalog?**', (route) =>
       route.fulfill({ json: { items: tracks } }),
     );
+    await page.route(
+      (url) => /^\/api\/v1\/catalog\/(Q0|A|B)(\/state)?$/.test(url.pathname),
+      (route) => {
+        const [id, state] = new URL(route.request().url()).pathname
+          .split('/')
+          .slice(4);
+        return route.fulfill({
+          json: state
+            ? { watched: false, favorite: false, watch_later: false }
+            : {
+                ...tracks.find((track) => track.id === id),
+                files: [{ id: 'audio', edition: '', present: true, probe: {} }],
+              },
+        });
+      },
+    );
+    await page.route('**/api/v1/playlists', (route) =>
+      route.fulfill({ json: { items: [] } }),
+    );
+    // A track card opens its details, which play it with the rest of the list.
+    const play = async (title: string) => {
+      await page
+        .locator('article')
+        .filter({
+          has: page.getByRole('heading', { name: title, exact: true }),
+        })
+        .locator('.card-primary')
+        .click();
+      await expect(
+        page.getByRole('heading', { level: 2, name: title, exact: true }),
+      ).toBeVisible();
+      await page
+        .getByRole('button', { name: 'Play media', exact: true })
+        .click();
+    };
     await page.route('**/api/v1/catalog/*/playback', (route) =>
       route.fulfill({
         json: {
@@ -341,21 +376,15 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
       }),
     );
     await page.goto('/');
-    await page
-      .getByRole('button', { name: 'Play Track Q0', exact: true })
-      .click();
+    await play('Track Q0');
     await expect(
       page.getByLabel('Music position', { exact: true }),
     ).toBeVisible();
     await expect.poll(() => prepared.length).toBe(2);
-    await page
-      .getByRole('button', { name: 'Play Track A', exact: true })
-      .click();
+    await play('Track A');
     await expect.poll(() => heldStop).toBe(true);
     if (exit === 'replace') {
-      await page
-        .getByRole('button', { name: 'Play Track B', exact: true })
-        .click();
+      await play('Track B');
       await expect(
         page
           .getByRole('region', { name: 'Music player', exact: true })

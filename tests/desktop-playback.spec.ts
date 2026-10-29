@@ -81,6 +81,22 @@ async function desktopFixture(page: Page) {
       },
     };
   }, current);
+  // Next up cards play on a click.
+  await page.route('**/api/v1/me/home', (route) =>
+    route.fulfill({
+      json: {
+        continue_watching: [],
+        next_up: [0, 1, 2].map((index) => ({
+          id: `movie-${index}`,
+          kind: 'movie',
+          title: `Fixture movie ${index}`,
+          available: true,
+        })),
+        watch_later: [],
+        favorites: [],
+      },
+    }),
+  );
   return fixture;
 }
 
@@ -111,10 +127,7 @@ async function play(page: Page, title: string) {
   const card = page.locator('article').filter({
     has: page.getByRole('heading', { name: title, exact: true }),
   });
-  await card.hover();
-  await card
-    .getByRole('button', { name: `Play ${title}`, exact: true })
-    .click();
+  await card.locator('.card-primary').click();
   return card;
 }
 
@@ -122,7 +135,7 @@ test('desktop videos start on their card and several play at once', async ({
   page,
 }, testInfo) => {
   const fixture = await desktopFixture(page);
-  await page.goto('/#library/movies');
+  await page.goto('/');
   const first = await play(page, 'Fixture movie 0');
   const starting = first.getByRole('status', {
     name: 'Starting Fixture movie 0',
@@ -176,7 +189,7 @@ test('a desktop video that fails to start explains why without a player panel', 
   page,
 }) => {
   await desktopFixture(page);
-  await page.goto('/#library/movies');
+  await page.goto('/');
   const card = await play(page, 'Fixture movie 2');
   await expect.poll(async () => (await played(page)).length).toBe(1);
   const [run] = await played(page);
