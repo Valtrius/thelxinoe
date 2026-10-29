@@ -509,11 +509,11 @@
           landscape
           keyPrefix="home-continue"
           open={() => playItem(item, true)}
-          play={() => playItem(item, true)}
           details={item.kind === 'youtube'
             ? undefined
             : () => details(item.id, item.kind)}
-          >{#snippet menu()}{#if item.video}<LibraryVideoMenu
+          >{#snippet menu(card)}{#if item.video}<LibraryVideoMenu
+                bind:open={card.open}
                 video={item.video}
                 restart={() => playItem(item)}
               />{/if}{/snippet}</LibraryCard
@@ -539,7 +539,6 @@
               landscape
               keyPrefix="home-next"
               open={() => playItem(item)}
-              play={() => playItem(item)}
               details={() => details(item.id, item.kind)}
             />
           {/each}
@@ -561,8 +560,8 @@
               landscape
               keyPrefix="home-youtube"
               open={() => playItem(item)}
-              play={() => playItem(item)}
-              >{#snippet menu()}{#if item.video}<LibraryVideoMenu
+              >{#snippet menu(card)}{#if item.video}<LibraryVideoMenu
+                    bind:open={card.open}
                     video={item.video}
                     restart={() => playItem(item)}
                   />{/if}{/snippet}</LibraryCard
@@ -641,9 +640,6 @@
             landscape
             keyPrefix={`home-${shelf.label}`}
             open={() => details(item.id, item.kind)}
-            play={['movie', 'episode', 'track'].includes(item.kind)
-              ? () => playItem(item)
-              : undefined}
             details={() => details(item.id, item.kind)}
           />
         {/each}

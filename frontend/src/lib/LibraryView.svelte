@@ -483,20 +483,8 @@
         detail={view && !breadcrumbs.length
           ? sortDetail(view.sort, item, timezone)
           : undefined}
-        play={['movie', 'episode', 'track'].includes(item.kind) &&
-        item.available
-          ? () =>
-              play({
-                id: item.id,
-                title: item.title,
-                kind: item.kind,
-                queue:
-                  item.kind === 'track'
-                    ? items.filter((i) => i.kind === 'track' && i.available)
-                    : undefined,
-              })
-          : undefined}
-        >{#snippet menu()}{#if titles && !item.virtual}<TitleMenu
+        >{#snippet menu(card)}{#if titles && !item.virtual}<TitleMenu
+              bind:open={card.open}
               id={item.id}
               kind={item.kind}
               title={item.title}

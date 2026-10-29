@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import ProgressBar from './ProgressBar.svelte';
-  import { Film, Music, Tv, Play, MoreHorizontal } from '@lucide/svelte';
+  import { Film, Music, Tv, MoreHorizontal } from '@lucide/svelte';
   import { serverUrl } from '../api';
   import AttentionDot from './AttentionDot.svelte';
   import PlatformIcon from './PlatformIcon.svelte';
@@ -15,10 +15,11 @@
   import StatusChip from './StatusChip.svelte';
   import { youtubeThumbnailSet } from '../providers/utils';
   import { libraryArtworkSet } from '../artwork';
+  import { longPress } from '../long-press';
+  import { touchDevice } from '../responsive';
   let {
     item,
     open,
-    play,
     details,
     menu,
     timezone,
@@ -48,10 +49,9 @@
     };
     keyPrefix?: string;
     open: () => void;
-    play?: () => void;
     details?: () => void;
-    /** A title menu; library sections pass it or `details`, not both. */
-    menu?: Snippet;
+    /** A title menu bound to the card's `open`; library sections pass it or `details`, not both. */
+    menu?: Snippet<[{ open: boolean }]>;
     timezone?: string;
     attention?: AttentionItem[];
     activity?: ActivityItem[];
@@ -109,23 +109,38 @@
   }
   const actionClass =
     'grid size-7.5 min-h-0 place-items-center gap-2 border border-[#ffffff30] bg-[#080b10c9] p-0 text-[0.68rem] font-semibold tracking-[0.08em] text-white uppercase';
+  let menuOpen = $state(false);
+  const menuState = {
+    get open() {
+      return menuOpen;
+    },
+    set open(value) {
+      menuOpen = value;
+    },
+  };
+  // Touch devices hide the card's buttons; a long press does what they do.
+  function hold() {
+    if (details) details();
+    else menuOpen = true;
+  }
 </script>
 
 <article
-  class={`media-tile library-tile group/library-card group/media-card relative h-full min-w-0 border border-line bg-surface shadow-card hover:border-line-strong ${mediaCardMotionClass} ${faded ? 'opacity-55 focus-within:opacity-100 hover:opacity-100' : 'opacity-100'}`}
+  use:longPress={hold}
+  class={`media-tile library-tile group/library-card group/media-card relative h-full min-w-0 border border-line bg-surface shadow-card hover:border-line-strong touch:select-none touch:[-webkit-touch-callout:none] ${mediaCardMotionClass} ${faded ? 'opacity-55 focus-within:opacity-100 hover:opacity-100' : 'opacity-100'}`}
   data-layout-key={`${keyPrefix}:${item.id}`}
   data-sidebar-resize="xy"
 >
-  {#if play || details || menu}<div
-      class="card-actions absolute top-2 right-2 z-2 flex gap-1 opacity-0 transition-opacity duration-(--animation-duration) group-hover/library-card:opacity-100 group-focus-within/library-card:opacity-100 compact:opacity-100"
+  {#if details || menu}<div
+      class={[
+        'card-actions absolute top-2 right-2 z-2 flex gap-1 transition-opacity duration-(--animation-duration)',
+        !menuOpen &&
+          (touchDevice.current
+            ? 'pointer-events-none opacity-0'
+            : 'opacity-0 group-hover/library-card:opacity-100 group-focus-within/library-card:opacity-100 compact:opacity-100'),
+      ]}
     >
-      {#if play}<button
-          class={actionClass}
-          aria-label={`Play ${item.title}`}
-          title="Play"
-          disabled={item.available === false}
-          onclick={play}><Play size={15} /></button
-        >{/if}{#if menu}{@render menu()}{/if}{#if details}<button
+      {#if menu}{@render menu(menuState)}{/if}{#if details}<button
           class={actionClass}
           title="Details and metadata"
           aria-label={`Details ${item.title}`}

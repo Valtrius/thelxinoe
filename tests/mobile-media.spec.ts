@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { hold } from './helpers/touch';
 
 test.beforeEach(async ({ request }) => {
   await request.post('/__mock/reset');
@@ -274,31 +275,6 @@ test('mobile player fits the video width, stays above feed scrolling and ignores
   });
 });
 
-async function holdVideo(
-  page: Page,
-  target: Locator,
-  opened: () => Promise<void>,
-) {
-  await target.scrollIntoViewIfNeeded();
-  const bounds = (await target.boundingBox())!;
-  const touch = await page.context().newCDPSession(page);
-  try {
-    await touch.send('Input.dispatchTouchEvent', {
-      type: 'touchStart',
-      touchPoints: [
-        { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
-      ],
-    });
-    await opened();
-  } finally {
-    await touch.send('Input.dispatchTouchEvent', {
-      type: 'touchEnd',
-      touchPoints: [],
-    });
-    await touch.detach();
-  }
-}
-
 test.describe('mobile video touch actions', () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
 
@@ -311,7 +287,7 @@ test.describe('mobile video touch actions', () => {
     await page.goto('/#online/youtube');
     const card = page.locator('article[data-video-id="preview0004"]');
     const menu = page.locator('#video-actions-preview0004');
-    await holdVideo(page, card, () =>
+    await hold(page, card, () =>
       expect(
         menu.getByRole('button', { name: 'Mark watched', exact: true }),
       ).toBeVisible(),
@@ -379,7 +355,7 @@ test.describe('mobile video touch actions', () => {
       name: 'Actions for A Quiet Journey · Episode 5',
       exact: true,
     });
-    await holdVideo(page, row, () => expect(actions).toBeVisible());
+    await hold(page, row, () => expect(actions).toBeVisible());
     await expect(
       page.getByRole('region', { name: 'Media player' }),
     ).toHaveCount(0);
@@ -401,7 +377,7 @@ test.describe('mobile video touch actions', () => {
     await actions
       .getByRole('button', { name: 'Mark watched', exact: true })
       .click();
-    await holdVideo(page, row, () =>
+    await hold(page, row, () =>
       expect(
         actions.getByRole('button', { name: 'Mark unwatched', exact: true }),
       ).toBeVisible(),
@@ -409,7 +385,7 @@ test.describe('mobile video touch actions', () => {
     await actions
       .getByRole('button', { name: 'Download', exact: true })
       .click();
-    await holdVideo(page, row, () =>
+    await hold(page, row, () =>
       expect(
         actions.getByRole('button', { name: 'Delete download', exact: true }),
       ).toBeVisible(),
@@ -417,7 +393,7 @@ test.describe('mobile video touch actions', () => {
     await actions
       .getByRole('button', { name: 'Delete download', exact: true })
       .click();
-    await holdVideo(page, row, () =>
+    await hold(page, row, () =>
       expect(
         actions.getByRole('button', { name: 'Download', exact: true }),
       ).toBeVisible(),
@@ -430,6 +406,33 @@ test.describe('mobile video touch actions', () => {
     await page.screenshot({
       path: info.outputPath('mobile-watchlist-after-actions.png'),
     });
+  });
+
+  test('holding a Home card opens its menu, or its details without one, instead of playing it', async ({
+    page,
+  }) => {
+    await page.goto('/#home');
+    const player = page.getByRole('region', { name: 'Media player' });
+    const watched = page.getByRole('menuitem', { name: 'Mark watched' });
+    await hold(
+      page,
+      page
+        .locator('article[data-layout-key="home-continue:youtube:preview0000"]')
+        .locator('.card-primary'),
+      () => expect(watched).toBeVisible(),
+    );
+    await expect(player).toHaveCount(0);
+    await watched.tap();
+    await expect(page.getByRole('menu')).toHaveCount(0);
+
+    await hold(
+      page,
+      page
+        .locator('article[data-layout-key="home-continue:episode-0"]')
+        .locator('.card-primary'),
+      () => expect(page).toHaveURL(/#library\/shows\/episode-0$/),
+    );
+    await expect(player).toHaveCount(0);
   });
 });
 

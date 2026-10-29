@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { DropdownMenu } from 'bits-ui';
   import {
     Bookmark,
@@ -65,6 +66,7 @@
     sonarr = null,
     play,
     changed,
+    open = $bindable(false),
   } = $props<{
     /** The library item; a Sonarr episode not in the library has none. */
     id: string | null;
@@ -82,10 +84,10 @@
     sonarr?: { series: string; season: number; episode?: number | null } | null;
     play?: (fileId: string) => void;
     changed?: () => void;
+    open?: boolean;
   }>();
   type Requested = TitleDialogKind | 'releases';
-  let open = $state(false),
-    loading = $state(false),
+  let loading = $state(false),
     flags = $state<Flags | null>(null),
     item = $state<CatalogItem | null>(null),
     manager = $state<ManagerEpisode | null>(null),
@@ -157,6 +159,10 @@
       if (request === generation) loading = false;
     }
   }
+  // Library cards also open the menu, with a long press.
+  $effect(() => {
+    if (open) untrack(() => void load());
+  });
 
   async function act(
     message: string,
@@ -245,12 +251,7 @@
   }
 </script>
 
-{#if !empty}<DropdownMenu.Root
-    bind:open
-    onOpenChange={(value) => {
-      if (value) void load();
-    }}
-  >
+{#if !empty}<DropdownMenu.Root bind:open>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
         {#if variant === 'card'}<button
