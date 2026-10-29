@@ -2,9 +2,16 @@
   import { onMount, type Snippet } from 'svelte';
   import { ChevronLeft, ChevronRight } from '@lucide/svelte';
   import Button from './Button.svelte';
+  import { appearance } from '../appearance';
+  import { scaleCardScope } from '../card-grid-zoom';
   import { scrollWithMotion } from '../motion';
+  import { compactViewport } from '../responsive';
 
   let { label, children } = $props<{ label: string; children: Snippet }>();
+  // Home cards are sized like the video pages' cards.
+  const columns = $derived(
+    compactViewport.current ? 2 : $appearance.video_columns,
+  );
   let rail = $state<HTMLDivElement>();
   let overflow = $state(false);
   let previous = $state(false);
@@ -59,14 +66,17 @@
         >
       </div>{/if}
   </div>
-  <div
-    bind:this={rail}
-    data-sidebar-resize="width"
-    data-sidebar-group
-    data-sidebar-resize-origin
-    onscroll={measure}
-    class="media-row-rail grid auto-cols-[clamp(14rem,23vw,20rem)] grid-flow-col items-start gap-4 overflow-x-auto overscroll-x-contain pt-1 pb-4 compact:auto-cols-[min(78vw,18rem)] compact:gap-3"
-  >
-    {@render children()}
+  <div class="min-w-0" use:scaleCardScope={columns}>
+    <div
+      bind:this={rail}
+      data-card-grid
+      data-sidebar-resize="media"
+      data-sidebar-group
+      data-sidebar-resize-origin
+      onscroll={measure}
+      class="media-row-rail grid grid-flow-col items-start overflow-x-auto overscroll-x-contain pt-1 pb-4"
+    >
+      {@render children()}
+    </div>
   </div>
 </section>

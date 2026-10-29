@@ -51,18 +51,31 @@
   } = $props();
 
   const isBusy = $derived(isPlaying || isLaunching);
+  const tones = {
+    twitch: {
+      border: 'border-[#9146ff]',
+      label: 'border-[#9146ff]/80 text-[#bf94ff]',
+      text: 'text-[#bf94ff]',
+    },
+    kick: {
+      border: 'border-[#53fc18]',
+      label: 'border-[#53fc18]/45 text-[#72ff43]',
+      text: 'text-[#72ff43]',
+    },
+  };
+  const tone = $derived(tones[platform]);
 </script>
 
 <article
   data-channel-slug={channelSlug}
   data-stream-id={streamId}
   data-playing={isPlaying}
-  class={`group group/media-card relative flex h-full flex-col overflow-hidden border bg-surface shadow-card ${mediaCardMotionClass} ${isBusy ? (platform === 'kick' ? 'border-[#53fc18]' : 'border-accent') : 'border-line hover:border-line-strong'}`}
+  class={`group group/media-card relative flex h-full flex-col overflow-hidden border bg-surface shadow-card ${mediaCardMotionClass} ${isBusy ? tone.border : 'border-line hover:border-line-strong'}`}
 >
   {#if isPlaying}
     <span
       aria-hidden="true"
-      class={`pointer-events-none absolute inset-0 z-20 border-3 ${platform === 'kick' ? 'border-[#53fc18]' : 'border-accent'}`}
+      class={`pointer-events-none absolute inset-0 z-20 border-3 ${tone.border}`}
     ></span>
   {/if}
   <div
@@ -92,7 +105,9 @@
       ></span>
     </button>
     {#if isLaunching}<LaunchingOverlay label={`Starting ${displayName}`} />{/if}
-    <div class="pointer-events-none absolute top-2 left-2 flex gap-1">
+    <div
+      class="pointer-events-none absolute top-2 left-2 flex gap-1 phone-card:card-pixels"
+    >
       {@render badges()}
       {#if isLaunching}
         <LiveCardBadge tone="playing" pulse>Launching</LiveCardBadge>
@@ -107,12 +122,12 @@
     </div>
     {#if statistics}
       <span
-        class="absolute right-2 bottom-2 border border-white/20 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-white"
+        class="absolute right-2 bottom-2 border border-white/20 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-white phone-card:card-pixels"
       >
         {formatViewers(statistics.viewerCount)} viewers
       </span>
       <span
-        class={`absolute bottom-2 left-2 border bg-black/75 px-2 py-1 font-mono text-[0.62rem] ${platform === 'kick' ? 'border-[#53fc18]/45 text-[#72ff43]' : 'border-accent/45 text-accent'}`}
+        class={`absolute bottom-2 left-2 border bg-black/75 px-2 py-1 font-mono text-[0.62rem] phone-card:card-pixels ${tone.label}`}
       >
         {elapsedTime(statistics.startedAt, liveNow())}
       </span>
@@ -130,14 +145,20 @@
         />
       {:else}
         <span
-          class={`grid size-9 shrink-0 place-items-center rounded-full border border-line bg-surface-soft text-xs ${platform === 'kick' ? 'text-[#72ff43]' : 'text-accent'}`}
+          class={`grid size-9 shrink-0 place-items-center rounded-full border border-line bg-surface-soft text-xs ${tone.text}`}
         >
           {displayName.slice(0, 1).toUpperCase()}
         </span>
       {/if}
-      <div class="min-w-0">
-        <h3 class="truncate text-sm font-semibold">{displayName}</h3>
-        <p class="mt-1 text-xs leading-5 text-muted">{title}</p>
+      <div class="min-w-0 phone-card:card-pixels">
+        <h3 class="truncate text-sm font-semibold phone-card:text-xs">
+          {displayName}
+        </h3>
+        <p
+          class="mt-1 text-xs leading-5 text-muted phone-card:mt-0.5 phone-card:text-[10px] phone-card:leading-snug"
+        >
+          {title}
+        </p>
       </div>
     </div>
     {@render metadata()}

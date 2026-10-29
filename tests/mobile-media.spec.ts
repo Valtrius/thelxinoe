@@ -7,7 +7,7 @@ test.beforeEach(async ({ request }) => {
   });
 });
 
-test('mobile media grids use three posters or two videos and retain desktop preferences', async ({
+test('mobile media grids and Home rails use three posters or two videos with readable titles and retain desktop preferences', async ({
   page,
 }, info) => {
   const errors: string[] = [];
@@ -22,17 +22,22 @@ test('mobile media grids use three posters or two videos and retain desktop pref
       'online/youtube',
       'online/twitch',
       'online/kick',
+      'home',
     ]) {
       const posters = route.startsWith('library/');
       const expected = width <= 720 ? (posters ? 3 : 2) : posters ? 5 : 7;
       await page.goto(`/#${route}`);
       const grid = page.locator('[data-card-grid]').first();
       await expect(grid).toBeVisible();
+      // Cards that fit side by side; Home rails scroll through the rest.
       const columns = () =>
-        grid.evaluate(
-          (element) =>
-            getComputedStyle(element).gridTemplateColumns.split(' ').length,
-        );
+        grid.evaluate((element) => {
+          const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
+          const card = element.firstElementChild as HTMLElement;
+          return Math.round(
+            (element.clientWidth + gap) / (card.offsetWidth + gap),
+          );
+        });
       await expect.poll(columns).toBe(expected);
       await expect
         .poll(() =>
@@ -44,6 +49,21 @@ test('mobile media grids use three posters or two videos and retain desktop pref
       if (width <= 720) {
         await grid.dispatchEvent('wheel', { ctrlKey: true, deltaY: -100 });
         await expect.poll(columns).toBe(expected);
+        // The grid zooms its cards out; their titles keep a readable size.
+        const titleSize = await grid
+          .locator('h3')
+          .first()
+          .evaluate((title) => {
+            let zoom = 1;
+            for (
+              let node: Element | null = title;
+              node;
+              node = node.parentElement
+            )
+              zoom *= Number(getComputedStyle(node).zoom);
+            return parseFloat(getComputedStyle(title).fontSize) * zoom;
+          });
+        expect(titleSize).toBeCloseTo(12, 1);
       }
       evidence.push({ width, route, columns: await columns() });
       await page.screenshot({

@@ -70,6 +70,16 @@ img[data-arrived] {
   }
 }
 @custom-variant touch (@media (pointer: coarse) and (hover: none));
+/* Phones zoom card grids far below their desktop size. Card parts marked
+   `phone-card:card-pixels` lay out in real pixels again, so the sizes given
+   under this variant are the sizes shown on the phone. */
+@custom-variant phone-card {
+  @variant compact {
+    &:where([data-card-grid] *) {
+      @slot;
+    }
+  }
+}
 @custom-variant tight (@media (max-width: 440px));
 @custom-variant player-small (@container player (max-width: 380px));
 @custom-variant desktop-shell (&:where(.desktop-app *));
@@ -295,6 +305,10 @@ img[data-arrived] {
 }
 
 @utility media-card-popover {
+  @apply [zoom:var(--media-card-inverse-scale,1)];
+}
+
+@utility card-pixels {
   @apply [zoom:var(--media-card-inverse-scale,1)];
 }
 

@@ -66,7 +66,7 @@
       class="absolute inset-0 bg-[repeating-linear-gradient(135deg,transparent_0_18px,rgba(83,252,24,0.08)_18px_19px)]"
     ></span>
     <span
-      class="absolute inset-0 grid place-items-center text-[0.62rem] font-semibold tracking-[0.08em] text-white/45 uppercase"
+      class="absolute inset-0 grid place-items-center text-[0.62rem] font-semibold tracking-[0.08em] text-white/45 uppercase phone-card:card-pixels"
     >
       <span class="grid justify-items-center gap-2">
         {#if offlineConfirmed}Offline{:else}<Play class="size-8" />Watch{desktop
@@ -105,7 +105,7 @@
   {#snippet metadata()}
     {#if stream}
       <div
-        class="mt-3 flex flex-wrap gap-x-2 gap-y-1 text-[0.62rem] tracking-[0.06em] text-muted uppercase"
+        class="mt-3 flex flex-wrap gap-x-2 gap-y-1 text-[0.62rem] tracking-[0.06em] text-muted uppercase phone-card:card-pixels phone-card:mt-1.5 phone-card:text-[9px]"
       >
         <span>{stream.categoryName ?? 'Uncategorised'}</span>
         {#if stream.languageCode}<span>· {stream.languageCode}</span>{/if}
