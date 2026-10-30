@@ -138,10 +138,23 @@ pub async fn recyclarr_seed() -> anyhow::Result<()> {
             if snapshot[field].is_null() {
                 continue;
             }
+            let body = if field == "sizes" {
+                let rows = client
+                    .get(format!("{base}/qualitydefinition"))
+                    .header("X-Api-Key", &secret)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                fixture_sizes(&snapshot[field], rows)?
+            } else {
+                snapshot[field].clone()
+            };
             let response = client
                 .put(format!("{base}/{endpoint}"))
                 .header("X-Api-Key", &secret)
-                .json(&snapshot[field])
+                .json(&body)
                 .send()
                 .await?;
             anyhow::ensure!(
@@ -212,6 +225,32 @@ pub async fn recyclarr_seed() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Carries the target's size limits onto the fixture's own rows. Row ids depend on the
+/// install's history, so rows match by quality. Arr reads a zero maximum as no limit but
+/// rejects it below a preferred size, so it is sent as no limit.
+fn fixture_sizes(target: &Value, mut fixture: Value) -> anyhow::Result<Value> {
+    let rows = fixture
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("Invalid fixture quality definitions"))?;
+    for row in rows {
+        let Some(source) = target
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|source| source["quality"]["id"] == row["quality"]["id"])
+        else {
+            continue;
+        };
+        for field in ["minSize", "preferredSize", "maxSize"] {
+            row[field] = source[field].clone();
+        }
+        if row["maxSize"].as_f64() == Some(0.0) {
+            row["maxSize"] = Value::Null;
+        }
+    }
+    Ok(fixture)
 }
 
 fn validate_interfaces(root: &Path) -> anyhow::Result<()> {
@@ -785,5 +824,32 @@ mod tests {
         assert!(validate_interfaces(root.path()).is_err());
         let root = network(&[("sit0", "0x80")]);
         assert!(validate_interfaces(root.path()).is_err());
+    }
+
+    #[test]
+    fn fixture_sizes_follow_qualities_and_send_zero_maximums_as_no_limit() {
+        // A long-lived install numbers its rows unlike the fresh fixture.
+        let target = json!([
+            {"id":14,"quality":{"id":4},"title":"HDTV-720p","minSize":17.1,"preferredSize":399,"maxSize":0},
+            {"id":4,"quality":{"id":2},"title":"DVD","minSize":5,"maxSize":0},
+            {"id":19,"quality":{"id":7},"title":"Bluray-1080p","minSize":50.8,"preferredSize":95,"maxSize":100},
+            {"id":40,"quality":{"id":99},"title":"Retired","minSize":1,"preferredSize":2,"maxSize":3}
+        ]);
+        let fixture = json!([
+            {"id":2,"quality":{"id":2},"title":"DVD","minSize":0,"preferredSize":95,"maxSize":100},
+            {"id":4,"quality":{"id":4},"title":"HDTV-720p","minSize":0,"preferredSize":95,"maxSize":100},
+            {"id":7,"quality":{"id":7},"title":"Bluray-1080p","minSize":0,"preferredSize":95,"maxSize":100},
+            {"id":8,"quality":{"id":31},"title":"Remux-2160p","minSize":0,"preferredSize":null,"maxSize":null}
+        ]);
+        assert_eq!(
+            fixture_sizes(&target, fixture).unwrap(),
+            json!([
+                {"id":2,"quality":{"id":2},"title":"DVD","minSize":5,"preferredSize":null,"maxSize":null},
+                {"id":4,"quality":{"id":4},"title":"HDTV-720p","minSize":17.1,"preferredSize":399,"maxSize":null},
+                {"id":7,"quality":{"id":7},"title":"Bluray-1080p","minSize":50.8,"preferredSize":95,"maxSize":100},
+                {"id":8,"quality":{"id":31},"title":"Remux-2160p","minSize":0,"preferredSize":null,"maxSize":null}
+            ])
+        );
+        assert!(fixture_sizes(&target, json!({})).is_err());
     }
 }
