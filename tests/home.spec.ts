@@ -270,7 +270,11 @@ test('Home defers hidden refreshes and only reloads YouTube for progress events'
 test('Home combines progress, subscription uploads and live channels on desktop and mobile', async ({
   page,
 }, testInfo) => {
-  const { fixture } = await homeFixture(page);
+  const { fixture, data } = await homeFixture(page);
+  // One more than a phone row holds, so that rail scrolls there.
+  data.youtube.continue_watching.push(
+    video('wxyzabcdefg', 'Earlier video', 30, 100),
+  );
   await page.goto('/');
   await expect(page.locator('.page-header h1')).toHaveText('Home');
   const nav = page.getByRole('navigation', { name: 'Main navigation' });
@@ -283,7 +287,11 @@ test('Home combines progress, subscription uploads and live channels on desktop 
     name: 'Continue watching',
     exact: true,
   });
-  await expect(resume.locator('h3')).toHaveText(['Direct-link video', 'Film']);
+  await expect(resume.locator('h3')).toHaveText([
+    'Direct-link video',
+    'Film',
+    'Earlier video',
+  ]);
   await expect(
     page.getByRole('region', { name: 'YouTube subscriptions', exact: true }),
   ).toContainText('New subscription upload');

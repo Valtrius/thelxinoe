@@ -196,7 +196,7 @@
         />{:else}<Film size={48} />{/if}
       {#if launching}<LaunchingOverlay label={`Starting ${item.title}`} />{/if}
       {#if chip}<span
-          class={`absolute bottom-2 left-2 z-2 max-w-[calc(100%-1rem)] truncate border border-[#ffffff30] bg-[#080b10e6] px-2 py-1 text-[11px] leading-none font-semibold ${chipClass[chip.tone]}`}
+          class={`absolute bottom-2 left-2 z-2 max-w-[calc(100%-1rem)] truncate border border-[#ffffff30] bg-[#080b10e6] px-2 py-1 text-[11px] leading-none font-semibold phone-card:card-pixels phone-card:text-[9px] ${chipClass[chip.tone]}`}
           data-title-chip={item.status?.state}>{chip.label}</span
         >{/if}
       {#if item.position && item.duration}<ProgressBar
@@ -212,28 +212,40 @@
           : 'absolute top-2 left-2 z-3 size-2.5 border-2 border-surface-strong box-content'}
       />
     </div>
-    <div id={`${cardId}-label`} class="tile-body min-w-0 p-4">
+    <div
+      id={`${cardId}-label`}
+      class="tile-body min-w-0 p-4 phone-card:card-pixels phone-card:p-2"
+    >
       {#if item.show_title}<div
-          class="mb-2 flex justify-between gap-2.5 text-[10px] tracking-[0.08em] text-muted uppercase"
+          class="mb-2 flex justify-between gap-2.5 text-[10px] tracking-[0.08em] text-muted uppercase phone-card:mb-0.75 phone-card:text-[9px]"
         >
           {item.show_title}
         </div>{/if}
-      <h3 class="text-[15px] leading-5 tracking-[-0.02em]">{item.title}</h3>
-      <p class="mt-2 mb-0 text-[11px] leading-normal text-muted">
+      <h3
+        class="text-[15px] leading-5 tracking-[-0.02em] phone-card:text-xs phone-card:leading-tight"
+      >
+        {item.title}
+      </h3>
+      <p
+        class="mt-2 mb-0 text-[11px] leading-normal text-muted phone-card:mt-0.75 phone-card:text-[10px]"
+      >
         {item.year ?? item.kind}{item.available === false &&
         !chip &&
         ['movie', 'episode', 'track'].includes(item.kind)
           ? ' · Unavailable'
           : ''}{#if item.ended}<StatusChip
             dot={false}
-            class="ml-1.5 py-px align-[1px]">Ended</StatusChip
+            class="ml-1.5 py-px align-[1px] phone-card:text-[8px]"
+            >Ended</StatusChip
           >{/if}{#if chip || item.virtual}<span class="sr-only"
             >{item.virtual ? ' · Not in your library' : ''}{chip
               ? ` · ${chip.label}`
               : ''}</span
           >{/if}
       </p>
-      {#if detail}<p class="mt-0.5 mb-0 text-[11px] leading-normal text-muted">
+      {#if detail}<p
+          class="mt-0.5 mb-0 text-[11px] leading-normal text-muted phone-card:text-[10px]"
+        >
           {detail}
         </p>{/if}
     </div>

@@ -102,9 +102,9 @@
   let thumbnailAspectRatio = $state(16 / 9);
 
   const signalBadgeClass =
-    'border border-line-strong bg-[rgba(5,7,10,0.78)] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-accent uppercase';
+    'border border-line-strong bg-[rgba(5,7,10,0.78)] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-accent uppercase phone-card:card-pixels';
   const downloadBadgeClass =
-    'border border-[color-mix(in_srgb,var(--success)_55%,var(--line-strong))] bg-[color-mix(in_srgb,var(--success)_12%,rgba(5,7,10,0.9))] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-success uppercase shadow-[0_0_14px_color-mix(in_srgb,var(--success)_18%,transparent)]';
+    'border border-[color-mix(in_srgb,var(--success)_55%,var(--line-strong))] bg-[color-mix(in_srgb,var(--success)_12%,rgba(5,7,10,0.9))] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-success uppercase shadow-[0_0_14px_color-mix(in_srgb,var(--success)_18%,transparent)] phone-card:card-pixels';
 
   function updateThumbnailRatio(event: Event) {
     const image = event.currentTarget as HTMLImageElement;
@@ -178,7 +178,7 @@
     {#if isLaunching}<LaunchingOverlay label={`Starting ${video.title}`} />{/if}
     {#if tracksVideoProgress && video.durationSeconds}
       <span
-        class="absolute right-2 bottom-3 border border-white/20 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-white"
+        class="absolute right-2 bottom-3 border border-white/20 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-white phone-card:card-pixels"
       >
         {isPlaying && remainingSeconds !== null
           ? `-${formatClock(remainingSeconds)}`
@@ -187,7 +187,7 @@
     {/if}
     {#if showPosition}
       <span
-        class="absolute bottom-3 left-2 border border-accent/45 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-accent"
+        class="absolute bottom-3 left-2 border border-accent/45 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-accent phone-card:card-pixels"
       >
         {formatClock(current.positionSeconds)}
       </span>
@@ -246,9 +246,9 @@
         {video.channelName.slice(0, 1).toUpperCase()}
       </span>
     {/if}
-    <div class="min-w-0 flex-1">
+    <div class="min-w-0 flex-1 phone-card:card-pixels">
       <div
-        class="mb-2 flex items-center justify-between gap-3 text-[0.62rem] tracking-[0.08em] text-muted uppercase"
+        class="mb-2 flex items-center justify-between gap-3 text-[0.62rem] tracking-[0.08em] text-muted uppercase phone-card:mb-1 phone-card:text-[9px]"
       >
         <span class="min-w-0 flex-1 truncate">{video.channelName}</span><time
           class="shrink-0 whitespace-nowrap"
@@ -262,7 +262,9 @@
               : relativeTime(video.publishedAt)}</time
         >
       </div>
-      <h3 class="text-[0.94rem] leading-5 font-medium tracking-[-0.02em]">
+      <h3
+        class="text-[0.94rem] leading-5 font-medium tracking-[-0.02em] phone-card:text-xs phone-card:leading-tight"
+      >
         {video.title}
       </h3>
     </div>

@@ -63,7 +63,7 @@
   {/snippet}
   {#snippet fallback()}
     <span
-      class="absolute inset-0 bg-[repeating-linear-gradient(135deg,transparent_0_18px,color-mix(in_srgb,var(--accent)_7%,transparent)_18px_19px)]"
+      class="absolute inset-0 bg-[repeating-linear-gradient(135deg,transparent_0_18px,rgba(145,70,255,0.12)_18px_19px)]"
     ></span>
     <Radio class="absolute bottom-5 left-5 size-10 text-white/15" />
   {/snippet}
@@ -94,7 +94,9 @@
     </CardShortcutButton>
   {/snippet}
   {#snippet metadata()}
-    <div class="mt-3 text-[0.62rem] tracking-[0.06em] text-muted uppercase">
+    <div
+      class="mt-3 text-[0.62rem] tracking-[0.06em] text-muted uppercase phone-card:card-pixels phone-card:mt-1.5 phone-card:text-[9px]"
+    >
       <span>{stream.gameName ?? 'Uncategorised'}</span>
     </div>
   {/snippet}

@@ -179,6 +179,8 @@ function applyGridMetrics(
   const template = cardGridTemplate(columns);
   for (const grid of grids) {
     grid.style.gridTemplateColumns = template;
+    // Rails place their cards past the visible columns.
+    grid.style.gridAutoColumns = `${CARD_LOGICAL_WIDTH_PX}px`;
     grid.style.width = `${metrics.logicalGridWidth}px`;
     grid.style.gap = `${metrics.logicalGap}px`;
     grid.style.zoom = String(metrics.scale);
@@ -259,6 +261,7 @@ export function scaleCardScope(node: HTMLElement, initialColumns: number) {
       cancelLayoutAnimations(grids);
       for (const grid of grids) {
         grid.style.removeProperty('grid-template-columns');
+        grid.style.removeProperty('grid-auto-columns');
         grid.style.removeProperty('width');
         grid.style.removeProperty('gap');
         grid.style.removeProperty('zoom');
@@ -536,6 +539,7 @@ export function scaleYoutubeMediaScope(
       ]);
       for (const grid of grids) {
         grid.style.removeProperty('grid-template-columns');
+        grid.style.removeProperty('grid-auto-columns');
         grid.style.removeProperty('width');
         grid.style.removeProperty('gap');
         grid.style.removeProperty('zoom');

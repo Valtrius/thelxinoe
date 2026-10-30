@@ -588,7 +588,7 @@
           title={stream.title}
           thumbnailUrl={stream.thumbnail}
           thumbnailSrcset={stream.thumbnailSet}
-          thumbnailSizes="(max-width: 369px) 78vw, (max-width: 720px) 18rem, (max-width: 974px) 14rem, (max-width: 1391px) 23vw, 20rem"
+          thumbnailSizes="auto, 350px"
           profileImageUrl={stream.avatar}
           statistics={stream}
           isPlaying={playing.some(
