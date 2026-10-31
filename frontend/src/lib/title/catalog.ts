@@ -18,6 +18,7 @@ export type CatalogItem = {
   sort_number?: number | null;
   available: boolean;
   metadata: Record<string, unknown>;
+  metadata_refreshable?: boolean;
   artwork_url?: string | null;
   backdrop_url?: string | null;
   status?: TitleStatus | null;

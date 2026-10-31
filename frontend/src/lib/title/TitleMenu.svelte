@@ -409,15 +409,15 @@
                   onSelect={() => (requested = 'match')}
                   ><Search />Fix match…</DropdownMenu.Item
                 >
-                <DropdownMenu.Item
-                  class={itemClass}
-                  onSelect={() =>
-                    void act(
-                      'Refreshing metadata',
-                      'Metadata refresh queued.',
-                      () => refreshMetadata(item!.id),
-                    )}><RefreshCw />Refresh metadata</DropdownMenu.Item
-                >
+                {#if item.metadata_refreshable}<DropdownMenu.Item
+                    class={itemClass}
+                    onSelect={() =>
+                      void act(
+                        'Refreshing metadata',
+                        'Metadata refresh queued.',
+                        () => refreshMetadata(item!.id),
+                      )}><RefreshCw />Refresh metadata</DropdownMenu.Item
+                  >{/if}
               {/if}
               {#if managed}
                 <DropdownMenu.Item class={itemClass} onSelect={search}

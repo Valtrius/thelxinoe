@@ -85,11 +85,15 @@ pub(super) async fn catalog(db: &Database, ids: Vec<String>) -> anyhow::Result<C
 }
 
 /// Manager titles already represented by a catalog movie or show.
-pub(super) async fn linked(db: &Database, kind: String) -> anyhow::Result<Linked> {
+pub(super) async fn linked(
+    db: &Database,
+    kind: String,
+    present_only: bool,
+) -> anyhow::Result<Linked> {
     db.read("managers.status.linked", move |db| {
         let mut linked = Linked::default();
-        let mut query = db.prepare("SELECT b.service_id,b.manager_entity_id,CAST(json_extract(m.metadata,'$.tmdb_id') AS INTEGER),CAST(json_extract(m.metadata,'$.tvdb_id') AS INTEGER),b.external_id FROM media m LEFT JOIN metadata_bindings b ON b.media_id=m.id WHERE m.kind=?1")?;
-        let rows = query.query_map([&kind], |r| {
+        let mut query = db.prepare("SELECT b.service_id,b.manager_entity_id,CAST(json_extract(m.metadata,'$.tmdb_id') AS INTEGER),CAST(json_extract(m.metadata,'$.tvdb_id') AS INTEGER),b.external_id FROM media m LEFT JOIN metadata_bindings b ON b.media_id=m.id WHERE m.kind=?1 AND (NOT ?2 OR EXISTS(SELECT 1 FROM media_sources ms JOIN media_files f ON f.id=ms.file_id WHERE ms.media_id=m.id AND f.present=1))")?;
+        let rows = query.query_map(params![kind, present_only], |r| {
             Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<i64>>(3)?, r.get::<_, Option<String>>(4)?))
         })?;
         for row in rows {

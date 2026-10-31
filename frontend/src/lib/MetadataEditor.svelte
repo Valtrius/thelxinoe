@@ -81,17 +81,6 @@
       /></FormField
     ><Button type="submit" variant="secondary" size="form" disabled={busy}
       >Search media service</Button
-    ><Button
-      type="button"
-      variant="secondary"
-      size="form"
-      disabled={busy}
-      onclick={() =>
-        run(async () => {
-          await api(`/catalog/${id}/refresh`, 'POST');
-          message =
-            'Refresh queued. Watch Background jobs in Settings for its result.';
-        })}>Refresh metadata</Button
     >
   </form>
   {#each candidates as candidate (`${candidate.service_id}:${candidate.external_id}`)}<div

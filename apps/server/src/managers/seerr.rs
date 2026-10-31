@@ -827,8 +827,11 @@ mod tests {
             db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Library','movies','/media');
 INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES
  ('film','root','movie','film','Film','{\"tmdb_id\":603}',1),
+ ('missing','root','movie','missing','Missing film','{\"tmdb_id\":604}',1),
  ('show','root','show','show','Show','{\"tmdb_id\":1399,\"tvdb_id\":121361}',1),
- ('other','root','show','other','Other','{\"tvdb_id\":81189}',1);")?;
+ ('other','root','show','other','Other','{\"tvdb_id\":81189}',1);
+INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('file','root','/media/film.mkv','g',1,'m','f','{}',1);
+INSERT INTO media_sources VALUES ('film','file');")?;
             Ok(())
         }).await.unwrap();
         let page = mark_library(
@@ -841,7 +844,8 @@ INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES
                 {"id":603,"mediaType":"tv","name":"Not the film"},
                 {"id":603,"mediaType":"person","name":"Someone"},
                 {"id":1399,"name":"Recommended show"},
-                {"id":7,"title":"Elsewhere"}
+                {"id":7,"title":"Elsewhere"},
+                {"id":604,"mediaType":"movie","title":"Missing film"}
             ]}),
         )
         .await
@@ -852,7 +856,7 @@ INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES
             .iter()
             .map(|item| item["inLibrary"] == true)
             .collect::<Vec<_>>();
-        assert_eq!(listed, [true, true, true, false, false, true, false]);
+        assert_eq!(listed, [true, true, true, false, false, true, false, false]);
     }
 
     // Browser qualification cannot deterministically queue an exclusive operation

@@ -93,10 +93,6 @@
 
 {#if dialog === 'match'}
   <Modal title={`Fix match · ${title}`} onClose={close}>
-    <p class="text-xs text-muted">
-      Search Radarr or Sonarr when Thelxinoe matched this title to the wrong
-      movie or series.
-    </p>
     <MetadataEditor {id} {kind} {title} heading={false} />
   </Modal>
 {:else if dialog === 'timestamps'}

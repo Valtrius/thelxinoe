@@ -369,7 +369,10 @@ async fn forwarded_headers_require_trusted_proxy_and_client_chain_is_resolved_fr
 async fn provider_metadata_is_the_only_title_source() {
     let (_temp, state) = fixture().await;
     let cookie = setup(&state).await;
-    state.db.write("test.fixture", |db|{db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Fixture','movies','/fixture'); INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES ('movie','root','movie','fixture','Local title','{\"title\":\"Initial provider title\"}',0);")?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", |db|{db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Fixture','movies','/fixture');
+INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES ('movie','root','movie','fixture','Local title','{\"title\":\"Initial provider title\"}',0);
+INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('file','root','/fixture/movie.mkv','g',1,'m','f','{}',0);
+INSERT INTO media_sources(media_id,file_id) VALUES ('movie','file');")?;Ok(())}).await.unwrap();
     // Manual metadata overrides were removed; the endpoint no longer exists.
     assert_eq!(
         request(
