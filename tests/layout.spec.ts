@@ -1032,15 +1032,35 @@ test('NZBGet combines active downloads with scrollable history and compact actio
     }),
   ).toBeLessThanOrEqual(1);
   await region.evaluate((node) => (node.scrollTop = node.scrollHeight));
+  const scrollHeight = await region.evaluate((node) => node.scrollHeight);
   const lastStatus = region.locator('tbody tr').last().getByRole('img');
   await lastStatus.hover();
-  const tooltip = lastStatus.locator('.status-tooltip');
-  await expect(tooltip).toBeVisible();
+  const tooltip = page.locator('.status-tooltip');
+  await expect(tooltip).toHaveText(
+    (await lastStatus.getAttribute('aria-label'))!,
+  );
   const statusBox = (await lastStatus.boundingBox())!;
   const tooltipBox = (await tooltip.boundingBox())!;
-  expect(tooltipBox.y).toBeGreaterThanOrEqual(statusBox.y);
-  expect(tooltipBox.y).toBeLessThan(statusBox.y + statusBox.height + 10);
+  // Beside its status: below it, or above it at the bottom of the window.
+  expect(
+    Math.min(
+      Math.abs(tooltipBox.y - (statusBox.y + statusBox.height)),
+      Math.abs(statusBox.y - (tooltipBox.y + tooltipBox.height)),
+    ),
+  ).toBeLessThan(10);
+  // The last row's detail shows whole, past the table's edge, without
+  // lengthening the table.
+  expect(
+    await tooltip.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      return [box.top + 1, box.bottom - 1].every(
+        (y) => document.elementFromPoint(box.left + box.width / 2, y) === node,
+      );
+    }),
+  ).toBe(true);
+  expect(await region.evaluate((node) => node.scrollHeight)).toBe(scrollHeight);
   await region.evaluate((node) => (node.scrollTop = 0));
+  await expect(tooltip).toBeHidden();
   await page
     .getByRole('button', { name: 'Pause Active fixture', exact: true })
     .click();
