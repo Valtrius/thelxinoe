@@ -3,7 +3,7 @@
 #[path = "../storage/managers/retention.rs"]
 mod storage;
 
-use super::domain::{MediaAction, RetentionPolicy as Policy};
+use super::domain::{MediaAction, RadarrOptions, RetentionPolicy as Policy};
 use super::*;
 use std::collections::BTreeSet;
 fn exclusion_endpoint(kind: &str) -> &'static str {
@@ -92,6 +92,9 @@ async fn policy(
     if domain == "videos" {
         input.trigger_users.clear();
     }
+    // A season's files are deleted and it is unmonitored; only a movie leaves its lists.
+    input.exclude_from_lists &= domain == "movies";
+    input.remove_from_manager &= domain == "movies";
     if domain != "videos" && input.enabled && input.trigger_users.is_empty() {
         return Err(ApiError::bad(
             "Choose at least one person whose watched status is required",
@@ -179,7 +182,14 @@ async fn delete_locked(
     let operation = storage::delete_locked_read_retention_candidates(lookup, &state.db)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let result = operations::execute_locked(state, operation.clone(), actor, automatic).await;
+    let result = operations::execute_locked(
+        state,
+        operation.clone(),
+        actor,
+        automatic,
+        RadarrOptions::default(),
+    )
+    .await;
     if let Err(error) = result {
         // While its operation is still pending nothing was changed: the deletion stays
         // scheduled and the next pass tries again. Only an attempt that started blocks it.
@@ -215,76 +225,74 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
     }
 }
 
-pub(super) async fn exclude(
-    state: &AppState,
-    operation: &str,
-    files: &[operations::Target],
-) -> Result<()> {
+/// What the auto-delete policy that scheduled `operation` does to its movie in Radarr,
+/// or `None` when no auto-delete scheduled it.
+pub(super) async fn options(state: &AppState, operation: &str) -> Result<Option<Retained>> {
     let operation = operation.to_owned();
-    let retained = storage::exclude_read_retention_candidates(operation, &state.db).await?;
-    if !retained {
-        return Ok(());
-    };
+    let options = storage::options(operation, &state.db).await?;
+    Ok(options.map(|(exclude, remove)| Retained { exclude, remove }))
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Retained {
+    pub exclude: bool,
+    pub remove: bool,
+}
+
+pub(super) async fn exclude(state: &AppState, files: &[operations::Target]) -> Result<()> {
     let mut seen = BTreeSet::new();
     for claim in files.iter().flat_map(|f| &f.claims) {
         if !seen.insert((claim.service_id.clone(), claim.external_id.clone())) {
             continue;
         }
         let s = service(state, &claim.service_id).await?;
+        if s.kind != "radarr" {
+            return Err(ApiError::conflict("Only Radarr movies are excluded"));
+        }
         let c = Connection::open(state, &s).await?;
-        let field = if s.kind == "radarr" {
-            "tmdbId"
-        } else if s.kind == "sonarr" {
-            "tvdbId"
-        } else {
-            return Err(ApiError::conflict("Music is excluded from retention"));
-        };
-        let external = claim
-            .external_id
-            .parse::<i64>()
-            .map_err(|_| unavailable())?;
-        let endpoint = exclusion_endpoint(&s.kind);
-        let existing = c.get(endpoint).await?;
-        let found = existing
-            .as_array()
-            .ok_or_else(unavailable)?
-            .iter()
-            .find(|v| v[field].as_i64() == Some(external));
-        let (exclusion, created) = if let Some(found) = found {
-            (found.clone(), false)
-        } else {
-            let item = c
-                .get(&format!(
-                    "{}/{}",
-                    requests::endpoint(&s.kind),
-                    claim.entity_id
-                ))
-                .await?;
-            if requests::external(&s.kind, &item).as_deref() != Some(&claim.external_id) {
-                return Err(ApiError::conflict(
-                    "Manager identity changed before retention exclusion",
-                ));
-            }
-            let body = if s.kind == "radarr" {
-                json!({"tmdbId":external,"movieTitle":item["title"],"movieYear":item["year"]})
-            } else {
-                json!({"tvdbId":external,"title":item["title"]})
-            };
-            (
-                c.call(reqwest::Method::POST, endpoint, &[], Some(body))
-                    .await?,
-                true,
-            )
-        };
-        let eid = exclusion["id"]
-            .as_i64()
-            .filter(|v| *v > 0)
-            .ok_or_else(unavailable)?;
+        let (eid, created) = ensure_exclusion(&c, claim.entity_id, &claim.external_id).await?;
         let key = s.id.clone();
         let external = claim.external_id.clone();
         storage::exclude_write_retention_exclusions(created, eid, key, external, &state.db).await?;
     }
     Ok(())
+}
+
+/// Put a Radarr movie on Radarr's exclusion list, so import lists don't add it again.
+/// Returns the exclusion's id, and whether it was added now rather than found there.
+pub(super) async fn ensure_exclusion(
+    c: &Connection<'_>,
+    entity: i64,
+    tmdb: &str,
+) -> Result<(i64, bool)> {
+    let id = tmdb.parse::<i64>().map_err(|_| unavailable())?;
+    let existing = c.get("exclusions").await?;
+    let found = existing
+        .as_array()
+        .ok_or_else(unavailable)?
+        .iter()
+        .find(|v| v["tmdbId"].as_i64() == Some(id));
+    let (exclusion, created) = if let Some(found) = found {
+        (found.clone(), false)
+    } else {
+        let movie = c.get(&format!("movie/{entity}")).await?;
+        if requests::external("radarr", &movie).as_deref() != Some(tmdb) {
+            return Err(ApiError::conflict(
+                "Radarr movie identity changed before its exclusion",
+            ));
+        }
+        let body = json!({"tmdbId":id,"movieTitle":movie["title"],"movieYear":movie["year"]});
+        (
+            c.call(reqwest::Method::POST, "exclusions", &[], Some(body))
+                .await?,
+            true,
+        )
+    };
+    let eid = exclusion["id"]
+        .as_i64()
+        .filter(|v| *v > 0)
+        .ok_or_else(unavailable)?;
+    Ok((eid, created))
 }
 
 /// Called under the media and manager leases before an approved acquisition search.
@@ -312,7 +320,12 @@ pub(super) async fn reacquire(
             .flat_map(|t| &t.claims)
             .filter(|c| c.service_id == service.id && c.external_id == external)
         {
-            if claim.service_generation != service.generation || claim.entity_id != entity {
+            // Retained episodes are monitored again by id, so their series must be the
+            // same. Nothing is done to a movie by id: one removed from Radarr and added
+            // again has a new id.
+            if claim.service_generation != service.generation
+                || (service.kind == "sonarr" && claim.entity_id != entity)
+            {
                 return Err(ApiError::conflict(
                     "Retained manager identity changed; reconcile before reacquisition",
                 ));

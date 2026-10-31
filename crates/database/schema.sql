@@ -788,7 +788,9 @@ CREATE TABLE retention_policies (
     exclude_specials INTEGER NOT NULL DEFAULT 1 CHECK(exclude_specials IN (0,1)),
     trigger_users TEXT NOT NULL DEFAULT '[]',
     storage_limit_bytes INTEGER NOT NULL DEFAULT 100000000000 CHECK(storage_limit_bytes>0),
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    exclude_from_lists INTEGER NOT NULL DEFAULT 0 CHECK(exclude_from_lists IN (0,1)),
+    remove_from_manager INTEGER NOT NULL DEFAULT 0 CHECK(remove_from_manager IN (0,1))
 ) STRICT;
 
 CREATE TABLE retention_candidates (
@@ -1181,7 +1183,7 @@ CREATE INDEX playback_auth_session ON playback_sessions(user_id,auth_session_id)
 
 -- Defaults required before any administrator saves settings.
 INSERT INTO settings(key,value) VALUES ('segments.config','{"local":true,"external":false}');
-INSERT INTO retention_policies(domain,updated_at) VALUES ('movies',0),('shows',0);
+INSERT INTO retention_policies(domain,exclude_from_lists,updated_at) VALUES ('movies',1,0),('shows',0,0);
 INSERT INTO retention_policies(domain,grace_seconds,updated_at) VALUES ('videos',86400,0);
 
 CREATE TABLE server_tools (

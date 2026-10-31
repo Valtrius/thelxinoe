@@ -99,6 +99,7 @@ pub async fn update(
                     "youtube-selected-watchlist-id",
                     "library-movies-view",
                     "library-shows-view",
+                    "movie-deletion",
                 ]
                 .contains(&key.as_str())
                     || value.len() > 8192

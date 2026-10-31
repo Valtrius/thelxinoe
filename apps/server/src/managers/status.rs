@@ -494,6 +494,12 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
     }
 }
 
+/// Read every manager now, as the status loop does.
+#[cfg(test)]
+pub(super) async fn reread(state: &AppState) {
+    refresh(state, &mut HashMap::new(), true, 0).await;
+}
+
 /// Poll every service once; a failing service keeps its last inventory.
 async fn refresh(
     state: &AppState,
@@ -1699,6 +1705,52 @@ fn series_value(found: Found<'_>, present: &HashSet<i64>, now: i64) -> Series {
             .collect(),
         episodes,
     }
+}
+
+/// A Radarr movie, for administrator actions on it.
+pub(super) struct Movie {
+    pub(super) service: String,
+    pub(super) id: i64,
+    pub(super) tmdb: String,
+    /// Its library movie, if the library has one.
+    pub(super) media: Option<String>,
+}
+/// The Radarr movie of a library movie or `tmdb:` reference.
+pub(super) async fn movie(state: &AppState, id: &str) -> Result<Movie> {
+    let reference = Ref::parse(id);
+    let media = match reference {
+        Some(reference @ Ref::Tmdb(_)) => {
+            storage::lookup(&state.db, "movie".into(), reference).await?
+        }
+        Some(Ref::Tvdb(_)) => return Err(ApiError::not_found()),
+        None => Some(id.to_owned()),
+    };
+    let link = match &media {
+        Some(media) => storage::links(&state.db, vec![media.clone()])
+            .await?
+            .into_iter()
+            .find(|link| link.kind == "movie"),
+        None => None,
+    };
+    if media.is_some() && link.is_none() {
+        return Err(ApiError::not_found());
+    }
+    let snapshot = snapshot(state);
+    let found = link
+        .as_ref()
+        .and_then(|link| find(&snapshot, "radarr", link))
+        .or_else(|| reference.and_then(|r| find_ref(&snapshot, "radarr", r)))
+        .ok_or_else(|| ApiError::conflict("Radarr does not list this movie"))?;
+    Ok(Movie {
+        service: found.inventory.service.clone(),
+        id: found.title.id,
+        tmdb: found
+            .title
+            .tmdb_id
+            .ok_or_else(|| ApiError::conflict("Radarr lists this movie without a TMDB id"))?
+            .to_string(),
+        media: link.map(|link| link.id),
+    })
 }
 
 #[derive(Deserialize)]

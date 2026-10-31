@@ -535,6 +535,36 @@ fn schema_4_schedules_no_retry_for_earlier_failures() -> Result<()> {
 }
 
 #[test]
+fn schema_5_keeps_excluding_auto_deleted_movies_only() -> Result<()> {
+    let options = |conn: &Connection| -> Result<Vec<(String, i64, i64)>> {
+        Ok(conn
+            .prepare("SELECT domain,exclude_from_lists,remove_from_manager FROM retention_policies ORDER BY domain")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    };
+    let (temp, conn) = upgraded(4, "")?;
+    assert_eq!(
+        options(&conn)?,
+        [
+            ("movies".into(), 1, 0),
+            ("shows".into(), 0, 0),
+            ("videos".into(), 0, 0)
+        ]
+    );
+    let fresh = temp.path().join("fresh.db");
+    drop(Database::open(&fresh)?);
+    assert_eq!(options(&Connection::open(&fresh)?)?, options(&conn)?);
+    assert!(
+        conn.execute(
+            "UPDATE retention_policies SET remove_from_manager=2 WHERE domain='movies'",
+            []
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn upgrades_run_in_order_from_the_stored_version() -> Result<()> {
     let conn = Connection::open_in_memory()?;
     conn.execute_batch("CREATE TABLE t(a INTEGER, b INTEGER); PRAGMA user_version=2;")?;

@@ -12,6 +12,8 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
     exclude_specials: true,
     trigger_users: [],
     storage_limit_bytes: 100_000_000_000,
+    exclude_from_lists: domain === 'movies',
+    remove_from_manager: false,
   }));
   const writes: { domain: string; value: (typeof policies)[number] }[] = [];
   let rejectNextVideoSave = false;
@@ -104,6 +106,28 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
     .poll(() => policies[0].enabled && policies[0].trigger_users.length === 2)
     .toBe(true);
   await expect(
+    movies.getByRole('switch', { name: "Add to Radarr's exclusion list" }),
+  ).toBeChecked();
+  await movies.getByRole('switch', { name: 'Remove from Radarr' }).check();
+  await movies
+    .getByRole('switch', { name: "Add to Radarr's exclusion list" })
+    .uncheck();
+  await expect
+    .poll(() => [
+      policies[0].remove_from_manager,
+      policies[0].exclude_from_lists,
+    ])
+    .toEqual([true, false]);
+  const shows = page.getByRole('group', { name: 'TV seasons', exact: true });
+  await shows.getByRole('checkbox', { name: 'Alice', exact: true }).check();
+  await shows
+    .getByRole('switch', { name: 'Auto-delete watched seasons' })
+    .check();
+  await expect(
+    shows.getByRole('switch', { name: 'Exclude specials (Season 0)' }),
+  ).toBeVisible();
+  await expect(shows.getByText(/exclusion list/)).toHaveCount(0);
+  await expect(
     page
       .locator('.settings-content')
       .getByRole('button', { name: /save|refresh/i }),
@@ -133,6 +157,7 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
   await expect(
     videos.getByLabel('Delete after (days)', { exact: true }),
   ).toHaveValue('1');
+  await expect(videos.getByRole('switch')).toHaveCount(0);
   await videos
     .getByLabel('Unpinned storage limit (GB)', { exact: true })
     .fill('125');

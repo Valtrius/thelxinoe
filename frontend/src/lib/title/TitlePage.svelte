@@ -541,6 +541,13 @@
                 tmdbLink={false}
                 play={kind === 'movie' ? playMovie : undefined}
                 changed={() => void refresh().catch(() => {})}
+              />{:else if admin && kind === 'movie' && reference && manager}<TitleMenu
+                id={null}
+                {kind}
+                title={name}
+                {admin}
+                radarr={reference}
+                changed={() => void load()}
               />{/if}
           </div>
           {#if requestMessage}<p role="status" class="mt-3 text-xs text-accent">

@@ -1,4 +1,5 @@
 import { api, serverUrl } from '../api';
+import { updateAppearance } from '../appearance';
 import type { Probe } from './media-facts';
 import type { TitleStatus } from './status';
 
@@ -155,8 +156,29 @@ export const prepareOperation = (
     media_id: id,
     action,
   });
-export const executeOperation = (operation: string) =>
-  api(`/admin/media/operations/${operation}/execute`, 'POST');
+/** What deleting a movie's files also does to its Radarr movie. */
+export type RadarrOptions = { remove: boolean; exclude: boolean };
+const radarrOptionsKey = 'movie-deletion';
+/** The options an administrator last chose, from their preferences. */
+export function rememberedRadarrOptions(
+  preferences: Record<string, string>,
+): RadarrOptions {
+  try {
+    const saved = JSON.parse(preferences[radarrOptionsKey] ?? '{}');
+    return { remove: saved.remove === true, exclude: saved.exclude === true };
+  } catch {
+    return { remove: false, exclude: false };
+  }
+}
+export const rememberRadarrOptions = (options: RadarrOptions) =>
+  updateAppearance({
+    provider_preferences: { [radarrOptionsKey]: JSON.stringify(options) },
+  });
+export const executeOperation = (operation: string, radarr?: RadarrOptions) =>
+  api(`/admin/media/operations/${operation}/execute`, 'POST', radarr);
+/** Remove a movie without files from Radarr, by library id or `tmdb:` reference. */
+export const removeMovie = (id: string, exclude: boolean) =>
+  api(`/admin/movies/${encodeURIComponent(id)}?exclude=${exclude}`, 'DELETE');
 export const refreshMetadata = (id: string) =>
   api(`${path(id)}/refresh`, 'POST');
 

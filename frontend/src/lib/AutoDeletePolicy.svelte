@@ -6,6 +6,8 @@
     exclude_specials: boolean;
     trigger_users: string[];
     storage_limit_bytes: number;
+    exclude_from_lists: boolean;
+    remove_from_manager: boolean;
   };
   export type VideoUsage = {
     unpinned_bytes: number;
@@ -230,6 +232,23 @@
             <Switch
               id={`${ids}-specials`}
               bind:checked={policy.exclude_specials}
+            />
+          </SettingRow>
+        {/if}
+        {#if policy.domain === 'movies'}
+          <SettingRow label="Remove from Radarr" for={`${ids}-remove`}>
+            <Switch
+              id={`${ids}-remove`}
+              bind:checked={policy.remove_from_manager}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Add to Radarr's exclusion list"
+            for={`${ids}-exclude`}
+          >
+            <Switch
+              id={`${ids}-exclude`}
+              bind:checked={policy.exclude_from_lists}
             />
           </SettingRow>
         {/if}

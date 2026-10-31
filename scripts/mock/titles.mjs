@@ -261,7 +261,7 @@ export function statusOf(s, item) {
   const admin = viewer(s).role === 'admin';
   if (item.kind === 'movie') {
     // Only titles matched to Radarr have a status, as on the server.
-    if (!item.metadata?.tmdb_id) return null;
+    if (!item.metadata?.tmdb_id || item.radarr === false) return null;
     const monitored = item.monitored !== false;
     return collapse(
       item.available === false
@@ -504,10 +504,36 @@ function seriesApi(s, c, id, action) {
   return false;
 }
 
+/** Remove a library movie without files, or one only Radarr lists. */
+function removeMovie(s, c, id) {
+  const { json, fail } = c;
+  const ref = id.match(/^tmdb:(\d+)$/);
+  if (ref) {
+    const index = s.titles.movies.findIndex(
+      (entry) => entry.tmdb === Number(ref[1]),
+    );
+    if (index < 0) return fail(409, 'Radarr does not list this movie');
+    s.titles.movies.splice(index, 1);
+    return json({ removed: true });
+  }
+  const item = s.library.find(
+    (entry) => entry.id === id && entry.kind === 'movie',
+  );
+  if (!item || !statusOf(s, item))
+    return fail(409, 'Radarr does not list this movie');
+  if (item.available !== false)
+    return fail(409, 'This movie still has files; delete them first');
+  item.radarr = false;
+  return json({ removed: true });
+}
+
 export async function titlesApi(s, c) {
   const { path, query, json, fail } = c;
   const series = path.match(/^\/admin\/series\/([^/]+)\/(.+)$/);
   if (series) return seriesApi(s, c, decodeURIComponent(series[1]), series[2]);
+  const movie = path.match(/^\/admin\/movies\/([^/]+)$/);
+  if (movie && c.method === 'DELETE')
+    return removeMovie(s, c, decodeURIComponent(movie[1]));
   if (path === '/catalog/lookup') {
     const kind = query.get('kind');
     const ref = query.get('ref') ?? '';

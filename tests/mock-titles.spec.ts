@@ -234,6 +234,100 @@ test('unmatched movies offer a match without a failing refresh action', async ({
   expect(errors).toEqual([]);
 });
 
+test('movies can leave Radarr and its lists, with the choices remembered', async ({
+  page,
+}, info) => {
+  const errors = track(page);
+  await page.goto('/#library/movies');
+  let menu = await cardMenu(page, 'movie-1', 'Nightfall');
+  await menu.getByRole('menuitem', { name: 'Delete files…' }).click();
+  let dialog = page.getByRole('dialog', { name: /Delete files/ });
+  const remove = () =>
+    dialog.getByRole('checkbox', { name: 'Remove from Radarr', exact: true });
+  const exclude = () =>
+    dialog.getByRole('checkbox', {
+      name: "Add to Radarr's exclusion list",
+      exact: true,
+    });
+  await expect(remove()).not.toBeChecked();
+  await expect(exclude()).not.toBeChecked();
+  await remove().check();
+  await exclude().check();
+  await dialog.screenshot({ path: info.outputPath('delete-movie.png') });
+  const executed = page.waitForRequest(/\/operations\/[^/]+\/execute$/);
+  await dialog
+    .getByRole('button', { name: 'Delete files', exact: true })
+    .click();
+  expect((await executed).postDataJSON()).toEqual({
+    remove: true,
+    exclude: true,
+  });
+  await expect(dialog).toHaveCount(0);
+  // Without files or Radarr, the movie leaves the library.
+  await expect(card(page, 'movie-1')).toHaveCount(0);
+
+  await expect
+    .poll(async () => {
+      const saved = await (
+        await page.request.get('/api/v1/me/appearance')
+      ).json();
+      return saved.provider_preferences['movie-deletion'];
+    })
+    .toBe(JSON.stringify({ remove: true, exclude: true }));
+  await page.reload();
+  menu = await cardMenu(page, 'movie-7', 'Parallel Worlds');
+  await menu.getByRole('menuitem', { name: 'Delete files…' }).click();
+  dialog = page.getByRole('dialog', { name: /Delete files/ });
+  await expect(remove()).toBeChecked();
+  await expect(exclude()).toBeChecked();
+  await remove().uncheck();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+  // An unmonitored movie without files can only be removed from Radarr.
+  menu = await cardMenu(page, 'movie-23', 'First Light II');
+  await expect(
+    menu.getByRole('menuitem', { name: 'Delete files…' }),
+  ).toHaveCount(0);
+  await menu.getByRole('menuitem', { name: 'Remove from Radarr…' }).click();
+  dialog = page.getByRole('dialog', { name: /Remove from Radarr/ });
+  await expect(exclude()).toBeChecked();
+  await dialog.screenshot({ path: info.outputPath('remove-movie.png') });
+  let removed = page.waitForRequest(/\/admin\/movies\//);
+  await dialog
+    .getByRole('button', { name: 'Remove from Radarr', exact: true })
+    .click();
+  let request = await removed;
+  expect(request.method()).toBe('DELETE');
+  expect(new URL(request.url()).pathname).toBe('/api/v1/admin/movies/movie-23');
+  expect(new URL(request.url()).searchParams.get('exclude')).toBe('true');
+  await expect(dialog).toHaveCount(0);
+  await expect(card(page, 'movie-23')).toHaveCount(0);
+
+  // So can a movie only Radarr lists, which then leaves the library.
+  menu = await cardMenu(page, 'tmdb:37', 'Signal Fire');
+  await menu.getByRole('menuitem', { name: 'Remove from Radarr…' }).click();
+  dialog = page.getByRole('dialog', { name: /Remove from Radarr/ });
+  await exclude().uncheck();
+  removed = page.waitForRequest(/\/admin\/movies\//);
+  await dialog
+    .getByRole('button', { name: 'Remove from Radarr', exact: true })
+    .click();
+  request = await removed;
+  expect(decodeURIComponent(new URL(request.url()).pathname)).toBe(
+    '/api/v1/admin/movies/tmdb:37',
+  );
+  expect(new URL(request.url()).searchParams.get('exclude')).toBe('false');
+  await expect(card(page, 'tmdb:37')).toHaveCount(0);
+
+  await view(page, 'user');
+  await page.goto('/#library/movies');
+  await expect(card(page, 'tmdb:38')).toBeVisible();
+  await expect(
+    card(page, 'tmdb:38').getByRole('button', { name: /^More actions/ }),
+  ).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('a whole series or season joins Watch Later and leaves it once watched', async ({
   page,
 }) => {
