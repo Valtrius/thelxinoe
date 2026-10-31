@@ -139,7 +139,7 @@
 <li
   data-episode={episode.id ?? undefined}
   class={[
-    'grid grid-cols-[8.5rem_minmax(0,1fr)_auto] items-start gap-x-3.5 border-b border-line px-2 py-3 last:border-b-0 compact:grid-cols-[6.5rem_minmax(0,1fr)_auto] compact:gap-x-3 compact:px-0',
+    'grid grid-cols-[8.5rem_minmax(0,1fr)_auto] items-start gap-x-3.5 border-b border-line px-2 py-3 last:border-b-0 compact:grid-cols-[6.5rem_minmax(0,1fr)_auto] compact:gap-x-3',
     next && 'bg-accent-soft shadow-[inset_2px_0_0_var(--accent)]',
     focused && !next && 'bg-accent-soft/50',
   ]}
@@ -166,56 +166,60 @@
     >
       {@render picture()}
     </div>{/if}
-  <div class="min-w-0">
-    <p
-      class={[
-        'mb-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium',
-        watched && 'text-foreground/80',
-        current === 'upcoming' && !episode.id && 'text-muted',
-      ]}
-    >
-      <span
-        ><span class="mr-1 text-muted tabular-nums">{episode.number}.</span
-        >{label}</span
-      >{#if next}<span
-          class="border border-line-strong px-1.5 pt-0.5 pb-px text-[8.5px] font-bold tracking-[0.12em] text-accent uppercase"
-          >Next up</span
-        >{/if}
-    </p>
-    <p
-      class="mt-1 mb-0 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted"
-    >
-      {#if episode.air_date && current !== 'upcoming'}<span
-          >{airDate(episode.air_date)}</span
-        >{/if}{#if resume}<span class="text-accent">{resume}</span
-        >{/if}{#if episode.status && episode.status.state !== 'available'}<StatusBadge
-          status={episode.status}
-          {timezone}
-          compact
-        />{/if}{#if admin && episode.file && (episode.file.quality || episode.file.size)}<span
-          class="inline-flex items-center gap-1.5"
-          ><Film size={12} class="shrink-0" />{[
-            episode.file.quality,
-            episode.file.size ? formatBytes(episode.file.size) : '',
-          ]
-            .filter(Boolean)
-            .join(' · ')}</span
-        >{/if}
-    </p>
+  <div class="min-w-0 compact:contents">
+    <div class="min-w-0">
+      <p
+        class={[
+          'mb-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium',
+          watched && 'text-foreground/80',
+          current === 'upcoming' && !episode.id && 'text-muted',
+        ]}
+      >
+        <span
+          ><span class="mr-1 text-muted tabular-nums">{episode.number}.</span
+          >{label}</span
+        >{#if next}<span
+            class="border border-line-strong px-1.5 pt-0.5 pb-px text-[8.5px] font-bold tracking-[0.12em] text-accent uppercase"
+            >Next up</span
+          >{/if}
+      </p>
+      <p
+        class="mt-1 mb-0 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted"
+      >
+        {#if episode.air_date && current !== 'upcoming'}<span
+            >{airDate(episode.air_date)}</span
+          >{/if}{#if resume}<span class="text-accent">{resume}</span
+          >{/if}{#if episode.status && episode.status.state !== 'available'}<StatusBadge
+            status={episode.status}
+            {timezone}
+            compact
+          />{/if}{#if admin && episode.file && (episode.file.quality || episode.file.size)}<span
+            class="inline-flex items-center gap-1.5"
+            ><Film size={12} class="shrink-0" />{[
+              episode.file.quality,
+              episode.file.size ? formatBytes(episode.file.size) : '',
+            ]
+              .filter(Boolean)
+              .join(' · ')}</span
+          >{/if}
+      </p>
+    </div>
     {#if episode.overview}<p
-        class="mt-1.5 mb-0 line-clamp-2 max-w-190 text-xs leading-5 text-muted"
+        class="mt-1.5 mb-0 line-clamp-2 max-w-190 text-xs leading-5 text-muted compact:col-span-full compact:mt-2"
       >
         {episode.overview}
       </p>{/if}
     {#if managed && current === 'missing'}<div
-        class="mt-2.5 flex flex-wrap gap-1.5"
+        class="mt-2.5 flex flex-wrap gap-1.5 compact:col-span-full"
       >
         <Button size="sm" loading={searching} onclick={() => void search(false)}
           ><Zap size={13} />Search</Button
         ><Button variant="secondary" size="sm" onclick={() => (releases = true)}
           ><ScanSearch size={13} />Interactive search…</Button
         >
-      </div>{:else if managed && current === 'unmonitored'}<div class="mt-2.5">
+      </div>{:else if managed && current === 'unmonitored'}<div
+        class="mt-2.5 compact:col-span-full"
+      >
         <Button
           variant="secondary"
           size="sm"
@@ -225,7 +229,9 @@
         >
       </div>{/if}
   </div>
-  <div class="flex items-center gap-0.5">
+  <div
+    class="flex items-center gap-0.5 compact:col-start-3 compact:row-start-1"
+  >
     {#if episode.id}<WatchedToggle
         {watched}
         {progress}

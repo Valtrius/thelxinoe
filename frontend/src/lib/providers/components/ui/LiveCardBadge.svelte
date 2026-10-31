@@ -20,7 +20,7 @@
 </script>
 
 <span
-  class={`border bg-[rgba(5,7,10,0.82)] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] uppercase ${tones[tone]} ${pulse ? 'animate-pulse' : ''}`}
+  class={`border bg-[rgba(5,7,10,0.82)] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] uppercase phone-card:px-1.5 phone-card:py-0.75 phone-card:text-[8.5px] ${tones[tone]} ${pulse ? 'animate-pulse' : ''}`}
 >
   {@render children()}
 </span>

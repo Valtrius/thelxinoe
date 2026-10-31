@@ -122,12 +122,12 @@
     </div>
     {#if statistics}
       <span
-        class="absolute right-2 bottom-2 border border-white/20 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-white phone-card:card-pixels"
+        class="absolute right-2 bottom-2 border border-white/20 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-white phone-card:card-pixels phone-card:px-1.5 phone-card:py-0.75 phone-card:text-[9px]"
       >
         {formatViewers(statistics.viewerCount)} viewers
       </span>
       <span
-        class={`absolute bottom-2 left-2 border bg-black/75 px-2 py-1 font-mono text-[0.62rem] phone-card:card-pixels ${tone.label}`}
+        class={`absolute bottom-2 left-2 border bg-black/75 px-2 py-1 font-mono text-[0.62rem] phone-card:card-pixels phone-card:px-1.5 phone-card:py-0.75 phone-card:text-[9px] ${tone.label}`}
       >
         {elapsedTime(statistics.startedAt, liveNow())}
       </span>
