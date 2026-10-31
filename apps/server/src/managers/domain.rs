@@ -65,7 +65,7 @@ pub(super) struct RetentionPolicy {
     pub trigger_users: Vec<String>,
     #[serde(default = "default_video_limit")]
     pub storage_limit_bytes: i64,
-    /// Add each deleted title to its manager's exclusion list.
+    /// Add each deleted movie to Radarr's exclusion list.
     #[serde(default = "default_exclude")]
     pub exclude_from_lists: bool,
     /// Remove each deleted movie from Radarr.

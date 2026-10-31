@@ -91,8 +91,9 @@ async fn policy(
     input.trigger_users.dedup();
     if domain == "videos" {
         input.trigger_users.clear();
-        input.exclude_from_lists = true;
     }
+    // A season's files are deleted and it is unmonitored; only a movie leaves its lists.
+    input.exclude_from_lists &= domain == "movies";
     input.remove_from_manager &= domain == "movies";
     if domain != "videos" && input.enabled && input.trigger_users.is_empty() {
         return Err(ApiError::bad(
@@ -224,7 +225,7 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
     }
 }
 
-/// What the auto-delete policy that scheduled `operation` does to its manager entries,
+/// What the auto-delete policy that scheduled `operation` does to its movie in Radarr,
 /// or `None` when no auto-delete scheduled it.
 pub(super) async fn options(state: &AppState, operation: &str) -> Result<Option<Retained>> {
     let operation = operation.to_owned();
@@ -235,7 +236,6 @@ pub(super) async fn options(state: &AppState, operation: &str) -> Result<Option<
 #[derive(Clone, Copy)]
 pub(super) struct Retained {
     pub exclude: bool,
-    /// Only a movie's policy removes it from Radarr.
     pub remove: bool,
 }
 
@@ -246,8 +246,8 @@ pub(super) async fn exclude(state: &AppState, files: &[operations::Target]) -> R
             continue;
         }
         let s = service(state, &claim.service_id).await?;
-        if !matches!(s.kind.as_str(), "radarr" | "sonarr") {
-            return Err(ApiError::conflict("Music is excluded from retention"));
+        if s.kind != "radarr" {
+            return Err(ApiError::conflict("Only Radarr movies are excluded"));
         }
         let c = Connection::open(state, &s).await?;
         let (eid, created) = ensure_exclusion(&c, claim.entity_id, &claim.external_id).await?;
@@ -258,45 +258,32 @@ pub(super) async fn exclude(state: &AppState, files: &[operations::Target]) -> R
     Ok(())
 }
 
-/// Put a Radarr movie or Sonarr series on its manager's exclusion list, so import lists
-/// don't add it again. Returns the exclusion's id, and whether it was added now rather
-/// than found there.
+/// Put a Radarr movie on Radarr's exclusion list, so import lists don't add it again.
+/// Returns the exclusion's id, and whether it was added now rather than found there.
 pub(super) async fn ensure_exclusion(
     c: &Connection<'_>,
     entity: i64,
-    external: &str,
+    tmdb: &str,
 ) -> Result<(i64, bool)> {
-    let field = if c.kind == "radarr" {
-        "tmdbId"
-    } else {
-        "tvdbId"
-    };
-    let id = external.parse::<i64>().map_err(|_| unavailable())?;
-    let endpoint = exclusion_endpoint(&c.kind);
-    let existing = c.get(endpoint).await?;
+    let id = tmdb.parse::<i64>().map_err(|_| unavailable())?;
+    let existing = c.get("exclusions").await?;
     let found = existing
         .as_array()
         .ok_or_else(unavailable)?
         .iter()
-        .find(|v| v[field].as_i64() == Some(id));
+        .find(|v| v["tmdbId"].as_i64() == Some(id));
     let (exclusion, created) = if let Some(found) = found {
         (found.clone(), false)
     } else {
-        let item = c
-            .get(&format!("{}/{entity}", requests::endpoint(&c.kind)))
-            .await?;
-        if requests::external(&c.kind, &item).as_deref() != Some(external) {
+        let movie = c.get(&format!("movie/{entity}")).await?;
+        if requests::external("radarr", &movie).as_deref() != Some(tmdb) {
             return Err(ApiError::conflict(
-                "Manager identity changed before its exclusion",
+                "Radarr movie identity changed before its exclusion",
             ));
         }
-        let body = if c.kind == "radarr" {
-            json!({"tmdbId":id,"movieTitle":item["title"],"movieYear":item["year"]})
-        } else {
-            json!({"tvdbId":id,"title":item["title"]})
-        };
+        let body = json!({"tmdbId":id,"movieTitle":movie["title"],"movieYear":movie["year"]});
         (
-            c.call(reqwest::Method::POST, endpoint, &[], Some(body))
+            c.call(reqwest::Method::POST, "exclusions", &[], Some(body))
                 .await?,
             true,
         )

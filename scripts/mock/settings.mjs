@@ -248,7 +248,7 @@ export function settingsSeed() {
         exclude_specials: true,
         trigger_users: [admin.id],
         storage_limit_bytes: domain === 'videos' ? 50 * 1024 ** 3 : null,
-        exclude_from_lists: true,
+        exclude_from_lists: domain === 'movies',
         remove_from_manager: false,
       })),
       video_usage: {

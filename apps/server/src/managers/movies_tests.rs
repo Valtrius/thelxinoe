@@ -456,8 +456,8 @@ async fn auto_delete_removes_and_excludes_movies_as_its_policy_says() {
     assert_eq!(options("movies"), (json!(false), json!(true)));
     assert_eq!(
         options("shows"),
-        (json!(true), json!(false)),
-        "Only movies leave their manager"
+        (json!(false), json!(false)),
+        "A deleted season is only unmonitored"
     );
     let item = &listed["items"][0];
     assert_eq!(

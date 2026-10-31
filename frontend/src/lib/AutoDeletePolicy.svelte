@@ -242,12 +242,8 @@
               bind:checked={policy.remove_from_manager}
             />
           </SettingRow>
-        {/if}
-        {#if !video}
           <SettingRow
-            label={policy.domain === 'movies'
-              ? "Add to Radarr's exclusion list"
-              : "Add the series to Sonarr's exclusion list"}
+            label="Add to Radarr's exclusion list"
             for={`${ids}-exclude`}
           >
             <Switch

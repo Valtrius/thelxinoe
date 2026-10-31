@@ -12,7 +12,7 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
     exclude_specials: true,
     trigger_users: [],
     storage_limit_bytes: 100_000_000_000,
-    exclude_from_lists: true,
+    exclude_from_lists: domain === 'movies',
     remove_from_manager: false,
   }));
   const writes: { domain: string; value: (typeof policies)[number] }[] = [];
@@ -118,6 +118,15 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
       policies[0].exclude_from_lists,
     ])
     .toEqual([true, false]);
+  const shows = page.getByRole('group', { name: 'TV seasons', exact: true });
+  await shows.getByRole('checkbox', { name: 'Alice', exact: true }).check();
+  await shows
+    .getByRole('switch', { name: 'Auto-delete watched seasons' })
+    .check();
+  await expect(
+    shows.getByRole('switch', { name: 'Exclude specials (Season 0)' }),
+  ).toBeVisible();
+  await expect(shows.getByText(/exclusion list/)).toHaveCount(0);
   await expect(
     page
       .locator('.settings-content')
