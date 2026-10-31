@@ -204,7 +204,12 @@ pub async fn browse(
         &grant,
     )
     .await?;
+    items.retain(visible_in_library);
     Ok(Json(json!({"items":items})))
+}
+
+fn visible_in_library(item: &Value) -> bool {
+    item["kind"] != "movie" || item["available"] == true || !item["status"].is_null()
 }
 
 /// A movie or show card and what its list is sorted and filtered by.
@@ -345,6 +350,7 @@ async fn titles(
     let mut shelf = cards
         .into_iter()
         .zip(files)
+        .filter(|(card, _)| visible_in_library(card))
         .map(|(mut card, files)| {
             let metadata = &card["metadata"];
             let manager = card["id"]
@@ -514,6 +520,14 @@ pub async fn detail(
     }
     // Keep protects files from deletion, which only administrators manage.
     if p.user.role == thelxinoe_core::Role::Admin {
+        item["metadata_refreshable"] = json!(
+            crate::managers::can_refresh_metadata(
+                &state,
+                &media_id,
+                item["kind"].as_str().unwrap_or_default(),
+            )
+            .await?
+        );
         let protection = storage::keep(&state.db, media_id).await?;
         item["keep"] = json!(protection.own);
         item["kept_by"] = json!(protection.by);

@@ -971,12 +971,15 @@ async fn top_level_lists_filter_and_sort_before_they_are_cut() {
 UPDATE media SET metadata=json_set(metadata,'$.status','ended') WHERE id='show';
 INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice','movie-matched',1,1);
 INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES ('movie-started','movies','movie',NULL,'d','Started',2);
+UPDATE media SET metadata='{\"tmdb_id\":108}' WHERE id='movie-started';
 INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
         Ok(())
     }).await.unwrap();
     let movies = inventory(
         "radarr",
         json!([
+            {"id":1,"tmdbId":101,"title":"Beta","monitored":true,"isAvailable":true},
+            {"id":8,"tmdbId":108,"title":"Started","monitored":true,"isAvailable":true},
             {"id":2,"tmdbId":102,"title":"alpha wanted","monitored":true,"isAvailable":true,"added":"2024-01-01T00:00:00Z"},
             {"id":3,"tmdbId":103,"title":"Gamma","monitored":true,"isAvailable":false,"digitalRelease":FUTURE,
              "added":"2025-01-01T00:00:00Z","genres":["Drama"]},
@@ -1017,18 +1020,17 @@ INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
             "alpha wanted",
             "Beta",
             "delta",
-            "Epsilon",
             "Gamma",
             "Queued one",
             "Started"
         ]
     );
-    assert_eq!(body["total"], 7);
+    assert_eq!(body["total"], 6);
     assert_eq!(body["genres"], json!(["Drama"]));
     assert_eq!(
         body["counts"],
-        json!({"watch":{"in_progress":1,"unwatched":5,"watched":1},
-            "availability":{"downloaded":1,"downloading":1,"not_downloaded":4,"upcoming":1}})
+        json!({"watch":{"in_progress":1,"unwatched":4,"watched":1},
+            "availability":{"downloaded":1,"downloading":1,"not_downloaded":3,"upcoming":1}})
     );
     for (query, expected) in [
         ("kind=movie&watch=watched", vec!["delta"]),
@@ -1043,7 +1045,7 @@ INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
         ),
         (
             "kind=movie&availability=not_downloaded&q=E",
-            vec!["alpha wanted", "Beta", "Epsilon", "Started"],
+            vec!["alpha wanted", "Beta", "Started"],
         ),
         ("kind=movie&genre=Drama", vec!["Beta", "Gamma"]),
         (
@@ -1052,7 +1054,6 @@ INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
                 "Started",
                 "Queued one",
                 "Gamma",
-                "Epsilon",
                 "delta",
                 "Beta",
                 "alpha wanted",
@@ -1067,7 +1068,6 @@ INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
                 "Started",
                 "Beta",
                 "delta",
-                "Epsilon",
                 "Queued one",
             ],
         ),
@@ -1076,7 +1076,6 @@ INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
             vec![
                 "Beta",
                 "delta",
-                "Epsilon",
                 "Started",
                 "alpha wanted",
                 "Gamma",
@@ -1090,7 +1089,6 @@ INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
                 "Beta",
                 "alpha wanted",
                 "delta",
-                "Epsilon",
                 "Gamma",
                 "Started",
             ],
@@ -1102,7 +1100,7 @@ INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
     let (_, body) = titles("kind=movie&q=E&watch=watched").await;
     assert_eq!(
         body["counts"]["watch"],
-        json!({"in_progress":1,"unwatched":4,"watched":1})
+        json!({"in_progress":1,"unwatched":3,"watched":1})
     );
     let (shows, body) = titles("kind=show").await;
     assert_eq!(shows, ["Show", "Unwatched series"]);
@@ -1161,6 +1159,7 @@ INSERT INTO media_sources VALUES ('movie-plain','f3'),('e1','f4'),('e2','f4');")
     let movies = inventory(
         "radarr",
         json!([
+            {"id":1,"tmdbId":101,"title":"Beta","monitored":true,"isAvailable":true},
             {"id":2,"tmdbId":102,"title":"alpha wanted","monitored":true,"isAvailable":true,"sizeOnDisk":1000,"inCinemas":PAST},
             {"id":3,"tmdbId":103,"title":"Gamma","monitored":true,"isAvailable":false,"digitalRelease":FUTURE,
              "runtime":95,"statistics":{"sizeOnDisk":3000}},
@@ -1203,47 +1202,19 @@ INSERT INTO media_sources VALUES ('movie-plain','f3'),('e1','f4'),('e2','f4');")
     for (query, expected) in [
         (
             "kind=movie&sort=size&order=desc",
-            vec![
-                "delta",
-                "Gamma",
-                "alpha wanted",
-                "Beta",
-                "Epsilon",
-                "Queued one",
-            ],
+            vec!["delta", "Gamma", "alpha wanted", "Beta", "Queued one"],
         ),
         (
             "kind=movie&sort=size",
-            vec![
-                "alpha wanted",
-                "Gamma",
-                "delta",
-                "Beta",
-                "Epsilon",
-                "Queued one",
-            ],
+            vec!["alpha wanted", "Gamma", "delta", "Beta", "Queued one"],
         ),
         (
             "kind=movie&sort=runtime&order=desc",
-            vec![
-                "Beta",
-                "Gamma",
-                "alpha wanted",
-                "delta",
-                "Epsilon",
-                "Queued one",
-            ],
+            vec!["Beta", "Gamma", "alpha wanted", "delta", "Queued one"],
         ),
         (
             "kind=movie&sort=released",
-            vec![
-                "alpha wanted",
-                "delta",
-                "Gamma",
-                "Beta",
-                "Epsilon",
-                "Queued one",
-            ],
+            vec!["alpha wanted", "delta", "Gamma", "Beta", "Queued one"],
         ),
         (
             "kind=show&sort=episodes&order=desc",
@@ -1296,6 +1267,136 @@ INSERT INTO media_sources VALUES ('movie-plain','f3'),('e1','f4'),('e2','f4');")
 }
 
 #[tokio::test]
+async fn missing_movies_leave_the_library_without_losing_history_and_return_with_their_file() {
+    let (_temp, state, alice, bob) = api_fixture().await;
+    state.db.write("test.missing_movie", |db| {
+        db.execute_batch("UPDATE media SET metadata='{\"tmdb_id\":999,\"belongs_to_collection\":{\"id\":77}}' WHERE id='movie-plain';
+INSERT INTO metadata_bindings(media_id,service_id,service_generation,external_id,manager_entity_id) VALUES ('movie-plain','radarr-1','g','999',999);
+INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,present,scanned_at) VALUES ('missing-file','movies','/media/movies/missing.mkv','g',1,'m','missing','{}',0,1);
+INSERT INTO media_sources VALUES ('movie-plain','missing-file');
+INSERT INTO media_state(user_id,media_id,watched,favorite,updated_at) VALUES ('alice','movie-plain',1,1,1);
+INSERT INTO edition_progress VALUES ('alice','movie-plain','',30,60,1);")?;
+        Ok(())
+    }).await.unwrap();
+    for cookie in [&alice, &bob] {
+        for query in [
+            "kind=movie",
+            "q=Epsilon",
+            "kind=movie&q=Epsilon",
+            "kind=movie&collection=77",
+        ] {
+            let (status, _, body) = call(
+                &state,
+                &format!("/api/v1/catalog?{query}"),
+                "GET",
+                Value::Null,
+                cookie,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                body["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|item| item["id"] != "movie-plain"),
+                "{query}: {body}"
+            );
+            if query == "kind=movie" {
+                assert!(
+                    body["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|item| item["id"] == "movie-bound")
+                );
+            }
+        }
+    }
+    assert!(
+        !library_ids(&state, "movie")
+            .await
+            .unwrap()
+            .tmdb
+            .contains(&999)
+    );
+    let retained = call(
+        &state,
+        "/api/v1/catalog/movie-plain",
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(retained.0, StatusCode::OK);
+    assert_eq!(retained.2["watched"], true);
+    assert!(retained.2.get("metadata_refreshable").is_none());
+    let flags = call(
+        &state,
+        "/api/v1/catalog/movie-plain/state",
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(flags.2["favorite"], true);
+    assert_eq!(flags.2["watched"], true);
+    let progress: f64 = state.db.read("test.progress", |db| Ok(db.query_row("SELECT position FROM edition_progress WHERE media_id='movie-plain' AND user_id='alice'", [], |r| r.get(0))?)).await.unwrap();
+    assert_eq!(progress, 30.0);
+
+    state
+        .db
+        .write("test.returned_file", |db| {
+            db.execute(
+                "UPDATE media_files SET present=1 WHERE id='missing-file'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let returned = call(
+        &state,
+        "/api/v1/catalog?kind=movie&q=Epsilon",
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(returned.2["items"][0]["id"], "movie-plain");
+    assert_eq!(returned.2["items"][0]["watched"], true);
+    assert!(
+        library_ids(&state, "movie")
+            .await
+            .unwrap()
+            .tmdb
+            .contains(&999)
+    );
+
+    let cached = super::snapshot(&state);
+    replace(&state, Snapshot::default());
+    let removed = call(
+        &state,
+        "/api/v1/catalog?kind=movie&q=Beta",
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(removed.2["items"], json!([]));
+    replace(&state, (*cached).clone());
+    let tracked = call(
+        &state,
+        "/api/v1/catalog?kind=movie&q=Beta",
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(tracked.2["items"][0]["id"], "movie-bound");
+}
+
+#[tokio::test]
 async fn browse_detail_seasons_and_lookup_expose_cached_status() {
     let (_temp, state, alice, bob) = api_fixture().await;
     let get = |path: String, cookie: String| {
@@ -1311,7 +1412,6 @@ async fn browse_detail_seasons_and_lookup_expose_cached_status() {
             "alpha wanted",
             "Beta",
             "delta",
-            "Epsilon",
             "Gamma",
             "Omega",
             "Queued one",
@@ -1332,13 +1432,12 @@ async fn browse_detail_seasons_and_lookup_expose_cached_status() {
     assert!(items[1].get("virtual").is_none());
     assert_eq!(items[1]["status"], json!({"state":"unavailable"}));
     assert_eq!(items[2]["status"], json!({"state":"available"}));
-    assert_eq!(items[3]["status"], Value::Null);
-    assert_eq!(items[4]["status"]["state"], "upcoming");
-    assert_eq!(items[5]["status"]["state"], "available");
-    assert_eq!(items[6]["status"]["state"], "queued");
+    assert_eq!(items[3]["status"]["state"], "upcoming");
+    assert_eq!(items[4]["status"]["state"], "available");
+    assert_eq!(items[5]["status"]["state"], "queued");
     // Users see an unmonitored title as one that will not come.
     assert_eq!(
-        items[7]["status"],
+        items[6]["status"],
         json!({"state":"unavailable","inactive":true})
     );
     let admin = get("/api/v1/catalog?kind=movie&q=A".into(), bob.clone()).await;
@@ -1377,8 +1476,7 @@ async fn browse_detail_seasons_and_lookup_expose_cached_status() {
             .starts_with("/api/v1/catalog/titles/sonarr-1/10/artwork/fanart?grant=")
     );
     let unlinked = get("/api/v1/catalog?kind=movie&q=Epsilon".into(), bob.clone()).await;
-    assert_eq!(unlinked.2["items"][0]["title"], "Epsilon");
-    assert_eq!(unlinked.2["items"][0]["backdrop_url"], Value::Null);
+    assert_eq!(unlinked.2["items"], json!([]));
     // Home shelves are landscape, so their cards get the same backdrops.
     let saved = call(
         &state,

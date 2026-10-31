@@ -197,6 +197,11 @@ async fn refresh(
     if manager_kind(&kind).is_none() {
         return Err(ApiError::bad("Refresh local movie, show or music metadata"));
     }
+    if !can_refresh(&state, &media_id, &kind).await? {
+        return Err(ApiError::bad(
+            "Find a metadata match before refreshing this item",
+        ));
+    }
     // A refresh already waiting for this media returns its job instead of adding one.
     let job = thelxinoe_jobs::Queue(state.db.clone())
         .enqueue(
@@ -277,6 +282,27 @@ async fn inferred_binding(
     let media = media.to_owned();
     let manager = manager.to_owned();
     storage::inferred_binding(media, manager, &state.db).await
+}
+
+async fn refresh_binding(
+    state: &AppState,
+    media: &str,
+    manager: &str,
+) -> anyhow::Result<Option<(Binding, bool)>> {
+    if let Some(binding) = stored_binding(state, media).await? {
+        return Ok(Some((binding, false)));
+    }
+    Ok(inferred_binding(state, media, manager)
+        .await?
+        .map(|binding| (binding, true)))
+}
+
+pub(crate) async fn can_refresh(state: &AppState, media: &str, kind: &str) -> anyhow::Result<bool> {
+    let Some(manager) = manager_kind(kind) else {
+        return Ok(false);
+    };
+    let (target, _) = root_target(state, media, kind).await?;
+    Ok(refresh_binding(state, &target, manager).await?.is_some())
 }
 
 async fn ancestor(
@@ -798,15 +824,10 @@ pub(crate) async fn run(state: &AppState, payload: &Value) -> anyhow::Result<()>
     };
     let (binding, inferred) = if let Some(binding) = explicit {
         (binding, false)
-    } else if let Some(binding) = stored_binding(state, &target).await? {
-        (binding, false)
     } else {
-        (
-            inferred_binding(state, &target, manager)
-                .await?
-                .context("No matching Radarr, Sonarr or Lidarr item is available")?,
-            true,
-        )
+        refresh_binding(state, &target, manager)
+            .await?
+            .context("Find a metadata match before refreshing this item")?
     };
     let service = service(state, &binding.service_id)
         .await

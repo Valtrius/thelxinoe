@@ -189,6 +189,51 @@ test('title menus keep administration actions behind the three dots', async ({
   expect(errors).toEqual([]);
 });
 
+test('unmatched movies offer a match without a failing refresh action', async ({
+  page,
+}) => {
+  const errors = track(page);
+  await page.goto('/#library/movies');
+  let menu = await cardMenu(page, 'movie-0', 'Beyond the Horizon');
+  await expect(
+    menu.getByRole('menuitem', { name: 'Refresh metadata' }),
+  ).toHaveCount(0);
+  await menu.getByRole('menuitem', { name: 'Fix match…' }).click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Fix match · Beyond the Horizon',
+  });
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole('button', { name: 'Refresh metadata' }),
+  ).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Search media service' }).click();
+  await expect(
+    dialog.getByRole('button', { name: 'Use this match' }).first(),
+  ).toBeVisible();
+  const matched = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' &&
+      request.url().endsWith('/catalog/movie-0/match'),
+  );
+  await dialog.getByRole('button', { name: 'Use this match' }).first().click();
+  expect((await matched).postDataJSON()).toEqual({
+    service_id: 'manager-radarr',
+    service_generation: 'preview',
+    external_id: 'movie-0',
+  });
+  await expect(dialog.getByRole('status')).toHaveText('Match queued.');
+  await page.keyboard.press('Escape');
+  menu = await cardMenu(page, 'movie-1', 'Nightfall');
+  const refreshed = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' &&
+      request.url().endsWith('/catalog/movie-1/refresh'),
+  );
+  await menu.getByRole('menuitem', { name: 'Refresh metadata' }).click();
+  await refreshed;
+  expect(errors).toEqual([]);
+});
+
 test('a whole series or season joins Watch Later and leaves it once watched', async ({
   page,
 }) => {

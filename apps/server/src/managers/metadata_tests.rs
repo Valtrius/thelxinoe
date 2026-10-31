@@ -4,6 +4,98 @@ use axum::{Router, extract::Query, routing::get};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+#[tokio::test]
+async fn refresh_requires_a_current_match_before_it_can_be_queued() {
+    use crate::test_support::call;
+    use axum::http::StatusCode;
+
+    let (_temp, state, cookie) = fixture().await;
+    state.db.write("test.refresh_matches", |db| {
+        db.execute_batch("UPDATE users SET role='admin' WHERE id='alice';
+INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Movies','movies','/movies');
+INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,operational) VALUES ('radarr','Radarr','radarr','c1',7878,'current',X'00','/media','1',1,1);")?;
+        for id in ["unmatched", "matched", "inferred", "stale"] {
+            db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES (?1,'root','movie',?1,?1,'{\"tmdb_id\":762441}',1)", [id])?;
+        }
+        db.execute_batch("INSERT INTO metadata_bindings(media_id,service_id,service_generation,external_id) VALUES ('matched','radarr','current','762441'),('stale','radarr','old','762441');
+INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES ('file','root','/movies/movie.mkv','g',1,'m','f','{}','managed',1);
+INSERT INTO media_sources VALUES ('inferred','file');")?;
+        db.execute("INSERT INTO manager_bindings VALUES ('file','radarr','g','current',1,1,'/movies/movie.mkv','762441','[]',?1)", [now()])?;
+        Ok(())
+    }).await.unwrap();
+    for (id, refreshable) in [
+        ("unmatched", false),
+        ("stale", false),
+        ("matched", true),
+        ("inferred", true),
+    ] {
+        let detail = call(
+            &state,
+            &format!("/api/v1/catalog/{id}"),
+            "GET",
+            Value::Null,
+            &cookie,
+        )
+        .await;
+        assert_eq!(detail.0, StatusCode::OK, "{}", detail.2);
+        assert_eq!(detail.2["metadata_refreshable"], refreshable, "{id}");
+        let refresh = call(
+            &state,
+            &format!("/api/v1/catalog/{id}/refresh"),
+            "POST",
+            Value::Null,
+            &cookie,
+        )
+        .await;
+        assert_eq!(
+            refresh.0,
+            if refreshable {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            "{id}: {}",
+            refresh.2
+        );
+        if !refreshable {
+            assert_eq!(
+                refresh.2["error"]["message"],
+                "Find a metadata match before refreshing this item"
+            );
+        }
+    }
+    let jobs: i64 = state
+        .db
+        .read("test.refresh_jobs", |db| {
+            Ok(db.query_row(
+                "SELECT COUNT(*) FROM jobs WHERE kind='metadata.refresh'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(jobs, 2);
+    state
+        .db
+        .write("test.stale_inventory", |db| {
+            db.execute("UPDATE manager_bindings SET checked_at=?1", [now() - 61])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(!can_refresh(&state, "inferred", "movie").await.unwrap());
+    state
+        .db
+        .write("test.disabled_manager", |db| {
+            db.execute("UPDATE manager_services SET operational=0", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(!can_refresh(&state, "matched", "movie").await.unwrap());
+}
+
 /// Serves `stub` as an owned `kind` manager whose container shares the server's media mount.
 async fn serve_manager(
     temp: &tempfile::TempDir,
