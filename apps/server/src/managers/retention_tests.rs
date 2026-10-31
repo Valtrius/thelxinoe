@@ -548,6 +548,31 @@ async fn season_requires_complete_confirmed_aired_metadata_and_all_selected_user
 }
 
 #[tokio::test]
+async fn scheduled_seasons_are_named_with_their_show() {
+    let (_temp, state, _) = movie().await;
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('show','ret-root','show','show','Silo (2023)',1)",[])?;
+        db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('season','ret-root','season','show','season','Season 2',2,1)",[])?;
+        for (key, media) in [("movie-candidate", "ret-movie"), ("season-candidate", "season")] {
+            db.execute("INSERT INTO retention_candidates(id,media_id,stamp,state,eligible_at,due_at) VALUES (?1,?2,'stamp','pending',1,1)",[key,media])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let listed = storage::list(&state.db).await.unwrap();
+    let title = |id: &str| {
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == id)
+            .unwrap()["title"]
+            .clone()
+    };
+    assert_eq!(title("season-candidate"), "Silo (2023) · Season 2");
+    assert_eq!(title("movie-candidate"), "Retention fixture");
+}
+
+#[tokio::test]
 async fn auto_delete_waits_at_least_a_day() {
     let (_temp, state, cookie) = fixture().await;
     state
