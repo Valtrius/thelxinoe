@@ -53,6 +53,7 @@ use axum::{
     http::HeaderMap,
     routing::{get, post},
 };
+pub(crate) use metadata::can_refresh as can_refresh_metadata;
 pub(crate) use metadata::run as run_metadata;
 pub(crate) use requests::acquire;
 

@@ -1343,7 +1343,7 @@ pub(crate) async fn virtual_titles(
     if !snapshot.services.contains_key(manager) {
         return Ok(Vec::new());
     }
-    let linked = storage::linked(&state.db, kind.to_owned()).await?;
+    let linked = storage::linked(&state.db, kind.to_owned(), false).await?;
     Ok(virtual_items(
         &snapshot,
         kind,
@@ -1399,7 +1399,7 @@ fn virtual_items(
 /// The TMDB and TVDB ids of every movie or show the library lists: its own items and
 /// the Radarr or Sonarr titles shown beside them.
 pub(super) async fn library_ids(state: &AppState, kind: &str) -> Result<Linked> {
-    let mut linked = storage::linked(&state.db, kind.to_owned()).await?;
+    let mut linked = storage::linked(&state.db, kind.to_owned(), kind == "movie").await?;
     if let Some(inventory) = manager(kind).and_then(|m| snapshot(state).services.get(m).cloned()) {
         linked.tmdb.extend(inventory.by_tmdb.keys());
         if kind == "show" {

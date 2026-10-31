@@ -425,6 +425,9 @@ export async function mediaApi(s, c) {
           : {}),
         ...(viewer(s).role === 'admin'
           ? (({ own, by, within }) => ({
+              metadata_refreshable: !!(
+                item.metadata?.tmdb_id || item.metadata?.tvdb_id
+              ),
               keep: own,
               kept_by: by,
               kept_within: within,
