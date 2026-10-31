@@ -139,7 +139,12 @@ export async function mediaApi(s, c) {
         availability: availability.length ? availability : ['not_downloaded'],
       };
     };
-    const own = s.library.filter((item) => item.kind === kind);
+    // A movie without files that Radarr no longer lists leaves the library.
+    const own = s.library.filter(
+      (item) =>
+        item.kind === kind &&
+        (kind !== 'movie' || item.available !== false || statusOf(s, item)),
+    );
     const genres = [...new Set(own.flatMap((item) => item.metadata.genres))];
     let shelf = own
       .filter((_, index) =>

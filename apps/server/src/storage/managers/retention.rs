@@ -24,7 +24,7 @@ pub(super) async fn revalidate_operation(
 
 pub(super) async fn list(db: &Database) -> anyhow::Result<Value> {
     db.read("managers.retention.list", |db|{
-        let policies=db.prepare("SELECT domain,enabled,grace_seconds,exclude_specials,trigger_users,storage_limit_bytes FROM retention_policies ORDER BY domain")?.query_map([],|r|Ok(json!({"domain":r.get::<_,String>(0)?,"enabled":r.get::<_,bool>(1)?,"grace_seconds":r.get::<_,i64>(2)?,"exclude_specials":r.get::<_,bool>(3)?,"trigger_users":serde_json::from_str::<Value>(&r.get::<_,String>(4)?).unwrap_or_default(),"storage_limit_bytes":r.get::<_,i64>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let policies=db.prepare("SELECT domain,enabled,grace_seconds,exclude_specials,trigger_users,storage_limit_bytes,exclude_from_lists,remove_from_manager FROM retention_policies ORDER BY domain")?.query_map([],|r|Ok(json!({"domain":r.get::<_,String>(0)?,"enabled":r.get::<_,bool>(1)?,"grace_seconds":r.get::<_,i64>(2)?,"exclude_specials":r.get::<_,bool>(3)?,"trigger_users":serde_json::from_str::<Value>(&r.get::<_,String>(4)?).unwrap_or_default(),"storage_limit_bytes":r.get::<_,i64>(5)?,"exclude_from_lists":r.get::<_,bool>(6)?,"remove_from_manager":r.get::<_,bool>(7)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let items=db.prepare("SELECT c.id,c.media_id,COALESCE(s.title||' · '||m.title,m.title),c.state,c.eligible_at,c.due_at,c.error,c.watched_users,m.kind FROM retention_candidates c JOIN media m ON m.id=c.media_id LEFT JOIN media s ON s.id=m.parent_id AND m.kind='season' ORDER BY c.state='pending' DESC,c.eligible_at DESC LIMIT 200")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"media_id":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"eligible_at":r.get::<_,i64>(4)?,"due_at":r.get::<_,i64>(5)?,"error":r.get::<_,Option<String>>(6)?,"watched_users":serde_json::from_str::<Value>(&r.get::<_,String>(7)?).unwrap_or_default(),"domain":if r.get::<_,String>(8)?=="movie" {"movies"}else{"shows"},"reason":"watched"})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let users=db.prepare("SELECT id,username FROM users ORDER BY username")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,String>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(json!({"policies":policies,"items":items,"users":users}))
@@ -46,6 +46,8 @@ pub(super) async fn policy(
             tx.execute("UPDATE retention_candidates SET state='cancelled',error='Auto-delete policy changed' WHERE state='pending' AND media_id IN (SELECT id FROM media WHERE kind=CASE ?1 WHEN 'movies' THEN 'movie' WHEN 'shows' THEN 'season' ELSE '' END)",[&domain])?;
             if domain=="videos" { tx.execute("UPDATE video_retention_candidates SET state='cancelled',error='Auto-delete policy changed' WHERE state='pending'",[])?; }
         }
+        // What happens to the manager entry applies when a deletion runs, so scheduled ones stay.
+        tx.execute("UPDATE retention_policies SET exclude_from_lists=?1,remove_from_manager=?2 WHERE domain=?3",params![input.exclude_from_lists,input.remove_from_manager,domain])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'retention.policy',?2,?3)",params![p.user.id,domain,now()])?;tx.commit()?;Ok(true)
     }).await
 }
@@ -188,11 +190,13 @@ pub(super) async fn run(db: &Database) -> anyhow::Result<Vec<String>> {
     .await
 }
 
-pub(super) async fn exclude_read_retention_candidates(
+/// Whether the policy that scheduled `operation` excludes its titles from their manager's
+/// lists, and removes its movie from Radarr. `None` when no auto-delete scheduled it.
+pub(super) async fn options(
     operation: String,
     db: &Database,
-) -> anyhow::Result<bool> {
-    db.read("managers.retention.exclude_read_retention_candidates", move|db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM retention_candidates WHERE operation_id=?1 AND state IN ('pending','executing'))",[operation],|r|r.get::<_,bool>(0))?)).await
+) -> anyhow::Result<Option<(bool, bool)>> {
+    db.read("managers.retention.options", move|db|Ok(db.query_row("SELECT p.exclude_from_lists,p.remove_from_manager AND m.kind='movie' FROM retention_candidates c JOIN media m ON m.id=c.media_id JOIN retention_policies p ON p.domain=CASE m.kind WHEN 'movie' THEN 'movies' ELSE 'shows' END WHERE c.operation_id=?1 AND c.state IN ('pending','executing')",[operation],|r|Ok((r.get::<_,bool>(0)?,r.get::<_,bool>(1)?))).optional()?)).await
 }
 
 pub(super) async fn exclude_write_retention_exclusions(

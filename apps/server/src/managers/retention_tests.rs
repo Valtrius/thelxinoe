@@ -239,7 +239,7 @@ async fn validation_of_one_file_keeps_unrelated_playback_responsive_and_hashes_o
         let control = control.clone();
         tokio::spawn(
             crate::test_support::MEDIA_VALIDATION.scope(control, async move {
-                operations::execute_locked(&state, operation, None, false).await
+                operations::execute_locked(&state, operation, None, false, Default::default()).await
             }),
         )
     };
@@ -288,7 +288,8 @@ async fn mutation_rechecks_protection_generation_and_open_file_identity_after_va
             let state = state.clone();
             tokio::spawn(
                 crate::test_support::MEDIA_VALIDATION.scope(control, async move {
-                    operations::execute_locked(&state, operation, None, false).await
+                    operations::execute_locked(&state, operation, None, false, Default::default())
+                        .await
                 }),
             )
         };
@@ -400,6 +401,77 @@ async fn reacquisition_restores_exact_episode_ids_and_preserves_foreign_exclusio
             .unwrap();
         server.abort();
     }
+}
+
+// After auto-delete, the movie may be removed from Radarr; asked for again, it comes back
+// under a new id.
+#[tokio::test]
+async fn a_movie_added_back_to_radarr_is_reacquired_under_its_new_id() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let (_temp, state, _) = movie().await;
+    let deletes = Arc::new(AtomicUsize::new(0));
+    let recorded = deletes.clone();
+    let stub = Router::new()
+        .route(
+            "/api/v3/exclusions",
+            get(|| async { Json(json!([{"id":7,"tmdbId":603}])) }),
+        )
+        .route(
+            "/api/v3/exclusions/7",
+            axum::routing::delete(move || {
+                let count = recorded.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({}))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,defaults,version,enabled,checked_at,error) VALUES ('radarr','Fixture','radarr','container',7878,'g',X'00','[]','{}','1',1,1,NULL)",[])?;
+        crate::test_support::own(db)?;
+        let targets=json!([{"id":"ret-file","generation":"first","path":"fixture","root":"fixture","size":0,"modified":"1","fingerprint":"1","ownership":"managed","claims":[{"service_id":"radarr","service_generation":"g","manager_file_id":11,"entity_id":1,"manager_path":"fixture","external_id":"603","members":[],"server_path":"fixture"}]}]);
+        db.execute("INSERT INTO media_operations VALUES ('operation',NULL,'ret-movie','delete','complete',?1,1,1,NULL)",[targets.to_string()])?;
+        db.execute("INSERT INTO retention_candidates(id,media_id,operation_id,stamp,trigger_user,state,eligible_at,due_at,error) VALUES ('candidate','ret-movie','operation','stamp','alice','complete',1,1,NULL)",[])?;
+        db.execute("INSERT INTO retention_exclusions VALUES ('radarr','603',7,1)",[])?;
+        Ok(())
+    }).await.unwrap();
+    let s = service(&state, "radarr").await.unwrap();
+    let connection = Connection {
+        grant: ownership::Grant {
+            scope: ownership::Scope::Operational,
+            service: s.id.clone(),
+            generation: s.generation.clone(),
+            container: s.container.clone(),
+        },
+        ..Connection::validation(
+            &state,
+            format!("http://{address}"),
+            String::new(),
+            "fixture-key".into(),
+            "radarr".into(),
+        )
+    };
+    reacquire(&state, &s, &connection, "603", 2).await.unwrap();
+    assert_eq!(deletes.load(Ordering::SeqCst), 1);
+    let remaining = state
+        .db
+        .read("test.exclusions", |db| {
+            Ok(
+                db.query_row("SELECT COUNT(*) FROM retention_exclusions", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+    server.abort();
 }
 
 async fn movie() -> (tempfile::TempDir, AppState, std::path::PathBuf) {

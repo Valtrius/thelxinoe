@@ -64,11 +64,12 @@
     favorite = true,
     tmdbLink = true,
     sonarr = null,
+    radarr = null,
     play,
     changed,
     open = $bindable(false),
   } = $props<{
-    /** The library item; a Sonarr episode not in the library has none. */
+    /** The library item; a Sonarr episode or Radarr movie not in the library has none. */
     id: string | null;
     kind: string;
     title: string;
@@ -82,6 +83,8 @@
     tmdbLink?: boolean;
     /** The Sonarr series (as its seasons are loaded) and season or episode. */
     sonarr?: { series: string; season: number; episode?: number | null } | null;
+    /** The `tmdb:` reference of a movie only Radarr lists. */
+    radarr?: string | null;
     play?: (fileId: string) => void;
     changed?: () => void;
     open?: boolean;
@@ -109,6 +112,9 @@
   const managed = $derived(
     admin && !!sonarr && (kind !== 'episode' || !!episode),
   );
+  const removable = $derived(admin && !id && !!radarr);
+  // Without files, a library movie can only be removed from Radarr.
+  const fileless = $derived(kind === 'movie' && !present.length);
   // A series page already shows its own Watch Later, Favorite and TMDB link.
   const empty = $derived(
     id
@@ -118,7 +124,7 @@
           !favorite &&
           !(tmdbLink && manageable) &&
           !play
-      : !managed,
+      : !managed && !removable,
   );
   const target = $derived(
     ['show', 'season', 'episode'].includes(kind) ? 'shows' : 'movies',
@@ -397,7 +403,7 @@
               </div>
             </DropdownMenu.Group>
           {/if}
-          {#if admin && (item || managed)}
+          {#if admin && (item || managed || removable)}
             <DropdownMenu.Separator class="my-1 h-px bg-line" />
             <DropdownMenu.Group>
               <DropdownMenu.GroupHeading class={headingClass}
@@ -495,15 +501,21 @@
                     ><RefreshCw />Delete and search again…</DropdownMenu.Item
                   >
                 {/if}
-                <DropdownMenu.Item
-                  class="{itemClass} text-danger! data-[highlighted]:bg-danger/12"
-                  onSelect={() => (requested = 'delete')}
-                  ><Trash2 />{kind === 'show'
-                    ? 'Delete series files…'
-                    : kind === 'season'
-                      ? 'Delete season files…'
-                      : 'Delete files…'}</DropdownMenu.Item
-                >
+                {#if !fileless}
+                  <DropdownMenu.Item
+                    class="{itemClass} text-danger! data-[highlighted]:bg-danger/12"
+                    onSelect={() => (requested = 'delete')}
+                    ><Trash2 />{kind === 'show'
+                      ? 'Delete series files…'
+                      : kind === 'season'
+                        ? 'Delete season files…'
+                        : 'Delete files…'}</DropdownMenu.Item
+                  >
+                {:else if item.status}
+                  {@render removal()}
+                {/if}
+              {:else if removable}
+                {@render removal()}
               {:else if manager}
                 <DropdownMenu.CheckboxItem
                   class={itemClass}
@@ -534,6 +546,13 @@
     target={episode ? { episode } : { season: sonarr.season }}
     {title}
     close={() => (dialog = null)}
+  />{:else if dialog === 'remove' && removable && radarr}<TitleDialog
+    {dialog}
+    id={radarr}
+    {kind}
+    {title}
+    close={() => (dialog = null)}
+    {changed}
   />{:else if dialog && dialog !== 'releases' && item}<TitleDialog
     {dialog}
     id={item.id}
@@ -541,6 +560,7 @@
     {title}
     files={item.files}
     {kept}
+    radarr={kind === 'movie' && !!item.status}
     replace={sonarr && episode
       ? () =>
           searchEpisodes(sonarr.series, {
@@ -551,3 +571,9 @@
     close={() => (dialog = null)}
     {changed}
   />{/if}
+
+{#snippet removal()}<DropdownMenu.Item
+    class="{itemClass} text-danger! data-[highlighted]:bg-danger/12"
+    onSelect={() => (requested = 'remove')}
+    ><Trash2 />Remove from Radarr…</DropdownMenu.Item
+  >{/snippet}

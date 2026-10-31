@@ -4,7 +4,7 @@
 pub(super) mod storage;
 
 pub(super) use super::domain::Target;
-use super::domain::{MediaAction, PreparedOperation, ValidatedSelection};
+use super::domain::{MediaAction, PreparedOperation, RadarrOptions, ValidatedSelection};
 use super::*;
 #[path = "validated_file.rs"]
 mod validated_file;
@@ -15,7 +15,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/media/operations/{id}/execute", post(execute))
         .route("/api/v1/admin/media/{id}/keep", axum::routing::put(keep))
 }
-async fn targets(state: &AppState, media: &str) -> Result<Vec<Target>> {
+pub(super) async fn targets(state: &AppState, media: &str) -> Result<Vec<Target>> {
     let media = media.to_owned();
     storage::targets(media, &state.db)
         .await
@@ -178,7 +178,11 @@ async fn recheck(proof: &Arc<ValidatedFile>) -> Result<()> {
             ApiError::conflict("File identity or content changed; prepare a new operation")
         })
 }
-async fn protected_or_active(state: &AppState, media: &str, files: &[Target]) -> Result<()> {
+pub(super) async fn protected_or_active(
+    state: &AppState,
+    media: &str,
+    files: &[Target],
+) -> Result<()> {
     let media = media.to_owned();
     let ids = json!(files.iter().map(|f| &f.id).collect::<Vec<_>>()).to_string();
     let blocked = storage::protected_or_active(media, ids, &state.db).await?;
@@ -341,19 +345,50 @@ async fn mutate(
     }
     Ok(())
 }
+/// Exclude and remove the Radarr movies whose files a deletion removed.
+async fn finish_movies(
+    state: &AppState,
+    media: &str,
+    files: &[Target],
+    options: RadarrOptions,
+    actor: Option<String>,
+) -> Result<()> {
+    if !options.any() {
+        return Ok(());
+    }
+    let mut finished = std::collections::BTreeSet::new();
+    for claim in files.iter().flat_map(|f| &f.claims) {
+        if !finished.insert((&claim.service_id, claim.entity_id)) {
+            continue;
+        }
+        let s = service(state, &claim.service_id).await?;
+        if s.generation != claim.service_generation {
+            return Err(ApiError::conflict("Manager configuration changed"));
+        }
+        let c = Connection::open(state, &s).await?;
+        super::movies::apply(&c, claim.entity_id, &claim.external_id, options).await?;
+    }
+    if finished.is_empty() {
+        return Ok(());
+    }
+    super::movies::audit(state, actor, options, media.to_owned()).await
+}
 async fn execute(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(key): Path<String>,
+    options: Option<Json<RadarrOptions>>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    execute_locked(&state, key, Some(p.user.id), false).await
+    let options = options.map(|Json(options)| options).unwrap_or_default();
+    execute_locked(&state, key, Some(p.user.id), false, options).await
 }
 pub(super) async fn execute_locked(
     state: &AppState,
     key: String,
     actor: Option<String>,
     automatic: bool,
+    options: RadarrOptions,
 ) -> Result<Json<Value>> {
     let operation_key = format!("operation:{key}");
     let _operation = state.media_resources.write(&[&operation_key]).await;
@@ -394,6 +429,21 @@ pub(super) async fn execute_locked(
     for claim in current.iter().flat_map(|file| &file.claims) {
         services.push(service(state, &claim.service_id).await?.kind);
     }
+    if options.any()
+        && (action != "delete"
+            || services.is_empty()
+            || services.iter().any(|kind| kind != "radarr"))
+    {
+        return Err(ApiError::bad(
+            "Only deleting a Radarr movie's files can remove or exclude it",
+        ));
+    }
+    // Policy edits wait for the lease above, so these hold while the deletion runs.
+    let retained = super::retention::options(state, &key).await?;
+    let options = RadarrOptions {
+        remove: options.remove || retained.is_some_and(|r| r.remove),
+        ..options
+    };
     let _managers = state
         .managers
         .guard
@@ -420,8 +470,11 @@ pub(super) async fn execute_locked(
     storage::execute_locked_write_media_operations(k, &state.db).await?;
     // Once executing is durable, interruption never automatically repeats a destructive call.
     let result = async {
-        super::retention::exclude(state, &key, &current).await?;
-        mutate(state, &media, &action, &current, &key, automatic, &proofs).await
+        if retained.is_some_and(|r| r.exclude) {
+            super::retention::exclude(state, &current).await?;
+        }
+        mutate(state, &media, &action, &current, &key, automatic, &proofs).await?;
+        finish_movies(state, &media, &current, options, actor.clone()).await
     }
     .await;
     let error = result.as_ref().err().map(|e| e.2.clone());

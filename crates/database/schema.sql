@@ -788,7 +788,9 @@ CREATE TABLE retention_policies (
     exclude_specials INTEGER NOT NULL DEFAULT 1 CHECK(exclude_specials IN (0,1)),
     trigger_users TEXT NOT NULL DEFAULT '[]',
     storage_limit_bytes INTEGER NOT NULL DEFAULT 100000000000 CHECK(storage_limit_bytes>0),
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    exclude_from_lists INTEGER NOT NULL DEFAULT 1 CHECK(exclude_from_lists IN (0,1)),
+    remove_from_manager INTEGER NOT NULL DEFAULT 0 CHECK(remove_from_manager IN (0,1))
 ) STRICT;
 
 CREATE TABLE retention_candidates (

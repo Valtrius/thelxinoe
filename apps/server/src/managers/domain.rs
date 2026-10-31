@@ -43,6 +43,20 @@ impl MediaAction {
     }
 }
 
+/// What deleting a movie's files also does to its Radarr movie.
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(default)]
+pub(super) struct RadarrOptions {
+    /// Remove the movie from Radarr once its files are gone.
+    pub remove: bool,
+    pub exclude: bool,
+}
+impl RadarrOptions {
+    pub fn any(self) -> bool {
+        self.remove || self.exclude
+    }
+}
+
 #[derive(Deserialize, Serialize, Clone)]
 pub(super) struct RetentionPolicy {
     pub enabled: bool,
@@ -51,9 +65,18 @@ pub(super) struct RetentionPolicy {
     pub trigger_users: Vec<String>,
     #[serde(default = "default_video_limit")]
     pub storage_limit_bytes: i64,
+    /// Add each deleted title to its manager's exclusion list.
+    #[serde(default = "default_exclude")]
+    pub exclude_from_lists: bool,
+    /// Remove each deleted movie from Radarr.
+    #[serde(default)]
+    pub remove_from_manager: bool,
 }
 fn default_video_limit() -> i64 {
     100_000_000_000
+}
+fn default_exclude() -> bool {
+    true
 }
 
 #[derive(Clone)]

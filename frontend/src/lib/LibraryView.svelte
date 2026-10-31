@@ -483,12 +483,15 @@
         detail={view && !breadcrumbs.length
           ? sortDetail(view.sort, item, timezone)
           : undefined}
-        >{#snippet menu(card)}{#if titles && !item.virtual}<TitleMenu
+        >{#snippet menu(
+          card,
+        )}{#if titles && (!item.virtual || (admin && item.kind === 'movie'))}<TitleMenu
               bind:open={card.open}
-              id={item.id}
+              id={item.virtual ? null : item.id}
               kind={item.kind}
               title={item.title}
               {admin}
+              radarr={item.virtual ? item.id : null}
               variant="card"
               changed={() => void load()}
             />{/if}{/snippet}</LibraryCard

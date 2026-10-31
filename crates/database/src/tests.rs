@@ -535,6 +535,31 @@ fn schema_4_schedules_no_retry_for_earlier_failures() -> Result<()> {
 }
 
 #[test]
+fn schema_5_keeps_auto_delete_excluding_without_removal() -> Result<()> {
+    let (_temp, conn) = upgraded(4, "")?;
+    let options = conn
+        .prepare("SELECT domain,exclude_from_lists,remove_from_manager FROM retention_policies ORDER BY domain")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    assert_eq!(
+        options,
+        [
+            ("movies".into(), 1, 0),
+            ("shows".into(), 1, 0),
+            ("videos".into(), 1, 0)
+        ]
+    );
+    assert!(
+        conn.execute(
+            "UPDATE retention_policies SET remove_from_manager=2 WHERE domain='movies'",
+            []
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn upgrades_run_in_order_from_the_stored_version() -> Result<()> {
     let conn = Connection::open_in_memory()?;
     conn.execute_batch("CREATE TABLE t(a INTEGER, b INTEGER); PRAGMA user_version=2;")?;

@@ -13,6 +13,7 @@ mod failures;
 mod indexers;
 pub(crate) mod libraries;
 mod metadata;
+mod movies;
 mod operations;
 mod ownership;
 mod quality;
@@ -124,6 +125,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(bindings::router())
         .merge(controls::router())
         .merge(episodes::router())
+        .merge(movies::router())
         .merge(quality::router())
         .merge(recyclarr::router())
         .merge(seerr::router())
