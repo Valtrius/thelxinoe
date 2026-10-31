@@ -1020,6 +1020,27 @@ test('NZBGet combines active downloads with scrollable history and compact actio
         node.scrollHeight > node.clientHeight && node.clientHeight < 560,
     ),
   ).toBe(true);
+  expect(
+    await page.locator('.settings-scroll').evaluate((scroller) => {
+      const panels = scroller.querySelector<HTMLElement>('.settings-panels')!;
+      return (
+        scroller.scrollHeight -
+        panels.offsetTop -
+        panels.offsetHeight -
+        parseFloat(getComputedStyle(scroller).paddingBottom)
+      );
+    }),
+  ).toBeLessThanOrEqual(1);
+  await region.evaluate((node) => (node.scrollTop = node.scrollHeight));
+  const lastStatus = region.locator('tbody tr').last().getByRole('img');
+  await lastStatus.hover();
+  const tooltip = lastStatus.locator('.status-tooltip');
+  await expect(tooltip).toBeVisible();
+  const statusBox = (await lastStatus.boundingBox())!;
+  const tooltipBox = (await tooltip.boundingBox())!;
+  expect(tooltipBox.y).toBeGreaterThanOrEqual(statusBox.y);
+  expect(tooltipBox.y).toBeLessThan(statusBox.y + statusBox.height + 10);
+  await region.evaluate((node) => (node.scrollTop = 0));
   await page
     .getByRole('button', { name: 'Pause Active fixture', exact: true })
     .click();

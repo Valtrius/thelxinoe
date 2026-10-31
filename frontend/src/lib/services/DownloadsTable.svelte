@@ -53,7 +53,7 @@
 {:else}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex (The scroll region must be keyboard scrollable.) -->
   <div
-    class="downloads-scroll max-h-136 overflow-auto [scrollbar-width:thin] [scrollbar-color:var(--line-strong)_transparent]"
+    class="downloads-scroll relative max-h-136 overflow-auto [scrollbar-width:thin] [scrollbar-color:var(--line-strong)_transparent]"
     tabindex="0"
     role="region"
     aria-label="Current and recent downloads"
