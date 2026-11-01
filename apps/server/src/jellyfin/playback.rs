@@ -33,8 +33,8 @@ pub async fn source_dto(source: &Source) -> Result<Value> {
             .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
             .filter(|v| v.is_finite())
             .unwrap_or(0.0);
-        let range = super::profile::video_range(stream);
-        streams.push(json!({"Type":"Video","Index":stream["index"],"Codec":stream["codec_name"],"Profile":stream["profile"],"Level":stream["level"],"Width":stream["width"],"Height":stream["height"],"BitDepth":stream["bits_per_raw_sample"].as_str().and_then(|v|v.parse::<u32>().ok()),"VideoRange":if range=="SDR"{"SDR"}else{"HDR"},"VideoRangeType":range,"RealFrameRate":rate,"AverageFrameRate":rate,"IsDefault":true,"IsExternal":false,"IsInterlaced":!["progressive","unknown",""].contains(&stream["field_order"].as_str().unwrap_or("")),"IsForced":false,"IsHearingImpaired":false,"IsTextSubtitleStream":false,"SupportsExternalStream":false}));
+        let (range, range_type) = super::profile::video_range(stream);
+        streams.push(json!({"Type":"Video","Index":stream["index"],"Codec":stream["codec_name"],"Profile":stream["profile"],"Level":stream["level"],"Width":stream["width"],"Height":stream["height"],"BitDepth":stream["bits_per_raw_sample"].as_str().and_then(|v|v.parse::<u32>().ok()),"VideoRange":range,"VideoRangeType":range_type,"RealFrameRate":rate,"AverageFrameRate":rate,"IsDefault":true,"IsExternal":false,"IsInterlaced":!["progressive","unknown",""].contains(&stream["field_order"].as_str().unwrap_or("")),"IsForced":false,"IsHearingImpaired":false,"IsTextSubtitleStream":false,"SupportsExternalStream":false}));
     }
     let mut indexes = std::collections::HashSet::new();
     for track in &tracks {
