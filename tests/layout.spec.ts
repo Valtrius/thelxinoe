@@ -1039,6 +1039,10 @@ test('NZBGet combines active downloads with scrollable history and compact actio
   await expect(tooltip).toHaveText(
     (await lastStatus.getAttribute('aria-label'))!,
   );
+  // A scroll can report after it ended; one that leaves the status in place
+  // keeps its detail open.
+  await region.evaluate((node) => node.dispatchEvent(new Event('scroll')));
+  await expect(tooltip).toBeVisible();
   const statusBox = (await lastStatus.boundingBox())!;
   const tooltipBox = (await tooltip.boundingBox())!;
   // Beside its status: below it, or above it at the bottom of the window.

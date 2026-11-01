@@ -85,9 +85,14 @@
       gap,
       Math.min(bounds.left, innerWidth - tooltip.offsetWidth - gap),
     )}px`;
-    // A placement only holds until something scrolls.
-    const close = () => (hovered = null);
-    window.addEventListener('scroll', close, { capture: true, once: true });
+    // A placement only holds until a scroll moves the status. A scroll that
+    // ended before it opened can still report afterwards.
+    const close = () => {
+      const moved = anchor.getBoundingClientRect();
+      if (moved.top !== bounds.top || moved.left !== bounds.left)
+        hovered = null;
+    };
+    window.addEventListener('scroll', close, { capture: true });
     return () => window.removeEventListener('scroll', close, { capture: true });
   });
 </script>
