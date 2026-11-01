@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
+import { responseGate } from './helpers/response-gate';
 
 async function installClock(page: Page) {
   await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
@@ -52,6 +53,51 @@ for (const setup of [false, true]) {
     expect(fixture.errors).toEqual([]);
   });
 }
+
+test('a refresh shows what changed only once every part has arrived', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+    connected: ['prowlarr'],
+  });
+  const stack = responseGate();
+  let holdStack = false;
+  await page.route('**/api/v1/admin/stack', async (route) => {
+    if (holdStack) await stack.promise;
+    await route.fallback();
+  });
+  await page.clock.install();
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('link', { name: 'Prowlarr', exact: true })
+    .click();
+  const transferring = page.getByText('Transferring', { exact: true });
+  await expect(
+    page.getByRole('region', { name: 'Connected service' }),
+  ).toContainText('Verified');
+  fixture.operations.set('prowlarr', {
+    type: 'transfer',
+    id: 'transfer-prowlarr',
+    state: 'running',
+    step: 'copy',
+    error: null,
+  });
+  holdStack = true;
+  const stages = page.waitForResponse((response) =>
+    response.url().endsWith('/api/v1/admin/services'),
+  );
+  await page.clock.runFor(4000);
+  await stages;
+  // The stages report the transfer; the stack has not answered yet.
+  await page.clock.runFor(500);
+  await expect(transferring).toHaveCount(0);
+  stack.release();
+  await expect(transferring.first()).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+});
 
 test('installation keeps the workspace empty until the API is connected', async ({
   page,
