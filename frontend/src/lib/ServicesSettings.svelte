@@ -415,69 +415,76 @@
       draft.targetId = target.id;
     }
   }
+  // Each read returns a step that shows its result, so a refresh can show
+  // every part at once instead of pairing fresh parts with stale ones.
+  type Read<T> = { value: T; error?: never } | { value?: never; error: string };
+  const read = <T,>(path: string): Promise<Read<T>> =>
+    api<T>(path).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error: String(error) }),
+    );
   let updateLoad = 0;
-  async function loadUpdateData() {
+  async function readUpdates() {
     const request = ++updateLoad;
-    loadErrors.updates = '';
-    try {
-      const result = await api<{
-        policies: UpdatePolicy[];
-        timezone: string;
-        items: Update[];
-        services: UpdateTarget[];
-        server_policy: ServerUpdatePolicy;
-      }>('/admin/service-updates');
+    const result = await read<{
+      policies: UpdatePolicy[];
+      timezone: string;
+      items: Update[];
+      services: UpdateTarget[];
+      server_policy: ServerUpdatePolicy;
+    }>('/admin/service-updates');
+    return () => {
       if (request !== updateLoad) return;
-      policies = result.policies;
-      updates = result.items;
-      updateTargets = result.services;
-      timezone = result.timezone;
-      serverPolicy = result.server_policy;
+      loadErrors.updates = result.error ?? '';
+      if (!result.value) return;
+      policies = result.value.policies;
+      updates = result.value.items;
+      updateTargets = result.value.services;
+      timezone = result.value.timezone;
+      serverPolicy = result.value.server_policy;
       syncUpdateDrafts();
-    } catch (error) {
-      if (request === updateLoad) loadErrors.updates = String(error);
-    }
+    };
   }
-  async function loadManagers() {
-    loadErrors.managers = '';
-    try {
-      managers = (await api<{ items: ManagerService[] }>('/admin/managers'))
-        .items;
+  async function loadUpdateData() {
+    (await readUpdates())();
+  }
+  async function readManagers() {
+    const result = await read<{ items: ManagerService[] }>('/admin/managers');
+    return () => {
+      loadErrors.managers = result.error ?? '';
+      if (!result.value) return;
+      managers = result.value.items;
       for (const definition of definitions) {
         const draft = defaults[definition.kind];
         if (draft && !manager(definition.kind)) draft.loaded = false;
       }
-    } catch (error) {
-      loadErrors.managers = String(error);
-    }
+    };
   }
-  async function loadSupport() {
-    loadErrors.support = '';
-    try {
-      support = (await api<{ items: SupportService[] }>('/admin/support'))
-        .items;
-    } catch (error) {
-      loadErrors.support = String(error);
-    }
+  async function loadManagers() {
+    (await readManagers())();
   }
-  async function loadContainers() {
-    loadErrors.containers = '';
-    try {
-      containers = (
-        await api<{ items: Container[] }>('/admin/managers/containers')
-      ).items;
-    } catch (error) {
-      loadErrors.containers = String(error);
-    }
+  async function readSupport() {
+    const result = await read<{ items: SupportService[] }>('/admin/support');
+    return () => {
+      loadErrors.support = result.error ?? '';
+      if (result.value) support = result.value.items;
+    };
   }
-  async function loadStages() {
-    loadErrors.stages = '';
-    try {
-      serviceStages = (await api<{ items: ServiceStage[] }>('/admin/services'))
-        .items;
-    } catch (error) {
-      loadErrors.stages = String(error);
-    }
+  async function readContainers() {
+    const result = await read<{ items: Container[] }>(
+      '/admin/managers/containers',
+    );
+    return () => {
+      loadErrors.containers = result.error ?? '';
+      if (result.value) containers = result.value.items;
+    };
+  }
+  async function readStages() {
+    const result = await read<{ items: ServiceStage[] }>('/admin/services');
+    return () => {
+      loadErrors.stages = result.error ?? '';
+      if (result.value) serviceStages = result.value.items;
+    };
   }
   async function testConnection(kind: ServiceKind) {
     const id = stageOf(kind)?.connection?.id;
@@ -491,17 +498,18 @@
     await api(`/admin/services/${id}/forget`, 'POST', {});
     await refresh();
   }
-  async function loadStack() {
-    loadErrors.stack = '';
-    try {
-      const stack = await api<{
-        items: StackService[];
-        provisions: Provision[];
-      }>('/admin/stack');
-      stackServices = stack.items;
-      provisions = stack.provisions;
-    } catch (error) {
-      loadErrors.stack = String(error);
+  async function readStack() {
+    const result = await read<{
+      items: StackService[];
+      provisions: Provision[];
+    }>('/admin/stack');
+    return () => {
+      loadErrors.stack = result.error ?? '';
+      if (result.value) {
+        stackServices = result.value.items;
+        provisions = result.value.provisions;
+        return;
+      }
       stackServices = stackServices.map((service) => ({
         ...service,
         status: 'unavailable',
@@ -512,7 +520,7 @@
         can_retire: false,
         can_remove: false,
       }));
-    }
+    };
   }
   const reads = new RefreshTask(refreshData, 4000);
   // The selected service itself is asked when it is chosen and after a change,
@@ -526,15 +534,16 @@
   async function refreshData() {
     const reread = changed;
     changed = false;
-    await Promise.all([
-      loadManagers(),
-      loadSupport(),
-      loadUpdateData(),
-      loadStack(),
-      loadStages(),
-      loadConnections(),
-      loadContainers(),
+    const shows = await Promise.all([
+      readManagers(),
+      readSupport(),
+      readUpdates(),
+      readStack(),
+      readStages(),
+      readConnections(),
+      readContainers(),
     ]);
+    for (const show of shows) show();
     // The panel shows its own skeleton while it loads.
     if (reread || selectedRead !== selectedKind)
       void inBackground(() => loadSelectedData());
@@ -554,17 +563,16 @@
     });
   });
   let connectionLoad = 0;
-  async function loadConnections() {
+  async function readConnections() {
     const request = ++connectionLoad;
-    loadErrors.connections = '';
-    try {
-      const result = await api<{ items: ServiceConnection[] }>(
-        '/admin/service-connections',
-      );
-      if (request === connectionLoad) connections = result.items;
-    } catch (error) {
-      if (request === connectionLoad) loadErrors.connections = String(error);
-    }
+    const result = await read<{ items: ServiceConnection[] }>(
+      '/admin/service-connections',
+    );
+    return () => {
+      if (request !== connectionLoad) return;
+      loadErrors.connections = result.error ?? '';
+      if (result.value) connections = result.value.items;
+    };
   }
   async function connectionAction(
     connection: ServiceConnection,
