@@ -17,8 +17,6 @@
   import Button from '../../../ui/Button.svelte';
   import { reveal } from '../../../ui/reveal';
   import ToolActionButton from './ToolActionButton.svelte';
-  import AttentionDot from '../../../ui/AttentionDot.svelte';
-  import { activity } from '../../../activity';
 
   let {
     snapshot,
@@ -148,14 +146,7 @@
                   class={`mt-0.5 size-3.5 shrink-0 transition-transform ${expanded === tool.id ? 'rotate-180' : ''}`}
                 />
                 <span class="min-w-0">
-                  <span class="inline-flex items-center gap-2 font-semibold"
-                    >{toolNames[tool.id]}<AttentionDot
-                      activity={$activity.filter(
-                        (item) =>
-                          item.target === 'mpv' && item.resource === tool.id,
-                      )}
-                    /></span
-                  >
+                  <span class="font-semibold">{toolNames[tool.id]}</span>
                   {#if errors[tool.id] || (tool.id === 'mpv' && errors.configuration)}<span
                       class="mt-1 block text-[0.62rem] text-danger"
                       >Action failed. Expand for details.</span

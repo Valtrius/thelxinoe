@@ -13,7 +13,6 @@
   import SettingRow from './ui/SettingRow.svelte';
   import StatusChip from './ui/StatusChip.svelte';
   import AttentionDot from './ui/AttentionDot.svelte';
-  import { attention } from './attention';
   import { activity } from './activity';
   import { providers } from './providers/availability';
   import { cardBlockClass } from './ui/styles';
@@ -141,9 +140,6 @@
           >
           <AttentionDot
             activity={$activity.filter(
-              (item) => item.target === 'online' && item.resource === provider,
-            )}
-            items={$attention.filter(
               (item) => item.target === 'online' && item.resource === provider,
             )}
           />

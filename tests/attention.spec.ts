@@ -2,12 +2,12 @@ import { expect, test } from '@playwright/test';
 import { current } from './helpers/versions';
 import { installUiFixture } from './helpers/ui-fixture';
 
-test('activity arcs follow operation lifetime, scope, severity and reduced motion across navigation', async ({
+test('activity arcs follow operation lifetime, scope, severity and reduced motion in settings while the sidebar keeps only issues', async ({
   page,
 }, testInfo) => {
   const fixture = await installUiFixture(page, {
     role: 'admin',
-    section: 'Movies',
+    settingsSection: 'server',
   });
   await page.route('**/api/v1/catalog/roots', (route) =>
     route.fulfill({ json: { items: [], media_mount: '/media' } }),
@@ -45,24 +45,28 @@ test('activity arcs follow operation lifetime, scope, severity and reduced motio
   );
   await page.goto('/');
   const settings = page.getByRole('link', { name: 'Settings', exact: true });
-  const marker = settings.locator('[data-activity-state]');
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  const mediaServices = nav.getByRole('link', {
+    name: 'Media services',
+    exact: true,
+  });
+  const marker = mediaServices.locator('[data-activity-state]');
   await expect(marker).toHaveAttribute('data-activity-state', 'running');
   await expect(marker).toHaveAttribute('data-attention-severity', 'error');
-  const icon = await settings.locator('svg').first().boundingBox();
-  const placement = await marker.boundingBox();
-  expect(placement!.x).toBeGreaterThan(icon!.x);
-  expect(placement!.y).toBeLessThan(icon!.y);
   await expect(marker).toHaveAttribute(
     'aria-label',
     /Restarting Radarr.*\nIssue: Radarr API unavailable/,
+  );
+  await expect(settings.locator('[data-activity-state]')).toHaveCount(0);
+  await expect(settings.locator('[data-attention-severity]')).toHaveAttribute(
+    'aria-label',
+    'Issue: Radarr API unavailable',
   );
   await expect
     .poll(() =>
       marker.evaluate((node) => node.getAnimations({ subtree: true }).length),
     )
     .toBeGreaterThan(0);
-  await page.getByRole('button', { name: 'Collapse sidebar' }).click();
-  await expect(marker).toBeVisible();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await expect
     .poll(() =>
@@ -70,38 +74,31 @@ test('activity arcs follow operation lifetime, scope, severity and reduced motio
     )
     .toBe(0);
   await page.screenshot({
-    path: testInfo.outputPath(
-      'activity-with-issue-collapsed-reduced-motion.png',
-    ),
+    path: testInfo.outputPath('activity-with-issue-reduced-motion.png'),
   });
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await settings.click();
-  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
-  await expect(
-    nav
-      .getByRole('link', { name: 'Media services', exact: true })
-      .locator('[data-activity-state]'),
-  ).toHaveAttribute('data-activity-state', 'running');
   await expect(
     nav
       .getByRole('link', { name: 'Server', exact: true })
       .locator('[data-activity-state]'),
   ).toHaveCount(0);
-  await nav.getByRole('link', { name: 'Media services', exact: true }).click();
+  await mediaServices.click();
   const services = page.getByRole('navigation', { name: 'Select service' });
-  const radarr = services
-    .getByRole('link', { name: 'Radarr', exact: true })
-    .locator('[data-activity-state]');
-  await expect(radarr).toHaveAttribute('data-activity-state', 'running');
+  const radarr = services.getByRole('link', { name: 'Radarr', exact: true });
+  await expect(radarr.locator('[data-attention-severity]')).toHaveAttribute(
+    'data-attention-severity',
+    'error',
+  );
+  await expect(radarr.locator('[data-activity-state]')).toHaveCount(0);
   await expect(
     services
       .getByRole('link', { name: 'Sonarr', exact: true })
-      .locator('[data-activity-state]'),
+      .locator('[data-attention-severity]'),
   ).toHaveCount(0);
   await page.screenshot({
     path: testInfo.outputPath('activity-scoped-service.png'),
   });
-  await page.getByRole('link', { name: 'Movies', exact: true }).click();
+  await nav.getByRole('link', { name: 'Server', exact: true }).click();
   const refresh = () =>
     page.evaluate(() =>
       window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
@@ -138,12 +135,14 @@ test('activity arcs follow operation lifetime, scope, severity and reduced motio
   activity = [];
   await refresh();
   await expect(marker).toHaveCount(0);
-  await expect(settings.locator('[data-attention-severity]')).toHaveAttribute(
-    'data-attention-severity',
-    'error',
-  );
+  await expect(
+    mediaServices.locator('[data-attention-severity]'),
+  ).toHaveAttribute('data-attention-severity', 'error');
   items = [];
   await refresh();
+  await expect(mediaServices.locator('[data-attention-severity]')).toHaveCount(
+    0,
+  );
   await expect(settings.locator('[data-attention-severity]')).toHaveCount(0);
   activity = [
     {
@@ -156,18 +155,15 @@ test('activity arcs follow operation lifetime, scope, severity and reduced motio
     },
   ];
   await refresh();
-  await expect(marker).toHaveAttribute('data-activity-state', 'running');
-  await expect(settings.locator('[data-attention-severity]')).toHaveCount(0);
+  const backups = nav
+    .getByRole('link', { name: 'Backups', exact: true })
+    .locator('[data-activity-state]');
+  await expect(backups).toHaveAttribute('data-activity-state', 'running');
+  await expect(settings.locator('[data-activity-state]')).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole('button', { name: 'Open navigation' }).click();
-  await expect(
-    page
-      .getByRole('dialog')
-      .getByRole('link', { name: 'Settings', exact: true })
-      .locator('[data-activity-state]'),
-  ).toBeVisible();
+  await expect(backups).toBeVisible();
   await page.screenshot({
-    path: testInfo.outputPath('activity-mobile-navigation.png'),
+    path: testInfo.outputPath('activity-mobile-settings.png'),
   });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
@@ -230,16 +226,13 @@ test('a pending service action remains marked after leaving its page and hands o
     .click();
   await page.getByRole('button', { name: 'Restart', exact: true }).click();
   await expect.poll(() => Boolean(release)).toBe(true);
-  const settings = page.getByRole('link', { name: 'Settings', exact: true });
-  await expect(settings.locator('[data-activity-state]')).toHaveAttribute(
-    'data-activity-state',
-    'running',
-  );
-  await page.getByRole('link', { name: 'Movies', exact: true }).click();
-  await expect(settings.locator('[data-activity-state]')).toHaveAttribute(
-    'data-activity-state',
-    'running',
-  );
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  const marker = nav
+    .getByRole('link', { name: 'Media services', exact: true })
+    .locator('[data-activity-state]');
+  await expect(marker).toHaveAttribute('data-activity-state', 'running');
+  await nav.getByRole('link', { name: 'Server', exact: true }).click();
+  await expect(marker).toHaveAttribute('data-activity-state', 'running');
   holdSnapshot = true;
   await page.evaluate(() =>
     window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
@@ -254,18 +247,12 @@ test('a pending service action remains marked after leaving its page and hands o
     for (let frame = 0; frame < 6; frame++)
       await new Promise(requestAnimationFrame);
   });
-  await expect(settings.locator('[data-activity-state]')).toHaveAttribute(
-    'data-activity-state',
-    'running',
-  );
+  await expect(marker).toHaveAttribute('data-activity-state', 'running');
   await page.screenshot({
     path: testInfo.outputPath('service-action-awaits-fresh-snapshot.png'),
   });
   releaseSnapshot!();
-  await expect(settings.locator('[data-activity-state]')).toHaveAttribute(
-    'aria-label',
-    /Restarting Radarr/,
-  );
+  await expect(marker).toHaveAttribute('aria-label', /Restarting Radarr/);
   await page.screenshot({
     path: testInfo.outputPath('service-action-persists-after-navigation.png'),
   });
@@ -273,7 +260,7 @@ test('a pending service action remains marked after leaving its page and hands o
   await page.evaluate(() =>
     window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
   );
-  await expect(settings.locator('[data-activity-state]')).toHaveCount(0);
+  await expect(marker).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -539,7 +526,11 @@ test('menu dots track live severity while pages are closed and survive sidebar c
       .locator('[data-attention-severity]'),
   ).toHaveAttribute('data-attention-severity', 'error');
   await page.getByRole('link', { name: 'Movies', exact: true }).click();
-  for (const severity of ['warning', 'info', null]) {
+  const youtube = page
+    .getByRole('link', { name: 'YouTube', exact: true })
+    .locator('[data-attention-severity]');
+  await expect(youtube).toHaveAttribute('data-attention-severity', 'warning');
+  for (const severity of ['info', 'info', null]) {
     items = items.slice(1);
     await page.evaluate(() =>
       window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
@@ -548,6 +539,7 @@ test('menu dots track live severity while pages are closed and survive sidebar c
       await expect(dot).toHaveAttribute('data-attention-severity', severity);
     else await expect(dot).toHaveCount(0);
   }
+  await expect(youtube).toHaveCount(0);
   items = [
     {
       id: 'tools-release:yt-dlp',
