@@ -32,25 +32,44 @@ impl Encoding {
         })
     }
     pub(crate) fn args(self, options: &Options, probe: &Value) -> Result<Vec<String>> {
-        if !self.video && !self.audio {
-            return Ok(vec!["-c".into(), "copy".into()]);
-        }
-        let args = crate::conversion_args(options, probe)?;
         let mut result = Vec::new();
-        let mut index = 0;
-        while index < args.len() {
-            let key = &args[index];
-            let audio = ["-c:a", "-b:a", "-ac", "-ar"].contains(&key.as_str());
-            if (audio && self.audio) || (!audio && self.video) {
-                result.extend_from_slice(&args[index..index + 2]);
+        if !self.video && !self.audio {
+            result.extend(["-c".into(), "copy".into()]);
+        } else {
+            let args = crate::conversion_args(options, probe)?;
+            let mut index = 0;
+            while index < args.len() {
+                let key = &args[index];
+                let audio = ["-c:a", "-b:a", "-ac", "-ar"].contains(&key.as_str());
+                if (audio && self.audio) || (!audio && self.video) {
+                    result.extend_from_slice(&args[index..index + 2]);
+                }
+                index += 2;
             }
-            index += 2;
+            if !self.video {
+                result.extend(["-c:v".into(), "copy".into()]);
+            }
+            if !self.audio {
+                result.extend(["-c:a".into(), "copy".into()]);
+            }
         }
-        if !self.video {
-            result.extend(["-c:v".into(), "copy".into()]);
-        }
-        if !self.audio {
-            result.extend(["-c:a".into(), "copy".into()]);
+        if !self.video && options.capabilities.strip_dolby_vision {
+            let hevc = probe["streams"].as_array().into_iter().flatten().any(|s| {
+                s["codec_type"] == "video"
+                    && s["disposition"]["attached_pic"] != 1
+                    && s["codec_name"] == "hevc"
+            });
+            // dovi_rpu drops the configuration record but only the HEVC unit that ends a
+            // picture, while enhancement layer units come before it.
+            result.extend([
+                "-bsf:v".into(),
+                if hevc {
+                    "filter_units=remove_types=62|63,dovi_rpu=strip=1"
+                } else {
+                    "dovi_rpu=strip=1"
+                }
+                .into(),
+            ]);
         }
         Ok(result)
     }

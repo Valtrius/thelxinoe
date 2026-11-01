@@ -357,3 +357,147 @@ async fn audio_only_vod_remux_and_conversion_keep_the_requested_interval() {
         pipelines.stop(mode).await;
     }
 }
+
+/// Adds a placeholder Dolby Vision enhancement layer (63) and RPU (62) unit after every
+/// picture of an Annex B HEVC stream.
+fn with_dolby_vision_units(stream: &[u8]) -> Vec<u8> {
+    let starts = (0..stream.len().saturating_sub(3))
+        .filter(|&i| stream[i..i + 3] == [0, 0, 1])
+        .map(|i| i + 3)
+        .collect::<Vec<_>>();
+    let mut result = Vec::new();
+    for (n, &start) in starts.iter().enumerate() {
+        let unit = &stream[start..starts.get(n + 1).map_or(stream.len(), |next| next - 3)];
+        result.extend([0, 0, 0, 1]);
+        result.extend(unit);
+        if (unit[0] >> 1) & 0x3f < 32 {
+            for header in [0x7e, 0x7c] {
+                result.extend([0, 0, 0, 1, header, 0x01, 0x11, 0x22, 0x33, 0x44]);
+            }
+        }
+    }
+    result
+}
+fn dolby_vision_units(stream: &[u8]) -> usize {
+    stream
+        .windows(5)
+        .filter(|w| w[..3] == [0, 0, 1] && [0x7c, 0x7e].contains(&w[3]) && w[4] == 1)
+        .count()
+}
+#[tokio::test]
+async fn vod_remux_strips_dolby_vision_units_when_the_client_takes_the_base_layer() {
+    let temp = tempfile::tempdir().unwrap();
+    let raw = temp.path().join("base.hevc");
+    run(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "nullsrc=s=64x64:r=10,geq=lum='16+8*T':cb=128:cr=128",
+            "-t",
+            "12",
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            "log-level=none:bframes=0:keyint=60:min-keyint=60:scenecut=0",
+            "-pix_fmt",
+            "yuv420p",
+            "-f",
+            "hevc",
+            raw.to_str().unwrap(),
+        ],
+    );
+    let layered = temp.path().join("layered.hevc");
+    std::fs::write(
+        &layered,
+        with_dolby_vision_units(&std::fs::read(&raw).unwrap()),
+    )
+    .unwrap();
+    let media = temp.path().join("layered.mkv");
+    run(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-y",
+            "-fflags",
+            "+genpts",
+            "-f",
+            "hevc",
+            "-framerate",
+            "10",
+            "-i",
+            layered.to_str().unwrap(),
+            "-c",
+            "copy",
+            media.to_str().unwrap(),
+        ],
+    );
+    let source = source(temp.path(), &media);
+    let pipelines = Pipelines::open(
+        &temp.path().join("cache"),
+        runtime(&temp.path().join("tools")),
+    )
+    .await
+    .unwrap();
+    for strip in [false, true] {
+        let id = format!("strip-{strip}");
+        let options = Options {
+            quality: "auto".into(),
+            audio: None,
+            subtitle: None,
+            capabilities: Capabilities {
+                strip_dolby_vision: strip,
+                ..Capabilities::default()
+            },
+        };
+        let (revision, _) = pipelines
+            .start_vod(&id, &source, &options, "remux")
+            .await
+            .unwrap();
+        let manifest = pipelines
+            .file(&id, &revision, "index.m3u8")
+            .await
+            .unwrap()
+            .unwrap();
+        let (mut units, mut pictures) = (0, 0);
+        for name in std::fs::read_to_string(&manifest)
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("segment-"))
+        {
+            let segment = pipelines.file(&id, &revision, name).await.unwrap().unwrap();
+            let video = run(
+                "ffmpeg",
+                &[
+                    "-v",
+                    "error",
+                    "-i",
+                    segment.to_str().unwrap(),
+                    "-map",
+                    "0:v:0",
+                    "-c",
+                    "copy",
+                    "-f",
+                    "hevc",
+                    "-",
+                ],
+            );
+            units += dolby_vision_units(&video.stdout);
+            if strip {
+                pictures += frames(&segment).len();
+            }
+        }
+        if strip {
+            assert_eq!(units, 0);
+            assert_eq!(pictures, 120);
+        } else {
+            assert_eq!(units, 240);
+        }
+        pipelines.stop(&id).await;
+    }
+}

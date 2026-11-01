@@ -487,9 +487,6 @@ fn negotiate_for_container(
                     && matches(&p["AudioCodec"], audio)
             });
     let allow_remux = remux;
-    let remux = remux
-        && hls(profile, kind, video, audio, &values, output_container)
-        && constraints(profile, output_container, video, audio, &values);
     let mut conversion = None;
     let mut converted = values.clone();
     for (key, value) in [
@@ -617,30 +614,50 @@ fn negotiate_for_container(
     } else {
         conversion.is_some()
     };
-    let mut audio_converted = values.clone();
-    for key in [
-        "AudioChannels",
-        "AudioProfile",
-        "AudioBitrate",
-        "AudioSampleRate",
-        "AudioBitDepth",
-        "NumAudioStreams",
-    ] {
-        if let Some(value) = converted.get(key) {
-            audio_converted.insert(key.into(), value.clone());
+    // Whether the client takes the video copied, with the original audio or converted audio.
+    let copies = |values: &Properties| {
+        let mut audio_converted = values.clone();
+        for key in [
+            "AudioChannels",
+            "AudioProfile",
+            "AudioBitrate",
+            "AudioSampleRate",
+            "AudioBitDepth",
+            "NumAudioStreams",
+        ] {
+            if let Some(value) = converted.get(key) {
+                audio_converted.insert(key.into(), value.clone());
+            }
         }
-    }
-    let copy_video = allow_remux
-        && !video.is_empty()
-        && hls(
-            profile,
-            kind,
-            video,
-            "aac",
-            &audio_converted,
-            output_container,
+        (
+            allow_remux
+                && hls(profile, kind, video, audio, values, output_container)
+                && constraints(profile, output_container, video, audio, values),
+            allow_remux
+                && !video.is_empty()
+                && hls(profile, kind, video, "aac", &audio_converted, output_container)
+                && constraints(profile, output_container, video, "aac", &audio_converted),
         )
-        && constraints(profile, output_container, video, "aac", &audio_converted);
+    };
+    let (mut remux, mut copy_video) = copies(&values);
+    // A client that refuses Dolby Vision can still take the base layer beneath it.
+    let base = match range {
+        "DOVIWithHDR10" | "DOVIWithEL" => Some("HDR10"),
+        "DOVIWithHLG" => Some("HLG"),
+        "DOVIWithSDR" => Some("SDR"),
+        _ => None,
+    }
+    .filter(|_| ["hevc", "av1"].contains(&video));
+    let mut strip_dolby_vision = false;
+    if !remux
+        && !copy_video
+        && let Some(base) = base
+    {
+        let mut stripped = values.clone();
+        stripped.insert("VideoRangeType".into(), base.into());
+        (remux, copy_video) = copies(&stripped);
+        strip_dolby_vision = remux || copy_video;
+    }
     let mut video_converted = converted.clone();
     for key in [
         "AudioChannels",
@@ -703,6 +720,7 @@ fn negotiate_for_container(
         supported_media: None,
         hls_media: None,
         allow_conversion: None,
+        strip_dolby_vision,
     }
 }
 
@@ -880,6 +898,38 @@ mod tests {
         let caps = negotiate(&source, Some(1), &profile, true, true, None);
         assert!(caps.containers.is_empty());
         assert!(caps.conversion.is_none());
+    }
+    #[test]
+    fn hdr10_clients_take_dolby_vision_with_an_enhancement_layer_stripped() {
+        let (mut source, _) = fixture();
+        source.probe["streams"][0] = dolby_vision(7, 6, "smpte2084");
+        source.probe["streams"][0]["side_data_list"][0]["el_present_flag"] = json!(1);
+        source.probe["streams"][1] =
+            json!({"index":1,"codec_type":"audio","codec_name":"truehd","channels":8});
+        // Wholphin on an HDR10 display that decodes neither Dolby Vision nor its enhancement layer.
+        let mut profile = json!({"DirectPlayProfiles":[{"Type":"Video","Container":"mkv","VideoCodec":"hevc,h264","AudioCodec":"truehd,aac"}],"TranscodingProfiles":[{"Type":"Video","Container":"ts","Protocol":"hls","VideoCodec":"hevc,h264","AudioCodec":"truehd,aac"}],"CodecProfiles":[{"Type":"Video","Codec":"hevc","Conditions":[{"Property":"VideoRangeType","Condition":"NotEquals","Value":"DOVI|DOVIInvalid|DOVIWithEL","IsRequired":false}],"ApplyConditions":[{"Property":"VideoRangeType","Condition":"EqualsAny","Value":"DOVI|DOVIInvalid|DOVIWithEL","IsRequired":false}]}]});
+        let options = |caps| Options {
+            quality: "auto".into(),
+            audio: Some(1),
+            subtitle: None,
+            capabilities: caps,
+        };
+        let caps = negotiate(&source, Some(1), &profile, true, true, None);
+        assert!(caps.containers.is_empty());
+        assert!(caps.strip_dolby_vision);
+        assert_eq!(caps.hls_video.as_deref(), Some(&["hevc".to_owned()][..]));
+        assert_eq!(plan(&source, &options(caps)).unwrap(), "remux");
+        // A client that takes the enhancement layer keeps it.
+        profile["CodecProfiles"] = json!([]);
+        let caps = negotiate(&source, Some(1), &profile, true, true, None);
+        assert_eq!(caps.containers, vec!["mkv"]);
+        assert!(!caps.strip_dolby_vision);
+        // Profile 5 has no base layer to leave.
+        source.probe["streams"][0] = dolby_vision(5, 0, "bt709");
+        profile["CodecProfiles"] = json!([{"Type":"Video","Codec":"hevc","Conditions":[{"Property":"VideoRangeType","Condition":"NotEquals","Value":"DOVI","IsRequired":false}],"ApplyConditions":[{"Property":"VideoRangeType","Condition":"EqualsAny","Value":"DOVI","IsRequired":false}]}]);
+        let caps = negotiate(&source, Some(1), &profile, true, true, None);
+        assert!(!caps.strip_dolby_vision);
+        assert!(plan(&source, &options(caps)).is_err());
     }
     #[test]
     fn direct_play_embeds_the_subtitles_a_client_reads_from_the_file() {
