@@ -839,12 +839,25 @@ pub(crate) fn for_run(
     Ok(configuration)
 }
 
+#[derive(Deserialize)]
+pub(crate) struct ReadQuery {
+    #[serde(default)]
+    observe: bool,
+}
+
+/// Repairs an interrupted update when Recyclarr is free. An observing read never takes
+/// the service, so a poll can't refuse an operation that starts while it repairs.
 pub(crate) async fn get(
     State(runtime): State<Runtime>,
     Path(key): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ReadQuery>,
 ) -> Result<Json<Value>> {
     id(&key)?;
-    let guard = runtime.0.try_service("recyclarr").ok();
+    let guard = if query.observe {
+        None
+    } else {
+        runtime.0.try_service("recyclarr").ok()
+    };
     if guard.is_some() {
         updates::reconcile_recyclarr(&key).await?;
     }
@@ -1086,4 +1099,41 @@ pub(crate) async fn change(
     revision(&mut configuration);
     commit(&s, &configuration)?;
     Ok(Json(view(&configuration, candidate_at(&appdata(&key))?)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn observing_reads_leave_update_repair_to_operations() {
+        let fixture = crate::test_support::Docker::new();
+        fixture
+            .scope(async {
+                // An interrupted update without its journal can only be repaired with the service.
+                let service: Managed = serde_json::from_value(json!({
+                    "id":"11111111-1111-1111-1111-111111111111","kind":"recyclarr",
+                    "container":"recyclarr","name":"recyclarr","image":"recyclarr-image",
+                    "phase":"updating","spec":{},"expected":{}
+                }))
+                .unwrap();
+                save(&service).unwrap();
+                let runtime = Runtime(Default::default());
+                let read = |observe| {
+                    get(
+                        State(runtime.clone()),
+                        Path(service.id.clone()),
+                        axum::extract::Query(ReadQuery { observe }),
+                    )
+                };
+                let observed = read(true).await.unwrap();
+                assert_eq!(observed.0["initialized"], false);
+                let repair = read(false).await.err().unwrap();
+                assert_eq!(repair.1, "Recyclarr update journal is missing");
+                let operation = runtime.0.try_service("recyclarr").unwrap();
+                assert!(read(true).await.is_ok());
+                drop(operation);
+            })
+            .await;
+    }
 }
