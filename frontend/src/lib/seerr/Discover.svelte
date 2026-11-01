@@ -376,7 +376,8 @@
     const version = ++requestGeneration;
     requestLoading = true;
     error = '';
-    void musicRequests?.load();
+    // The music list loads itself; a reader's refresh reads it again.
+    if (reread) void musicRequests?.load();
     try {
       // Music requests do not need Seerr.
       if (!(await seerrStatus()).configured) {
