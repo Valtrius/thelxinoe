@@ -5,6 +5,7 @@ use crate::managers::domain::{
 };
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
+use std::collections::{HashMap, HashSet};
 use thelxinoe_core::{id, now};
 use thelxinoe_database::Database;
 
@@ -18,6 +19,31 @@ pub(super) async fn search(
     term: String,
 ) -> anyhow::Result<Vec<Value>> {
     db.read("managers.requests.search", move|db|Ok(db.prepare("SELECT id,title,year,(WITH RECURSIVE children(id) AS (SELECT card.id UNION ALL SELECT m.id FROM media m JOIN children c ON m.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children JOIN media_sources s ON s.media_id=children.id JOIN media_files f ON f.id=s.file_id WHERE f.present=1)) FROM media_cards card WHERE kind=?1 AND instr(lower(title),lower(?2))>0 ORDER BY title LIMIT 50")?.query_map(params![domain,term],|r|Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"year":r.get::<_,Option<i64>>(2)?,"available":r.get::<_,bool>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
+}
+
+/// Of `ids`, the albums with files in the library, and `user`'s latest request
+/// to `service` for each.
+pub(super) async fn albums(
+    db: &Database,
+    user: String,
+    service: String,
+    ids: Vec<String>,
+) -> anyhow::Result<(HashSet<String>, HashMap<String, (String, String)>)> {
+    let ids = serde_json::to_string(&ids)?;
+    db.read("managers.requests.albums", move |db| {
+        let held = db.prepare("SELECT DISTINCT CAST(json_extract(card.metadata,'$.musicbrainz_release_group_id') AS TEXT) FROM media card WHERE card.kind='album' AND CAST(json_extract(card.metadata,'$.musicbrainz_release_group_id') AS TEXT) IN (SELECT value FROM json_each(?1)) AND (WITH RECURSIVE children(id) AS (SELECT card.id UNION ALL SELECT m.id FROM media m JOIN children c ON m.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children JOIN media_sources s ON s.media_id=children.id JOIN media_files f ON f.id=s.file_id WHERE f.present=1))")?
+            .query_map([&ids], |r| r.get(0))?
+            .collect::<rusqlite::Result<HashSet<String>>>()?;
+        let mut requests = HashMap::new();
+        for row in db.prepare("SELECT external_id,id,state FROM acquisition_requests WHERE user_id=?1 AND service_id=?2 AND external_id IN (SELECT value FROM json_each(?3)) ORDER BY created_at,rowid")?
+            .query_map(params![user, service, ids], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+        {
+            let (external, id, state) = row?;
+            requests.insert(external, (id, state));
+        }
+        Ok((held, requests))
+    })
+    .await
 }
 
 pub(super) async fn list(

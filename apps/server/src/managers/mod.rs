@@ -14,6 +14,7 @@ mod indexers;
 pub(crate) mod libraries;
 mod metadata;
 mod movies;
+mod music;
 mod operations;
 mod ownership;
 mod quality;
@@ -72,6 +73,7 @@ use thelxinoe_core::{Capability, id, now};
 pub(crate) struct Runtime {
     http: reqwest::Client,
     proxy_http: reqwest::Client,
+    music: music::Runtime,
     guard: thelxinoe_core::operation_locks::OperationLocks,
     maintenance: tokio::sync::Mutex<std::sync::Weak<tokio::sync::OwnedRwLockWriteGuard<()>>>,
     connection_locks:
@@ -109,6 +111,7 @@ impl Runtime {
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(20))
                 .build()?,
+            music: music::Runtime::new()?,
             guard: Default::default(),
             maintenance: Default::default(),
             connection_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -125,6 +128,7 @@ pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .merge(access::router())
         .merge(requests::router())
+        .merge(music::router())
         .merge(bindings::router())
         .merge(controls::router())
         .merge(episodes::router())

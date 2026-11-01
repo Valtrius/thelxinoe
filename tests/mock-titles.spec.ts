@@ -371,11 +371,6 @@ test('requests open their title and keep secondary actions in a menu', async ({
   page,
 }) => {
   const errors = track(page);
-  const history: string[] = [];
-  page.on('request', (request) => {
-    if (request.url().includes('/acquisition/requests'))
-      history.push(request.url());
-  });
   await page.goto('/#requests');
   await expect(
     page.getByRole('heading', { name: 'Media requests', exact: true }),
@@ -408,8 +403,10 @@ test('requests open their title and keep secondary actions in a menu', async ({
   await expect(
     page.getByRole('menuitem', { name: 'Cancel request' }),
   ).toBeVisible();
-  // The old request history list is gone, along with its requests.
-  expect(history).toEqual([]);
+  // Music requests follow, without approval for a regular user.
+  const music = page.getByRole('region', { name: 'Music requests' });
+  await expect(music).toContainText('Night Ferry');
+  await expect(music.getByRole('button', { name: 'Approve' })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

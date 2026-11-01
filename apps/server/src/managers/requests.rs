@@ -78,7 +78,7 @@ async fn search(
     headers: HeaderMap,
     Query(input): Query<Search>,
 ) -> Result<Json<Value>> {
-    security::principal(&state, &headers).await?;
+    let p = security::principal(&state, &headers).await?;
     if input.term.trim().len() < 2 || input.term.len() > 200 {
         return Err(ApiError::bad("Enter between 2 and 200 characters"));
     }
@@ -100,11 +100,50 @@ async fn search(
     let term = input.term.trim().to_owned();
     let kind = s.kind.clone();
     let local = storage::search(&state.db, domain, term).await?;
-    let rows=remote.as_array().ok_or_else(unavailable)?.iter().take(50).filter_map(|r|{
-        let external=external(&kind,r)?;let title=r["title"].as_str()?;
-        Some(json!({"external_id":external,"title":title,"year":r["year"],"overview":r["overview"].as_str().unwrap_or("").chars().take(1000).collect::<String>(),"artist":r["artist"]["artistName"]}))
-    }).collect::<Vec<_>>();
+    let remote = remote.as_array().ok_or_else(unavailable)?.iter().take(50);
+    let rows = if kind == "lidarr" {
+        let mut rows = remote
+            .filter_map(|r| {
+                Some(super::music::album(
+                    &external(&kind, r).filter(|id| identifier(&kind, id))?,
+                    r["title"].as_str()?,
+                    r["artist"]["artistName"].as_str(),
+                    r["releaseDate"].as_str(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        decorate(&state, &p.user.id, &s.id, &mut rows).await?;
+        rows
+    } else {
+        remote.filter_map(|r|{
+            let external=external(&kind,r)?;let title=r["title"].as_str()?;
+            Some(json!({"external_id":external,"title":title,"year":r["year"],"overview":r["overview"].as_str().unwrap_or("").chars().take(1000).collect::<String>()}))
+        }).collect::<Vec<_>>()
+    };
     Ok(Json(json!({"service":s.name,"local":local,"items":rows})))
+}
+/// Marks the albums the library holds and the viewer's latest request for each.
+pub(super) async fn decorate(
+    state: &AppState,
+    user: &str,
+    service: &str,
+    items: &mut [Value],
+) -> Result<()> {
+    let ids = items
+        .iter()
+        .filter_map(|item| item["external_id"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    let (held, requests) =
+        storage::albums(&state.db, user.to_owned(), service.to_owned(), ids).await?;
+    for item in items {
+        let id = item["external_id"].as_str().unwrap_or_default();
+        let request = requests
+            .get(id)
+            .map_or(Value::Null, |(id, state)| json!({"id":id,"state":state}));
+        item["in_library"] = json!(held.contains(id));
+        item["request"] = request;
+    }
+    Ok(())
 }
 #[derive(Default, Deserialize)]
 struct HistoryPage {

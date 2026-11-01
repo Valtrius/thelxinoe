@@ -47,7 +47,7 @@ To build the server from source instead, run `docker compose up --build -d` from
 1. Open **Settings → Media services**, select a service, and use **Install and own it → Install …**. Choose an unused local port. Thelxinoe creates its container and configuration.
 2. Install **NZBGet** for Usenet downloads, **Prowlarr** for indexers, and **Radarr** for movies or **Sonarr** for shows. **Lidarr**, **Bazarr**, **Seerr** and **Recyclarr** are optional.
 3. Open services through their Thelxinoe links. Add your Usenet provider in NZBGet and indexers in Prowlarr. Review Radarr/Sonarr acquisition defaults and check **Download clients**, Prowlarr's **Applications**, and Bazarr's **Media managers** connections.
-4. Use the library pages for playback. Install Seerr to search and request movies/shows from **Discover**. Configure **Settings → Backups** and keep a copy off the server.
+4. Use the library pages for playback. Install Seerr to search and request movies/shows from **Discover**; with Lidarr, its **Music** tab requests albums. Configure **Settings → Backups** and keep a copy off the server.
 
 ## Bring existing services to Thelxinoe
 

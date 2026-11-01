@@ -25,6 +25,10 @@
   import MediaSkeleton from '../ui/MediaSkeleton.svelte';
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   import PosterCard from './PosterCard.svelte';
+  import { rowCardSizes } from './MediaRow.svelte';
+  import MusicDiscover from '../music-requests/MusicDiscover.svelte';
+  import MusicRequests from '../music-requests/MusicRequests.svelte';
+  import type { MusicService } from '../music-requests/types';
   import TitlePage from '../title/TitlePage.svelte';
   import type { MediaChoice } from '../playback';
   import {
@@ -98,7 +102,10 @@
     total = $state(0),
     searching = $state(false),
     configured = $state(true),
-    error = $state('');
+    error = $state(''),
+    musicSearching = $state(false),
+    musicRequestCount = $state(0);
+  let musicRequests = $state<MusicRequests>();
   const selected = $derived(detail ?? null);
   let requests = $state<(MediaRequest & { detail?: Media })[]>([]),
     requestPages = $state(1),
@@ -143,8 +150,8 @@
       void loadRequests(requestedPage);
     });
   });
-  // Thelxinoe's own acquisition requests have no list here any more; opening
-  // Requests is when their decisions are seen.
+  // Music requests carry no per-request attention; opening Requests is when
+  // their decisions are seen.
   $effect(() => {
     if (tab !== 'requests' || selected) return;
     for (const entry of $attention.filter(
@@ -226,7 +233,20 @@
       const state = await seerrStatus();
       if (!active) return;
       configured = state.configured;
-      if (!configured) return;
+      if (!configured) {
+        // Music works without Seerr; open on it when Lidarr can request.
+        if (tab !== 'discover' || query.trim()) return;
+        const { items } = await api<{ items: MusicService[] }>(
+          '/acquisition/services',
+        );
+        if (
+          active &&
+          tab === 'discover' &&
+          items.some((item) => item.kind === 'lidarr' && item.ready)
+        )
+          tab = 'music';
+        return;
+      }
       if (!state.ready) {
         error = 'Seerr is still completing setup. Try again shortly.';
         return;
@@ -298,7 +318,8 @@
   async function search(nextPage = 1) {
     const term = query.trim(),
       version = ++searchGeneration;
-    if (term.length < 2) {
+    // The music tab searches Lidarr itself.
+    if (term.length < 2 || tab === 'music') {
       results = [];
       searching = false;
       return;
@@ -355,7 +376,14 @@
     const version = ++requestGeneration;
     requestLoading = true;
     error = '';
+    // The music list loads itself; a reader's refresh reads it again.
+    if (reread) void musicRequests?.load();
     try {
+      // Music requests do not need Seerr.
+      if (!(await seerrStatus()).configured) {
+        if (version === requestGeneration) requests = [];
+        return;
+      }
       const result = await api<{
         results: MediaRequest[];
         pageInfo: { pages: number };
@@ -419,7 +447,14 @@
     if ((value === 'requests') !== showRequests)
       requestsChanged(value === 'requests');
     if (value === 'requests' && tab === value) void loadRequests(1, true);
+    // Music and the other tabs search different services; Requests clears
+    // the search.
+    const research =
+      value !== 'requests' &&
+      query.trim() &&
+      (value === 'music') !== (tab === 'music');
     tab = value;
+    if (research) changed(false);
     if (value === 'requests') {
       query = '';
       clearTimeout(searchTimer);
@@ -464,13 +499,17 @@
     >
       <Search size={20} class="shrink-0 text-muted" /><input
         class={`${formControlClass} min-w-0 flex-1 border-0 bg-transparent py-4 text-sm shadow-none outline-none focus:ring-0`}
-        aria-label="Search movies and series"
-        placeholder="Search movies and series…"
+        aria-label={tab === 'music'
+          ? 'Search albums and artists'
+          : 'Search movies and series'}
+        placeholder={tab === 'music'
+          ? 'Search albums and artists…'
+          : 'Search movies and series…'}
         bind:value={query}
         oninput={() => changed()}
         maxlength="200"
       />
-      {#if searching}<LoaderCircle
+      {#if tab === 'music' ? musicSearching : searching}<LoaderCircle
           size={18}
           class="animate-spin text-muted"
         />{:else if query}<Button
@@ -489,7 +528,7 @@
       data-sidebar-group
       aria-label="Discover navigation"
     >
-      {#each [{ id: 'discover', label: 'Discover' }, { id: 'movies', label: 'Movies' }, { id: 'tv', label: 'Series' }, { id: 'requests', label: user.role === 'admin' ? 'Requests' : 'My requests' }] as item (item.id)}<button
+      {#each [{ id: 'discover', label: 'Discover' }, { id: 'movies', label: 'Movies' }, { id: 'tv', label: 'Series' }, { id: 'music', label: 'Music' }, { id: 'requests', label: user.role === 'admin' ? 'Requests' : 'My requests' }] as item (item.id)}<button
           class={[
             'shrink-0 border-b-2 px-4 pt-2 pb-3 text-xs font-semibold transition-colors hover:text-foreground',
             tab === item.id
@@ -504,7 +543,7 @@
             />{/if}</button
         >{/each}
     </nav>
-    {#if error}<Notice variant="error" role="alert"
+    {#if error && tab !== 'music'}<Notice variant="error" role="alert"
         >{error}<Button
           variant="ghost"
           size="sm"
@@ -516,7 +555,12 @@
                 : load())}>Try again</Button
         ></Notice
       >{/if}
-    {#if !configured}<section
+    {#if tab === 'music'}<MusicDiscover
+        {user}
+        {query}
+        {settings}
+        bind:searching={musicSearching}
+      />{:else if !configured && tab !== 'requests'}<section
         class="grid min-h-85 place-content-center justify-items-center gap-4 text-center"
       >
         <Search size={35} class="text-muted" />
@@ -547,11 +591,11 @@
       </div>
       {#if requestLoading && !requests.length}<ContentSkeleton
           label="Loading requests"
-        />{:else if !requests.length}<p
+        />{:else if !requests.length && !musicRequestCount}<p
           class="py-12 text-center text-sm text-muted"
         >
-          No requests yet. Find a movie or series to get started.
-        </p>{:else}<div class="grid gap-3">
+          No requests yet. Find a movie, series or album to get started.
+        </p>{:else if requests.length}<div class="grid gap-3">
           {#each requests as request (request.id)}<article
               class="flex items-center gap-4 border border-line bg-surface p-4 compact:flex-wrap"
             >
@@ -663,6 +707,11 @@
             onclick={() => void loadRequests(requestPage + 1)}>Next</Button
           >
         </div>{/if}
+      <MusicRequests
+        bind:this={musicRequests}
+        {user}
+        loaded={(count) => (musicRequestCount = count)}
+      />
     {:else if query.trim()}
       {#if query.trim().length < 2}<p class="py-8 text-sm text-muted">
           Enter at least two characters.
@@ -732,9 +781,12 @@
       <div class="grid gap-7">
         {#each visibleFeeds as feed (feed.id)}{#if feed.items.length}<MediaRow
               label={feed.label}
-              items={feed.items}
-              {open}
-            />{:else if feed.loading}<div use:nearScreen={feed}>
+              >{#each feed.items as item (`${item.mediaType}:${item.id}`)}<PosterCard
+                  {item}
+                  {open}
+                  sizes={rowCardSizes}
+                />{/each}</MediaRow
+            >{:else if feed.loading}<div use:nearScreen={feed}>
               <MediaSkeleton
                 label={`Loading ${feed.label}`}
                 heading={feed.label}
@@ -750,6 +802,10 @@
             >{/if}{/each}
       </div>
     {/if}
-    <p class="mt-8 text-[10px] text-muted">Metadata from TMDB.</p>
+    <p class="mt-8 text-[10px] text-muted">
+      {tab === 'music'
+        ? 'Metadata from MusicBrainz. Charts from ListenBrainz.'
+        : 'Metadata from TMDB.'}
+    </p>
   </div>
 {/if}
