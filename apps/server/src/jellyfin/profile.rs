@@ -592,14 +592,8 @@ fn negotiate_for_container(
                         frame_rate,
                         profile: encoded.into(),
                         level,
-                        tone_map: [
-                            "HDR10",
-                            "HLG",
-                            "DOVIWithHDR10",
-                            "DOVIWithHLG",
-                            "DOVIWithEL",
-                        ]
-                        .contains(&range),
+                        tone_map: ["HDR10", "HLG", "DOVIWithHDR10", "DOVIWithHLG", "DOVIWithEL"]
+                            .contains(&range),
                         deinterlace: values.get("IsInterlaced").is_some_and(|v| v == "true"),
                         fit: false,
                     });
@@ -635,7 +629,14 @@ fn negotiate_for_container(
                 && constraints(profile, output_container, video, audio, values),
             allow_remux
                 && !video.is_empty()
-                && hls(profile, kind, video, "aac", &audio_converted, output_container)
+                && hls(
+                    profile,
+                    kind,
+                    video,
+                    "aac",
+                    &audio_converted,
+                    output_container,
+                )
                 && constraints(profile, output_container, video, "aac", &audio_converted),
         )
     };
