@@ -434,6 +434,30 @@ async function fixture(
             })),
           },
         });
+      if (path === '/api/v1/online/twitch/channels') {
+        const { channel } = route.request().postDataJSON();
+        if (channel === 'offlinechannel')
+          return route.fulfill({
+            status: 409,
+            json: {
+              error: {
+                code: 'conflict',
+                message: 'offlinechannel is offline or does not exist',
+              },
+            },
+          });
+        return route.fulfill({
+          json: {
+            id: '99',
+            login: 'otherchannel',
+            display_name: 'OtherChannel',
+            title,
+            category: 'Art',
+            viewers: 3,
+            started_at: '2026-09-21T00:00:00Z',
+          },
+        });
+      }
     }
     if (path.endsWith('/me/appearance')) {
       if (route.request().method() === 'PATCH') {
@@ -926,6 +950,29 @@ test('choosing another item while waiting only starts the latest item', async ({
   expect(state.starts.map((item) => item.media_id)).toEqual(['twitch:1']);
   expect(state.errors).toEqual([]);
   await testInfo.attach('latest-item-playing', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+});
+
+test('a Twitch channel name or URL plays a channel outside the followed feed', async ({
+  page,
+}, testInfo) => {
+  const state = await fixture(page, { app: true });
+  const input = page.getByLabel('Twitch channel', { exact: true });
+  await input.fill('offlinechannel');
+  await page.getByRole('button', { name: 'Watch', exact: true }).click();
+  await expect(
+    page.getByText('offlinechannel is offline or does not exist'),
+  ).toBeVisible();
+  await expect(input).toHaveValue('offlinechannel');
+  await input.fill('https://www.twitch.tv/otherchannel');
+  await page.getByRole('button', { name: 'Watch', exact: true }).click();
+  await decoded(page);
+  await expect(input).toHaveValue('');
+  expect(state.starts.map((item) => item.media_id)).toEqual(['twitch:99']);
+  expect(state.errors).toEqual([]);
+  await testInfo.attach('unfollowed-channel-playing', {
     body: await page.screenshot(),
     contentType: 'image/png',
   });

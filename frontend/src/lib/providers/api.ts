@@ -79,6 +79,31 @@ function remember(video: YoutubeVideo): YoutubeVideo {
 export function rememberVideos(items: YoutubeVideo[]) {
   items.forEach(remember);
 }
+type TwitchStreamItem = {
+  id: string;
+  login: string;
+  display_name: string;
+  title: string;
+  category: string;
+  viewers: number;
+  thumbnail_url?: string;
+  profile_image_url?: string;
+  started_at: string;
+  fetched_at?: number;
+};
+const twitchStream = (s: TwitchStreamItem): TwitchLiveStream => ({
+  streamId: `${s.id}:${s.started_at}`,
+  broadcasterId: s.id,
+  login: s.login,
+  displayName: s.display_name,
+  title: s.title,
+  gameName: s.category,
+  viewerCount: s.viewers,
+  thumbnailUrl: s.thumbnail_url,
+  profileImageUrl: s.profile_image_url,
+  startedAt: s.started_at,
+  fetchedAt: iso(s.fetched_at) ?? '',
+});
 export function rememberStreams(items: TwitchLiveStream[]) {
   for (const item of items)
     streams.set(item.login, { id: item.broadcasterId, title: item.title });
@@ -355,35 +380,12 @@ export const api = {
   },
   async twitchStreams(): Promise<TwitchLiveStream[]> {
     const owns = captureSession();
-    const result = await request<{
-      items: {
-        id: string;
-        login: string;
-        display_name: string;
-        title: string;
-        category: string;
-        viewers: number;
-        thumbnail_url?: string;
-        profile_image_url?: string;
-        started_at: string;
-        fetched_at?: number;
-      }[];
-    }>('/online/twitch/feed');
+    const result = await request<{ items: TwitchStreamItem[] }>(
+      '/online/twitch/feed',
+    );
     return result.items.map((s) => {
       if (owns()) streams.set(s.login, s);
-      return {
-        streamId: `${s.id}:${s.started_at}`,
-        broadcasterId: s.id,
-        login: s.login,
-        displayName: s.display_name,
-        title: s.title,
-        gameName: s.category,
-        viewerCount: s.viewers,
-        thumbnailUrl: s.thumbnail_url,
-        profileImageUrl: s.profile_image_url,
-        startedAt: s.started_at,
-        fetchedAt: iso(s.fetched_at) ?? '',
-      };
+      return twitchStream(s);
     });
   },
   async addKickTrackedChannel(channel: string): Promise<KickChannel> {
@@ -418,6 +420,17 @@ export const api = {
     const stream = streams.get(login);
     if (!stream || !launch)
       throw new Error('Refresh this channel before playing.');
+    await launch({ id: `twitch:${stream.id}`, title: stream.title });
+  },
+  /** Plays a live channel named by its login or URL, followed or not. */
+  async launchTwitchChannel(channel: string) {
+    if (!launch) throw new Error('Sign in before playing a channel.');
+    const stream = await request<TwitchStreamItem>(
+      '/online/twitch/channels',
+      'POST',
+      { channel },
+    );
+    streams.set(stream.login, stream);
     await launch({ id: `twitch:${stream.id}`, title: stream.title });
   },
   async launchKick(slug: string) {

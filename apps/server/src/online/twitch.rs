@@ -44,6 +44,7 @@ pub(super) fn router() -> Router<AppState> {
             axum::routing::delete(delete_data),
         )
         .route("/api/v1/online/twitch/feed", get(feed))
+        .route("/api/v1/online/twitch/channels", post(watch))
         .route(
             "/api/v1/admin/online/twitch",
             get(configuration).put(configure),
@@ -230,6 +231,131 @@ async fn feed(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     let p = security::principal(&state, &headers).await?;
     let rows = storage::feed(&state.db, p).await?;
     Ok(Json(json!({"items":rows})))
+}
+/// A Twitch login from a channel name or its twitch.tv URL.
+pub(super) fn login(input: &str) -> Result<String> {
+    let input = input.trim();
+    let value = if input.contains('/') {
+        let address = if input.contains("://") {
+            input.to_owned()
+        } else {
+            format!("https://{input}")
+        };
+        let url = url::Url::parse(&address)
+            .map_err(|_| ApiError::bad("Enter a Twitch channel name or URL"))?;
+        if url.scheme() != "https"
+            || !matches!(
+                url.host_str(),
+                Some("twitch.tv" | "www.twitch.tv" | "m.twitch.tv")
+            )
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
+        {
+            return Err(ApiError::bad("Enter a public Twitch channel URL"));
+        }
+        url.path().trim_matches('/').to_owned()
+    } else {
+        input.to_owned()
+    }
+    .to_ascii_lowercase();
+    if !(1..=25).contains(&value.len())
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err(ApiError::bad("Enter one Twitch channel name"));
+    }
+    Ok(value)
+}
+fn valid_stream(r: &Value) -> bool {
+    r["user_id"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty() && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_digit()))
+        && r["user_login"].as_str().is_some_and(|v| {
+            !v.is_empty()
+                && v.len() <= 100
+                && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+        && r["user_name"].is_string()
+        && r["title"].is_string()
+        && r["game_name"].is_string()
+        && r["started_at"].is_string()
+        && r["viewer_count"].as_i64().is_some_and(|v| v >= 0)
+}
+#[derive(Deserialize)]
+struct Watch {
+    channel: String,
+}
+/// Reads any live channel so it plays like a followed one until the followed
+/// snapshot replaces it.
+async fn watch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<Watch>,
+) -> Result<Json<Value>> {
+    let p = security::principal(&state, &headers).await?;
+    let login = login(&input.channel)?;
+    let client = client(&state).await?;
+    let (generation, encrypted) = storage::credential(&state.db, p.user.id.clone())
+        .await?
+        .ok_or_else(|| ApiError::bad("Connect Twitch to watch a channel"))?;
+    let credential: Credential = serde_json::from_slice(
+        &state
+            .secrets
+            .decrypt(&format!("twitch:{}", p.user.id), &encrypted)?,
+    )
+    .map_err(|_| provider_error())?;
+    let (status, _, value) = response(
+        state
+            .online
+            .http
+            .get(format!("{}/streams", state.online.twitch.api))
+            .bearer_auth(&credential.access_token)
+            .header("Client-Id", &client)
+            .query(&[("user_login", login.as_str())]),
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(provider_error());
+    }
+    let row = match value["data"].as_array().map(Vec::as_slice) {
+        Some([]) => {
+            return Err(ApiError::conflict(format!(
+                "{login} is offline or does not exist"
+            )));
+        }
+        Some([row]) if valid_stream(row) => row.clone(),
+        _ => return Err(provider_error()),
+    };
+    let profile = match response(
+        state
+            .online
+            .http
+            .get(format!("{}/users", state.online.twitch.api))
+            .bearer_auth(&credential.access_token)
+            .header("Client-Id", &client)
+            .query(&[("id", row["user_id"].as_str().unwrap_or_default())]),
+    )
+    .await
+    {
+        Ok((status, _, users)) if status.is_success() => {
+            super::public_image(users["data"][0]["profile_image_url"].as_str())
+        }
+        _ => None,
+    };
+    let user = p.user.id.clone();
+    let stream = storage::save_watched(&state.db, user.clone(), generation, row, profile)
+        .await?
+        .ok_or_else(|| ApiError::bad("Connect Twitch to watch a channel"))?;
+    state
+        .emit(
+            Some(user),
+            "online.account.changed",
+            json!({"provider":"twitch"}),
+        )
+        .await?;
+    Ok(Json(stream))
 }
 struct Attempt {
     user: String,
@@ -523,21 +649,8 @@ async fn sync_step(state: &AppState, t: &Turn) -> Result<Option<ProfileLookup>> 
             "Twitch returned an invalid or excessive page sequence",
         ));
     }
-    for r in &rows {
-        if !r["user_id"].as_str().is_some_and(|v| {
-            !v.is_empty() && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_digit())
-        }) || !r["user_login"].as_str().is_some_and(|v| {
-            !v.is_empty()
-                && v.len() <= 100
-                && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-        }) || !r["user_name"].is_string()
-            || !r["title"].is_string()
-            || !r["game_name"].is_string()
-            || !r["started_at"].is_string()
-            || r["viewer_count"].as_i64().is_none_or(|v| v < 0)
-        {
-            return Err(provider_error());
-        }
+    if !rows.iter().all(valid_stream) {
+        return Err(provider_error());
     }
     let owner = t.user.clone();
     let profile_due = storage::sync_step_read_online_accounts(owner, &state.db).await?;
