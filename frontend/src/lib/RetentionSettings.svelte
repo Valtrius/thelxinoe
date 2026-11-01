@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from './server-events.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { api } from './api';
@@ -8,7 +9,6 @@
     type VideoUsage,
   } from './AutoDeletePolicy.svelte';
   import Button from './ui/Button.svelte';
-  let { revision = 0 } = $props<{ revision?: number }>();
   type Settings = {
     policies: Policy[];
     users: { id: string; username: string }[];
@@ -50,7 +50,7 @@
   }
   // Retention and download events bump the settings revision.
   $effect(() => {
-    void revision;
+    void revisions.settings;
     untrack(() => void refresh());
   });
   onDestroy(() => requests.invalidate());

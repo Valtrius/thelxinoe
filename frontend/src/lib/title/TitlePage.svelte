@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from '../server-events.svelte';
   import { onDestroy, untrack } from 'svelte';
   import {
     ArrowLeft,
@@ -58,24 +59,13 @@
     type TitleKind,
   } from './catalog';
 
-  let {
-    user,
-    kind,
-    mediaId,
-    tmdb,
-    revision = 0,
-    back,
-    backLabel,
-    play,
-    openTitle,
-  } = $props<{
+  let { user, kind, mediaId, tmdb, back, backLabel, play, openTitle } = $props<{
     user: User;
     kind: TitleKind;
     /** A library id (any level of a series) or a `tmdb:`/`tvdb:` reference. */
     mediaId?: string;
     /** TMDB id from Discover. */
     tmdb?: number;
-    revision?: number;
     back: () => void;
     backLabel: string;
     play: (choice: MediaChoice) => void;
@@ -327,7 +317,7 @@
     untrack(() => void load());
   });
   $effect(() => {
-    if (revision > 0)
+    if (revisions.catalog > 0)
       untrack(() => {
         if (!loading) void refresh().catch(() => {});
       });

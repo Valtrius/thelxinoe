@@ -5,6 +5,7 @@ import { refreshAttention } from './attention';
 import { inBackground } from './page-readiness';
 import { RefreshTask } from './refresh-task';
 import { formatTime } from './display.svelte';
+import { onServerEvent } from './server-events.svelte';
 
 export type ServerUpdate = {
   id: string;
@@ -168,12 +169,14 @@ export const serverUpdates = readable(value, (set) => {
     update({ status: null, offlineSince: 0, error: '' });
   }
   const reads = new RefreshTask(refreshServerUpdate, 3000);
-  const refresh = () => void reads.refresh();
   reads.start();
-  window.addEventListener('thelxinoe-product-update', refresh);
+  const stop = onServerEvent((event) => {
+    if (['product.changed', 'server.reconnected'].includes(event.kind))
+      void reads.refresh();
+  });
   return () => {
     reads.stop();
-    window.removeEventListener('thelxinoe-product-update', refresh);
+    stop();
   };
 });
 export async function refreshServerUpdate() {

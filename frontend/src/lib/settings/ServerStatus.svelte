@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from '../server-events.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { api } from '../api';
   import { LatestRequest } from '../latest-request';
@@ -10,7 +11,6 @@
   import Skeleton from '../ui/Skeleton.svelte';
   import { cardBlockClass, statGridClass, statTileClass } from '../ui/styles';
 
-  let { revision } = $props<{ revision: number }>();
   type Health = {
     version: string;
     controller: boolean;
@@ -22,7 +22,7 @@
   const requests = new LatestRequest();
   onDestroy(() => requests.invalidate());
   $effect(() => {
-    void revision;
+    void revisions.settings;
     untrack(() => void load());
   });
   async function load() {

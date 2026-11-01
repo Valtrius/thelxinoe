@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 
 test('first-time tools stay queued or installing until verified installation completes', async ({
   page,
@@ -8,6 +8,7 @@ test('first-time tools stay queued or installing until verified installation com
     role: 'admin',
     settingsSection: 'server',
   });
+  const events = await installServerEvents(page);
   const items = ['yt-dlp', 'deno', 'streamlink', 'ffmpeg'].map((id) => ({
     id,
     policy: 'inherit',
@@ -58,12 +59,14 @@ test('first-time tools stay queued or installing until verified installation com
       },
     }),
   );
-  const update = () =>
-    page.evaluate(() => {
-      window.dispatchEvent(new Event('thelxinoe-tools'));
-      window.dispatchEvent(new Event('thelxinoe-attention-refresh'));
-    });
+  const update = () => {
+    events.send('tools.changed');
+    return page.evaluate(() =>
+      window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
+    );
+  };
   await page.goto('/');
+  await expect.poll(events.connected).toBe(true);
   const settings = page.getByRole('link', { name: 'Settings', exact: true });
   const marker = settings.locator('[data-activity-state]');
   await expect(marker).toHaveAttribute('data-activity-state', 'queued');
@@ -161,6 +164,7 @@ test('server tools keep four inline rows through discovery, progress and eager p
     role: 'admin',
     settingsSection: 'server',
   });
+  const events = await installServerEvents(page);
   const items = ['yt-dlp', 'deno', 'streamlink', 'ffmpeg'].map((id) => ({
     id,
     policy: 'inherit',
@@ -200,6 +204,7 @@ test('server tools keep four inline rows through discovery, progress and eager p
     return route.fulfill({ json: { items, supported: true } });
   });
   await page.goto('/');
+  await expect.poll(events.connected).toBe(true);
   const tools = page.getByRole('region', { name: 'Server tools', exact: true });
   await expect(tools.getByRole('row')).toHaveCount(5);
   await expect(tools.locator('details')).toHaveCount(0);
@@ -221,7 +226,7 @@ test('server tools keep four inline rows through discovery, progress and eager p
     error: null,
     reason: null,
   };
-  await page.evaluate(() => window.dispatchEvent(new Event('thelxinoe-tools')));
+  events.send('tools.changed');
   await expect(row).toContainText('Downloading');
   const policy = row.getByRole('group', { name: 'yt-dlp update policy' });
   const inherit = policy.getByRole('button', { name: 'Inherit', exact: true });
@@ -252,7 +257,7 @@ test('server tools keep four inline rows through discovery, progress and eager p
     stage: 'waiting',
     reason: 'Waiting for active downloads',
   };
-  await page.evaluate(() => window.dispatchEvent(new Event('thelxinoe-tools')));
+  events.send('tools.changed');
   await row
     .getByRole('button', { name: 'Update yt-dlp to 1.1', exact: true })
     .hover();
@@ -265,7 +270,7 @@ test('server tools keep four inline rows through discovery, progress and eager p
   Object.assign(items[1].installed, { candidate_id: items[1].candidate.id });
   items[1].check_error = 'Release service unavailable';
   items[1].checked_at -= 172800;
-  await page.evaluate(() => window.dispatchEvent(new Event('thelxinoe-tools')));
+  events.send('tools.changed');
   const deno = tools.getByRole('row', { name: /Deno/ });
   await deno
     .getByRole('button', { name: 'Check for Deno updates', exact: true })
@@ -286,7 +291,7 @@ test('server tools keep four inline rows through discovery, progress and eager p
   await checkRequest;
   items[1].check_error = null;
   items[1].checked_at = Math.floor(Date.now() / 1000);
-  await page.evaluate(() => window.dispatchEvent(new Event('thelxinoe-tools')));
+  events.send('tools.changed');
   await expect(deno.getByRole('status')).toContainText('Up to date');
   await tools.screenshot({ path: info.outputPath('server-tools-stale.png') });
   await info.attach('actions', {

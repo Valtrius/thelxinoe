@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './api';
+  import { onServerEvent } from './server-events.svelte';
   import ServerToolRow from './ServerToolRow.svelte';
   import type { ServerToolStatus } from './server-tools';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
@@ -36,13 +37,15 @@
     }
   }
   onMount(() => {
-    const update = () => void refresh();
-    update();
+    void refresh();
     // Every tool status and progress change emits tools.changed.
-    window.addEventListener('thelxinoe-tools', update);
+    const stop = onServerEvent((event) => {
+      if (['tools.changed', 'server.reconnected'].includes(event.kind))
+        void refresh();
+    });
     return () => {
       alive = false;
-      window.removeEventListener('thelxinoe-tools', update);
+      stop();
     };
   });
 </script>

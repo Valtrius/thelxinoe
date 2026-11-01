@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from './server-events.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { api, type Job } from './api';
   import { LatestRequest } from './latest-request';
@@ -15,14 +16,13 @@
   import { cardBlockClass, formControlClass } from './ui/styles';
   import { twMerge } from 'tailwind-merge';
 
-  let { revision }: { revision: number } = $props();
   let jobs = $state<Job[]>([]),
     loading = $state(true),
     error = $state('');
   const requests = new LatestRequest();
   onDestroy(() => requests.invalidate());
   $effect(() => {
-    void revision;
+    void revisions.settings;
     untrack(() => void load());
   });
   async function load() {

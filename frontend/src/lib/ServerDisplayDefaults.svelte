@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from './server-events.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { api } from './api';
@@ -12,9 +13,6 @@
   import TimezoneSelect from './TimezoneSelect.svelte';
   import { cardBlockClass, formControlClass } from './ui/styles';
 
-  let { revision = 0 } = $props<{
-    revision?: number;
-  }>();
   type Defaults = { timezone: string; time_format: '12h' | '24h' };
   const ids = $props.id();
   let confirmed = $state<Defaults | null>(null);
@@ -33,7 +31,7 @@
     requests.invalidate();
   });
   $effect(() => {
-    void revision;
+    void revisions.preferences;
     untrack(() => void load());
   });
   $effect(() => {

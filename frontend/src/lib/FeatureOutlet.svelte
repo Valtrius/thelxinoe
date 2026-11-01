@@ -10,11 +10,6 @@
   let {
     route,
     user,
-    mediaRevision,
-    catalogRevision,
-    accountRevision,
-    preferencesRevision,
-    settingsRevision,
     playing,
     play,
     navigate,
@@ -27,11 +22,6 @@
   } = $props<{
     route: AppRoute;
     user: User;
-    mediaRevision: number;
-    catalogRevision: number;
-    accountRevision: number;
-    preferencesRevision: number;
-    settingsRevision: number;
     playing: PlayingMedia[];
     play: (choice: MediaChoice, resolveYoutube?: boolean) => Promise<void>;
     navigate: (name: string) => void;
@@ -85,8 +75,6 @@
     {#await pages.home()}{@render loading()}{:then { default: Home }}
       <Home
         {user}
-        revision={mediaRevision}
-        {accountRevision}
         {playing}
         {play}
         {navigate}
@@ -107,9 +95,6 @@
       <SettingsPage
         {route}
         {user}
-        {preferencesRevision}
-        {accountRevision}
-        revision={settingsRevision}
         {navigate}
         {openSettings}
         {sessionEnded}
@@ -122,7 +107,6 @@
       <Discover
         {user}
         {play}
-        revision={catalogRevision}
         settings={() => openSettings('services')}
         detail={route.detail}
         showRequests={route.requests}
@@ -141,7 +125,6 @@
           {user}
           kind={route.section === 'Movies' ? 'movie' : 'show'}
           mediaId={route.item}
-          revision={catalogRevision}
           backLabel={`Back to ${route.section === 'Movies' ? 'movies' : 'shows'}`}
           back={() => {
             const grid = { ...route, item: undefined, ancestors: undefined };
@@ -160,7 +143,6 @@
         <LibraryView
           domain={route.section}
           admin={user.role === 'admin'}
-          revision={catalogRevision}
           userId={user.id}
           focusId={route.item}
           ancestors={route.ancestors}
@@ -178,7 +160,6 @@
     {#await pages.playlists()}{@render loading()}{:then { default: Playlists }}
       <Playlists
         userId={user.id}
-        revision={mediaRevision}
         {play}
         selectedId={route.playlist}
         selectedChanged={(playlist, replace) =>
@@ -200,7 +181,6 @@
         admin={user.role === 'admin'}
         platform={route.section.toLowerCase() as 'youtube' | 'twitch' | 'kick'}
         userId={user.id}
-        revision={mediaRevision}
         watchlistId={route.watchlist}
         watchlistChanged={(watchlist) => go({ ...route, watchlist })}
         {playing}

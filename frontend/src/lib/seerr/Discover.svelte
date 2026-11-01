@@ -50,11 +50,9 @@
     searchChanged,
     requestsChanged,
     play,
-    revision = 0,
   } = $props<{
     user: User;
     play: (choice: MediaChoice) => void;
-    revision?: number;
     settings: () => void;
     detail?: { kind: MediaKind; id: number };
     showRequests?: boolean;
@@ -446,7 +444,6 @@
       {user}
       kind={selected.kind === 'tv' ? 'show' : 'movie'}
       tmdb={selected.id}
-      {revision}
       {back}
       backLabel="Back to discover"
       {play}

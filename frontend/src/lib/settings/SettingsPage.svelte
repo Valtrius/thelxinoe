@@ -25,9 +25,6 @@
   let {
     user,
     route,
-    preferencesRevision,
-    accountRevision,
-    revision,
     navigate,
     openSettings,
     sessionEnded,
@@ -36,9 +33,6 @@
   } = $props<{
     user: User;
     route: AppRoute;
-    preferencesRevision: number;
-    accountRevision: number;
-    revision: number;
     navigate: (name: string) => void;
     openSettings: (name: string, service?: string) => void;
     sessionEnded: () => void;
@@ -124,7 +118,6 @@
         'Loading settings',
       )}{:then { default: UserPreferences }}<UserPreferences
         {user}
-        revision={preferencesRevision}
         avatarChanged={(id, avatar) => {
           profileChanged(id, avatar);
         }}
@@ -136,7 +129,6 @@
   {#if section === 'online'}{#await settingsPages.OnlineAccounts()}{@render loading(
         'Loading settings',
       )}{:then { default: OnlineAccounts }}<OnlineAccounts
-        revision={accountRevision}
         navigate={(name) => void navigate(name)}
         configureProviders={user.role === 'admin'
           ? () => openSettings('providers')
@@ -152,7 +144,7 @@
       />{:catch caught}{@render failed(caught)}{/await}
   {/if}
   {#if section === 'devices'}
-    <DeviceSessions {revision} {sessionEnded} />
+    <DeviceSessions {sessionEnded} />
     {#await settingsPages.QuickConnect()}{@render loading(
         'Loading settings',
       )}{:then { default: QuickConnect }}<QuickConnect
@@ -252,7 +244,6 @@
           workflow={route.workflow}
           onSelect={(service) => openSettings('services', service)}
           openSettings={(name) => openSettings(name)}
-          {revision}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
     {#if section === 'jellyfin-import'}{#await settingsPages.JellyfinImport()}{@render loading(
           'Loading settings',
@@ -262,18 +253,16 @@
     {#if section === 'retention'}{#await settingsPages.RetentionSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: RetentionSettings }}<RetentionSettings
-          {revision}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
     {#if section === 'retention'}{#await settingsPages.ManagerOwnership()}{@render loading(
           'Loading settings',
         )}{:then { default: ManagerOwnership }}<ManagerOwnership
         />{:catch caught}{@render failed(caught)}{/await}{/if}
     {#if section === 'server'}
-      <ServerStatus {revision} />
+      <ServerStatus />
       {#await settingsPages.ServerDisplayDefaults()}{@render loading(
           'Loading settings',
         )}{:then { default: ServerDisplayDefaults }}<ServerDisplayDefaults
-          revision={preferencesRevision}
         />{:catch caught}{@render failed(caught)}{/await}
       <SettingsCard
         id="server-updates"
@@ -297,7 +286,6 @@
       {#await settingsPages.ServerTranscodingSettings()}{@render loading(
           'Loading transcoding settings',
         )}{:then { default: ServerTranscodingSettings }}<ServerTranscodingSettings
-          revision={preferencesRevision}
         />{:catch caught}{@render failed(caught)}{/await}
       {#await settingsPages.ServerTools()}{@render loading(
           'Loading settings',
@@ -312,7 +300,7 @@
         )}{:then { default: AdminOperations }}<AdminOperations
         />{:catch caught}{@render failed(caught)}{/await}
     {/if}
-    {#if section === 'people'}<PeopleSettings {user} {revision} />{/if}
+    {#if section === 'people'}<PeopleSettings {user} />{/if}
     {#if section === 'audit'}{#await settingsPages.AuditSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: AuditSettings }}<AuditSettings
@@ -321,7 +309,6 @@
     {#if section === 'jobs'}{#await settingsPages.ActivitySettings()}{@render loading(
           'Loading settings',
         )}{:then { default: ActivitySettings }}<ActivitySettings
-          {revision}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
   {/if}
 {/snippet}

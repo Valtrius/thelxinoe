@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from '../server-events.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { Globe, Laptop, Smartphone } from '@lucide/svelte';
   import { api } from '../api';
@@ -15,8 +16,7 @@
   import StatusChip from '../ui/StatusChip.svelte';
   import { cardBlockClass } from '../ui/styles';
 
-  let { revision, sessionEnded } = $props<{
-    revision: number;
+  let { sessionEnded } = $props<{
     sessionEnded: () => void;
   }>();
   type Session = {
@@ -34,7 +34,7 @@
   const ownsSession = captureSession();
   onDestroy(() => requests.invalidate());
   $effect(() => {
-    void revision;
+    void revisions.settings;
     untrack(() => void load());
   });
   const transportIcon = (transport: string) =>

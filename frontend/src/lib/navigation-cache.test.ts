@@ -2,9 +2,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   NavigationCache,
   navigationCache,
-  invalidatePageEvent,
   invalidatePageWrite,
 } from './navigation-cache';
+import { publish } from './server-events.svelte';
 import { invalidateSession } from './session';
 
 beforeEach(() => {
@@ -164,14 +164,14 @@ it('invalidates changed resources without treating YouTube browse or playback ke
   await read();
   expect(catalog).toHaveBeenCalledTimes(1);
   expect(youtube).toHaveBeenCalledTimes(1);
-  invalidatePageEvent('youtube.changed');
+  publish({ id: 0, kind: 'youtube.changed', payload: {} });
   await read();
   expect(catalog).toHaveBeenCalledTimes(1);
   expect(youtube).toHaveBeenCalledTimes(2);
   invalidatePageWrite('/catalog/id/state');
   await read();
   expect(catalog).toHaveBeenCalledTimes(2);
-  invalidatePageEvent('server.reconnected');
+  publish({ id: 0, kind: 'server.reconnected', payload: {} });
   await read();
   expect(catalog).toHaveBeenCalledTimes(3);
   expect(youtube).toHaveBeenCalledTimes(3);
@@ -193,12 +193,12 @@ it('shows snapshots at once after progress reports but drops them when playback 
   pending.resolve(['moved']);
   await reading;
   expect(accept).toHaveBeenLastCalledWith(['moved']);
-  invalidatePageEvent('playback.changed', true);
+  publish({ id: 0, kind: 'playback.changed', payload: {} }, true);
   accept.mockClear();
   await navigationCache.read('catalog', '/me/home', load, accept);
   expect(accept).toHaveBeenCalledTimes(2);
   expect(load).toHaveBeenCalledTimes(2);
-  invalidatePageEvent('playback.changed');
+  publish({ id: 0, kind: 'playback.changed', payload: {} });
   accept.mockClear();
   await navigationCache.read('catalog', '/me/home', load, accept);
   expect(accept).toHaveBeenCalledTimes(1);
