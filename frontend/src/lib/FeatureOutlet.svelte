@@ -10,7 +10,6 @@
   let {
     route,
     user,
-    timeFormat,
     mediaRevision,
     catalogRevision,
     accountRevision,
@@ -24,12 +23,10 @@
     updateFilters,
     sessionEnded,
     switchServer,
-    displayChanged,
     profileChanged,
   } = $props<{
     route: AppRoute;
     user: User;
-    timeFormat: '12h' | '24h';
     mediaRevision: number;
     catalogRevision: number;
     accountRevision: number;
@@ -43,7 +40,6 @@
     updateFilters: (route: AppRoute, replace?: boolean) => void;
     sessionEnded: () => void;
     switchServer: (address: string) => Promise<void>;
-    displayChanged: (timezone: string, format: '12h' | '24h') => void;
     profileChanged: (id: string, avatar: string | null) => void;
   }>();
   let retry = $state(0);
@@ -111,7 +107,6 @@
       <SettingsPage
         {route}
         {user}
-        {timeFormat}
         {preferencesRevision}
         {accountRevision}
         revision={settingsRevision}
@@ -119,7 +114,6 @@
         {openSettings}
         {sessionEnded}
         {switchServer}
-        {displayChanged}
         {profileChanged}
       />
     {:catch error}{@render failed(error)}{/await}
@@ -168,7 +162,6 @@
           admin={user.role === 'admin'}
           revision={catalogRevision}
           userId={user.id}
-          timezone={user.timezone}
           focusId={route.item}
           ancestors={route.ancestors}
           searchQuery={route.query}
@@ -196,7 +189,6 @@
     {#await pages.statistics()}{@render loading()}{:then { default: StatisticsView }}
       <StatisticsView
         {user}
-        {timeFormat}
         filters={route}
         filtersChanged={(filters) =>
           updateFilters({ ...route, ...filters }, false)}

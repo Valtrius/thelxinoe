@@ -44,7 +44,6 @@ export const settingsPages = {
   DesktopUpdatePreferences: cached(
     () => import('./DesktopUpdatePreferences.svelte'),
   ),
-  UserAdministration: cached(() => import('./UserAdministration.svelte')),
   MpvSettings: cached(() => import('./MpvSettings.svelte')),
   AuditSettings: cached(() => import('./AuditSettings.svelte')),
   UserPreferences: cached(() => import('./UserPreferences.svelte')),
@@ -100,7 +99,7 @@ const settingsModules: Record<SettingsSection, (keyof typeof settingsPages)[]> =
     'jellyfin-import': ['JellyfinImport'],
     retention: ['RetentionSettings', 'ManagerOwnership'],
     backups: ['BackupSettings'],
-    people: ['UserAdministration'],
+    people: [],
     jobs: ['ActivitySettings'],
     audit: ['AuditSettings'],
   };

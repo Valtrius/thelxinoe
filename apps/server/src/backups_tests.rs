@@ -115,6 +115,7 @@ async fn automatic_backup_runs_once_per_window_then_releases_updates() {
     assert_eq!(listed.2["passphrase_saved"], true);
     assert_eq!(listed.2["automatic"]["state"], "complete");
     assert_eq!(listed.2["window"], json!({"start":4,"end":4}));
+    assert_eq!(listed.2["timezone"], "UTC");
     assert!(!listed.2.to_string().contains(secret));
 }
 

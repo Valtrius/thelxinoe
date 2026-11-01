@@ -1,5 +1,6 @@
 <script lang="ts">
   import FormField from './ui/FormField.svelte';
+  import { formatTimestamp } from './display.svelte';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import UpdatePolicyFields from './ui/UpdatePolicyFields.svelte';
   import { formControlClass } from './ui/styles';
@@ -49,14 +50,12 @@
   } from './ServiceConnections.svelte';
 
   let {
-    timeFormat = '24h',
     selected,
     workflow,
     onSelect,
     openSettings,
     revision = 0,
   } = $props<{
-    timeFormat?: '12h' | '24h';
     selected?: string;
     workflow?: 'setup' | 'updates';
     onSelect?: (kind: string) => void;
@@ -1250,12 +1249,7 @@
             <dt class="text-muted">Last check</dt>
             <dd>
               {selectedStage.connection?.checked_at
-                ? new Date(
-                    selectedStage.connection.checked_at * 1000,
-                  ).toLocaleString(undefined, {
-                    timeZone: timezone || undefined,
-                    hour12: timeFormat === '12h',
-                  })
+                ? formatTimestamp(selectedStage.connection.checked_at)
                 : 'Not checked yet'}{#if selectedStage.connection?.error}<span
                   class="block text-warning"
                   >{selectedStage.connection.error}</span
@@ -1752,12 +1746,9 @@
                 Waiting for the first automatic update check.
               </p>{/if}
             {#if policy?.checked_at}<p class="my-2 text-xs text-muted">
-                Last check: {new Date(policy.checked_at * 1000).toLocaleString(
-                  undefined,
-                  {
-                    timeZone: timezone,
-                    hour12: timeFormat === '12h',
-                  },
+                Last check: {formatTimestamp(
+                  policy.checked_at,
+                  timezone || undefined,
                 )}
               </p>{/if}
             {#if policy?.error}<Notice

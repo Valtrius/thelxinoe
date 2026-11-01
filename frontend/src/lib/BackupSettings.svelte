@@ -23,10 +23,7 @@
   import StatusChip from './ui/StatusChip.svelte';
   import { definitions } from './services/feature';
   import { reveal } from './ui/reveal';
-  let { timezone, timeFormat } = $props<{
-    timezone: string;
-    timeFormat: '12h' | '24h';
-  }>();
+  import { formatTimestamp } from './display.svelte';
   type Component = {
     key: string;
     kind: string;
@@ -89,11 +86,9 @@
     savingPolicy = $state(false),
     replacingPassphrase = $state(false);
   const hour = (value: number) => `${String(value).padStart(2, '0')}:00`;
-  const time = (seconds: number) =>
-    new Date(seconds * 1000).toLocaleString(undefined, {
-      timeZone: timezone,
-      hour12: timeFormat === '12h',
-    });
+  // Backups run in the server's maintenance window, so they use its zone.
+  let timezone = $state('UTC');
+  const time = (seconds: number) => formatTimestamp(seconds, timezone);
   const restoring = $derived(items.find((item) => item.id === restoreId));
   const listed = $derived(restoring?.components ?? []);
   const stageTone = (stage: string) =>
@@ -122,12 +117,14 @@
         passphrase_saved: boolean;
         automatic: Run | null;
         window: { start: number; end: number };
+        timezone: string;
       }>('/admin/backups');
       items = data.items;
       destination = data.destination;
       passphraseSaved = data.passphrase_saved;
       run = data.automatic;
       maintenance = data.window;
+      timezone = data.timezone;
       loadError = '';
       // Polling must not overwrite an edit that is still being saved.
       if (!initialized) {

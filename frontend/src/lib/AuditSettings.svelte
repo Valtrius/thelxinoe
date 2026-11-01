@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { api, type User } from './api';
   import History from './History.svelte';
+  import { formatTimestamp } from './display.svelte';
   import { LatestRequest } from './latest-request';
   import { RefreshTask } from './refresh-task';
   import Button from './ui/Button.svelte';
@@ -11,8 +12,7 @@
   import { cardBlockClass, formControlClass } from './ui/styles';
   import { twMerge } from 'tailwind-merge';
 
-  let { user, timeFormat }: { user: User; timeFormat: '12h' | '24h' } =
-    $props();
+  let { user }: { user: User } = $props();
   type Item = {
     id: string;
     title: string;
@@ -43,11 +43,6 @@
           : (b.eligible_at ?? b.due_at) - (a.eligible_at ?? a.due_at),
       ),
   );
-  const date = (seconds: number) =>
-    new Date(seconds * 1000).toLocaleString(undefined, {
-      timeZone: user.timezone,
-      hour12: timeFormat === '12h',
-    });
   const reason = (item: Item) =>
     item.reason === 'storage_limit'
       ? 'Storage limit'
@@ -129,7 +124,7 @@
   </select>
 </div>
 {#if view === 'activity'}
-  <History {user} {timeFormat} audit />
+  <History {user} audit />
 {:else}
   {#if error}<p class="col-span-full m-0 text-xs text-danger" role="alert">
       {error}
@@ -154,7 +149,7 @@
       {#each visible as item (item.id)}
         <SettingRow
           label={item.title}
-          description={`${reason(item)} · Scheduled for ${date(item.due_at)}${item.error ? ` · ${item.error}` : ''}`}
+          description={`${reason(item)} · Scheduled for ${formatTimestamp(item.due_at)}${item.error ? ` · ${item.error}` : ''}`}
         >
           {#if scheduled}
             <Button

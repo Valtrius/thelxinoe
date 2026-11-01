@@ -18,6 +18,8 @@
   import Notice from './ui/Notice.svelte';
   import Switch from './ui/Switch.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
+  import { display } from './display.svelte';
+  import { dateFormat } from './intl';
   import {
     cardBlockClass,
     cardTableClass,
@@ -26,9 +28,7 @@
     statTileClass,
   } from './ui/styles';
 
-  let { timeFormat, timezone, openSettings } = $props<{
-    timeFormat: '12h' | '24h';
-    timezone: string;
+  let { openSettings } = $props<{
     openSettings: (name: string, service?: string) => void;
   }>();
 
@@ -145,12 +145,12 @@
 
   const n = (value: number) => value.toLocaleString();
   const time = (seconds: number) =>
-    new Date(seconds * 1000).toLocaleString(undefined, {
-      timeZone: timezone,
-      hour12: timeFormat === '12h',
+    dateFormat(undefined, {
+      timeZone: display.timezone,
+      hour12: display.timeFormat === '12h',
       dateStyle: 'medium',
       timeStyle: 'short',
-    });
+    }).format(seconds * 1000);
   const sum = (rows: Counts[], key: keyof Counts) =>
     rows.reduce((total, row) => total + row[key], 0);
   const missingTitle = (row: Missing) =>

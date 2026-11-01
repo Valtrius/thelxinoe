@@ -1,9 +1,6 @@
 <script lang="ts">
-  let { timezone, timeFormat } = $props<{
-    timezone: string;
-    timeFormat: '12h' | '24h';
-  }>();
   import { onMount } from 'svelte';
+  import { formatTimestamp } from './display.svelte';
   import { LoaderCircle } from '@lucide/svelte';
   import { api } from './api';
   import { RefreshTask } from './refresh-task';
@@ -80,11 +77,6 @@
   }
   onMount(() => new RefreshTask(load, 30_000).start());
   const size = (n: number) => `${(n / 1024 ** 3).toFixed(2)} GB`;
-  const when = (seconds: number) =>
-    new Date(seconds * 1000).toLocaleString(undefined, {
-      timeZone: timezone,
-      hour12: timeFormat === '12h',
-    });
   async function diagnostics() {
     try {
       const value = await api('/admin/diagnostics');
@@ -153,7 +145,7 @@
         {#each data.services as service (service.kind)}
           <SettingRow
             label={service.kind}
-            description={`${service.healthy ? 'Last check passed' : 'Needs attention'} · ${when(service.checked_at)}`}
+            description={`${service.healthy ? 'Last check passed' : 'Needs attention'} · ${formatTimestamp(service.checked_at)}`}
           >
             <StatusChip tone={service.healthy ? 'ok' : 'bad'}
               >{service.healthy ? 'Healthy' : 'Attention'}</StatusChip
@@ -217,7 +209,7 @@
       <h3 class={groupHeadingClass}>Recent failures</h3>
       <div class="divide-y divide-line">
         {#each data.errors as item (item.id)}
-          <SettingRow label={item.kind} description={when(item.at)}>
+          <SettingRow label={item.kind} description={formatTimestamp(item.at)}>
             <StatusChip tone="bad">Failed</StatusChip>
           </SettingRow>
         {:else}<p class="m-0 {cardBlockClass} pt-2 text-xs text-muted">

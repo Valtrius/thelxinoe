@@ -1,43 +1,30 @@
 <script lang="ts">
-  import { onDestroy, onMount, untrack } from 'svelte';
-  import { Globe, Laptop, SearchX, Smartphone } from '@lucide/svelte';
+  import { onMount, untrack } from 'svelte';
+  import { SearchX } from '@lucide/svelte';
   import { twMerge } from 'tailwind-merge';
   import DesktopVersion from '../DesktopVersion.svelte';
   import { prefetchSettings, settingsPages } from '../pages';
-  import { api, desktop, serverUrl, type User, type Job } from '../api';
-  import { inBackground } from '../page-readiness';
+  import { desktop, serverUrl, type User } from '../api';
   import { captureSession } from '../session';
-  import { withVerification } from '../authentication';
-  import { LatestRequest } from '../latest-request';
   import type { AppRoute, SettingsSection } from '../navigation';
-  import { isServerUpdateInterruption } from '../server-updates';
-  import type { ApprovalUser } from '../services/feature';
   import SettingsLayout from '../ui/SettingsLayout.svelte';
   import SettingsCard from '../ui/SettingsCard.svelte';
   import SettingRow from '../ui/SettingRow.svelte';
   import SettingsAnchors from '../ui/SettingsAnchors.svelte';
-  import StatusChip from '../ui/StatusChip.svelte';
   import Notice from '../ui/Notice.svelte';
-  import FormField from '../ui/FormField.svelte';
-  import {
-    cardBlockClass,
-    emptyClass,
-    formControlClass,
-    statGridClass,
-    statTileClass,
-  } from '../ui/styles';
+  import { cardBlockClass, emptyClass, formControlClass } from '../ui/styles';
   import Button from '../ui/Button.svelte';
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
-  import Skeleton from '../ui/Skeleton.svelte';
-  import { Accordion } from 'bits-ui';
   import { providers } from '../providers/availability';
   import { settingsGroups } from './sections';
   import { searchSettings } from './search';
   import SettingsSearchGroup from './SettingsSearchGroup.svelte';
+  import DeviceSessions from './DeviceSessions.svelte';
+  import PeopleSettings from './PeopleSettings.svelte';
+  import ServerStatus from './ServerStatus.svelte';
   let {
     user,
     route,
-    timeFormat,
     preferencesRevision,
     accountRevision,
     revision,
@@ -45,12 +32,10 @@
     openSettings,
     sessionEnded,
     switchServer,
-    displayChanged,
     profileChanged,
   } = $props<{
     user: User;
     route: AppRoute;
-    timeFormat: '12h' | '24h';
     preferencesRevision: number;
     accountRevision: number;
     revision: number;
@@ -58,40 +43,13 @@
     openSettings: (name: string, service?: string) => void;
     sessionEnded: () => void;
     switchServer: (address: string) => Promise<void>;
-    displayChanged: (timezone: string, format: '12h' | '24h') => void;
     profileChanged: (id: string, avatar: string | null) => void;
   }>();
   const settingsSection = $derived(route.settings);
   const ids = $props.id();
-  type Session = {
-    id: string;
-    name: string;
-    transport: string;
-    last_seen: number;
-    remembered?: boolean;
-  };
-  let sessions = $state<Session[]>([]),
-    users = $state<User[]>([]),
-    jobs = $state<Job[]>([]),
-    currentSession = $state('');
-  let newUsername = $state(''),
-    newPassword = $state(''),
-    newRole = $state<'admin' | 'user'>('user'),
-    expandedUser = $state('');
-  // Who may request without review, keyed by user id. Only people the
-  // server lists get a toggle.
-  let approvals = $state<Record<string, boolean>>({}),
-    approvalError = $state('');
-  let timezone = $state('UTC'),
-    serverAddress = $state(untrack(serverUrl));
-  let health = $state<{
-    version: string;
-    controller: boolean;
-    cache_free_bytes: number;
-  } | null>(null);
+  let serverAddress = $state(untrack(serverUrl));
   let busy = $state(false),
     error = $state('');
-  const requests = new LatestRequest();
   let query = $state(''),
     term = $state('');
   // Search once typing pauses so each keystroke does not mount and load pages.
@@ -118,20 +76,6 @@
         )
       : undefined,
   );
-  // The services page links from search results instead of rendering in them.
-  const shownSections = $derived<SettingsSection[]>(
-    results
-      ? results
-          .filter((result) => !result.links)
-          .map((result) => result.page.id)
-      : [settingsSection],
-  );
-  const shownKey = $derived(shownSections.join(' '));
-  let loadingSections = $state<SettingsSection[]>([]);
-  const loadedSections = $state<Record<string, boolean>>({});
-  const loadingData = (section: SettingsSection) =>
-    loadingSections.includes(section) && !loadedSections[section];
-  const ownsSession = captureSession();
   const serverAnchors = [
     { id: 'server-status', label: 'Status' },
     { id: 'server-display', label: 'Display' },
@@ -142,18 +86,6 @@
     { id: 'server-overview', label: 'Overview' },
     { id: 'server-devices', label: 'Devices' },
   ];
-  const transportIcon = (transport: string) =>
-    transport === 'desktop'
-      ? Laptop
-      : transport === 'mobile'
-        ? Smartphone
-        : Globe;
-  const seen = (session: Session) =>
-    new Date(session.last_seen * 1000).toLocaleString(undefined, {
-      timeZone: user.timezone,
-      hour12: timeFormat === '12h',
-    });
-  onDestroy(() => requests.invalidate());
   onMount(() => {
     const prefetch = new AbortController();
     void prefetchSettings(
@@ -161,11 +93,6 @@
       prefetch.signal,
     );
     return () => prefetch.abort();
-  });
-  $effect(() => {
-    void shownKey;
-    void revision;
-    untrack(() => void loadSettings());
   });
   async function act(fn: () => Promise<void>) {
     const ownsSession = captureSession();
@@ -178,80 +105,6 @@
     } finally {
       if (ownsSession()) busy = false;
     }
-  }
-  async function loadSettings() {
-    const current = requests.begin();
-    const sections = shownSections;
-    loadingSections = sections;
-    error = '';
-    try {
-      await Promise.all(
-        sections.map((section) => loadSection(section, current)),
-      );
-    } catch (caught) {
-      if (current() && !isServerUpdateInterruption(caught))
-        error = String(caught);
-    } finally {
-      if (current()) {
-        for (const section of sections) loadedSections[section] = true;
-        loadingSections = [];
-      }
-    }
-  }
-  async function loadSection(section: SettingsSection, current: () => boolean) {
-    if (section === 'devices') {
-      const value = await api<{ items: Session[]; current: string }>(
-        '/auth/sessions',
-      );
-      if (current()) {
-        sessions = value.items;
-        currentSession = value.current;
-      }
-    } else if (section === 'people') {
-      const [people, approval] = await Promise.all([
-        api<{ items: User[] }>('/users'),
-        api<{ items: ApprovalUser[] }>('/admin/acquisition/users').then(
-          (value) => ({ items: value.items, error: '' }),
-          (caught: unknown) => ({
-            items: [] as ApprovalUser[],
-            error: String(caught),
-          }),
-        ),
-      ]);
-      if (current()) {
-        users = people.items;
-        approvals = Object.fromEntries(
-          approval.items.map((entry) => [entry.id, entry.enabled]),
-        );
-        approvalError = approval.error;
-      }
-    } else if (section === 'jobs') {
-      const value = await api<{ items: Job[] }>('/admin/jobs');
-      if (current()) jobs = value.items;
-    } else if (section === 'server') {
-      // Health waits on the Docker controller; its tiles show their own loading.
-      const value = await inBackground(() =>
-        api<NonNullable<typeof health>>('/admin/health'),
-      );
-      if (current()) health = value;
-    } else if (section === 'backups') {
-      const value = await api<{ timezone: string }>('/admin/settings');
-      if (current()) timezone = value.timezone;
-    }
-  }
-  async function createUser() {
-    await act(async () => {
-      await withVerification(async () => {
-        await api('/users', 'POST', {
-          username: newUsername,
-          password: newPassword,
-          role: newRole,
-        });
-        if (!ownsSession()) return;
-        newUsername = newPassword = '';
-        await loadSettings();
-      });
-    });
   }
 </script>
 
@@ -274,9 +127,6 @@
         revision={preferencesRevision}
         avatarChanged={(id, avatar) => {
           profileChanged(id, avatar);
-        }}
-        changed={(zone, format) => {
-          displayChanged(zone, format);
         }}
       />{:catch caught}{@render failed(caught)}{/await}
     {#await settingsPages.AuthSettings()}{@render loading(
@@ -302,49 +152,7 @@
       />{:catch caught}{@render failed(caught)}{/await}
   {/if}
   {#if section === 'devices'}
-    <SettingsCard
-      title="Your devices"
-      description="Browsers and desktops signed in to your account. Revoking this device signs you out."
-    >
-      {#if loadingData('devices')}<div class={cardBlockClass}>
-          <ContentSkeleton label="Loading devices" />
-        </div>{/if}
-      {#each sessions as session (session.id)}
-        {@const Icon = transportIcon(session.transport)}
-        <SettingRow
-          label={session.name}
-          description={`${session.transport} · ${seen(session)}`}
-        >
-          {#snippet lead()}
-            <Icon size={16} class="shrink-0 text-muted" aria-hidden="true" />
-          {/snippet}
-          {#snippet badge()}
-            {#if session.id === currentSession}<StatusChip
-                tone="info"
-                dot={false}>This device</StatusChip
-              >{/if}
-            {#if session.remembered}<StatusChip dot={false}
-                >Remembered</StatusChip
-              >{/if}
-          {/snippet}
-          <Button
-            size="form"
-            variant="ghost"
-            disabled={busy}
-            onclick={() =>
-              act(async () => {
-                const revoked = await withVerification(async () => {
-                  await api(`/auth/sessions/${session.id}`, 'DELETE');
-                });
-                if (!revoked || !ownsSession()) return;
-                if (session.id === currentSession) {
-                  sessionEnded();
-                } else await loadSettings();
-              })}>Revoke</Button
-          >
-        </SettingRow>
-      {/each}
-    </SettingsCard>
+    <DeviceSessions {revision} {sessionEnded} />
     {#await settingsPages.QuickConnect()}{@render loading(
         'Loading settings',
       )}{:then { default: QuickConnect }}<QuickConnect
@@ -432,8 +240,6 @@
     {#if section === 'backups'}{#await settingsPages.BackupSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: BackupSettings }}<BackupSettings
-          {timezone}
-          {timeFormat}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
     {#if section === 'providers'}{#await settingsPages.OnlineSettings()}{@render loading(
           'Loading settings',
@@ -442,7 +248,6 @@
     {#if section === 'services'}{#await settingsPages.ServicesSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: ServicesSettings }}<ServicesSettings
-          {timeFormat}
           selected={route.service}
           workflow={route.workflow}
           onSelect={(service) => openSettings('services', service)}
@@ -452,8 +257,6 @@
     {#if section === 'jellyfin-import'}{#await settingsPages.JellyfinImport()}{@render loading(
           'Loading settings',
         )}{:then { default: JellyfinImport }}<JellyfinImport
-          {timeFormat}
-          timezone={user.timezone}
           openSettings={(name, service) => openSettings(name, service)}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
     {#if section === 'retention'}{#await settingsPages.RetentionSettings()}{@render loading(
@@ -466,45 +269,11 @@
         )}{:then { default: ManagerOwnership }}<ManagerOwnership
         />{:catch caught}{@render failed(caught)}{/await}{/if}
     {#if section === 'server'}
-      <SettingsCard
-        id="server-status"
-        aria-label="Server status"
-        title="Server status"
-        description="Installed version, update availability and controller health."
-      >
-        <div class={statGridClass}>
-          <div class={statTileClass}>
-            {#await settingsPages.ProductVersion()}<Skeleton
-                class="h-6 w-24"
-              />{:then { default: ProductVersion }}<ProductVersion
-                installed={health?.version ?? '—'}
-              />{:catch caught}{@render failed(caught)}{/await}
-          </div>
-          <div class={statTileClass}>
-            {#if loadingData('server')}<Skeleton
-                class="h-6 w-24"
-              />{:else}<strong
-                >{health?.controller ? 'Connected' : 'Unavailable'}</strong
-              >{/if}
-            <small>Docker controller</small>
-          </div>
-          <div class={statTileClass}>
-            {#if loadingData('server')}<Skeleton
-                class="h-6 w-24"
-              />{:else}<strong
-                >{health
-                  ? `${(health.cache_free_bytes / 1024 ** 3).toFixed(1)} GB`
-                  : '—'}</strong
-              >{/if}
-            <small>Cache space available</small>
-          </div>
-        </div>
-      </SettingsCard>
+      <ServerStatus {revision} />
       {#await settingsPages.ServerDisplayDefaults()}{@render loading(
           'Loading settings',
         )}{:then { default: ServerDisplayDefaults }}<ServerDisplayDefaults
           revision={preferencesRevision}
-          changed={(value) => (timezone = value)}
         />{:catch caught}{@render failed(caught)}{/await}
       <SettingsCard
         id="server-updates"
@@ -541,97 +310,18 @@
       {#await settingsPages.AdminOperations()}{@render loading(
           'Loading settings',
         )}{:then { default: AdminOperations }}<AdminOperations
-          {timezone}
-          {timeFormat}
         />{:catch caught}{@render failed(caught)}{/await}
     {/if}
-    {#if section === 'people'}
-      <SettingsCard
-        title="Add user"
-        description="New people sign in with a username and password. They can add passkeys or link an identity provider later."
-        padded
-      >
-        <form
-          class="flex flex-wrap items-end gap-3 compact:flex-col compact:items-stretch [&_label]:m-0 [&_label]:min-w-[min(180px,100%)] [&_label]:flex-1 compact:[&_label]:w-full"
-          aria-label="Create user"
-          onsubmit={(e) => {
-            e.preventDefault();
-            void createUser();
-          }}
-        >
-          <FormField
-            >Username<input
-              class={formControlClass}
-              bind:value={newUsername}
-              required
-              autocomplete="off"
-            /></FormField
-          ><FormField
-            >Password<input
-              class={formControlClass}
-              bind:value={newPassword}
-              type="password"
-              required
-              minlength="8"
-              autocomplete="new-password"
-            /></FormField
-          ><FormField
-            >Role<select class={formControlClass} bind:value={newRole}
-              ><option value="user">User</option><option value="admin"
-                >Administrator</option
-              ></select
-            ></FormField
-          ><Button size="form" type="submit" disabled={busy}>Add user</Button>
-        </form>
-      </SettingsCard>
-      <SettingsCard
-        title="User access"
-        description="Roles, automatic request approval, recovery links and account removal for everyone on this server."
-      >
-        {#if loadingData('people')}<div class={cardBlockClass}>
-            <ContentSkeleton label="Loading users" />
-          </div>{/if}
-        {#if approvalError}<div class={cardBlockClass}>
-            <Notice
-              variant="error"
-              role="alert"
-              aria-label="Request approval settings load error"
-              class="mb-0"
-              >Failed to load request approval settings. {approvalError}</Notice
-            >
-          </div>{/if}
-        <Accordion.Root
-          type="single"
-          bind:value={expandedUser}
-          class="divide-y divide-line"
-        >
-          {#each users as person (person.id)}{#await settingsPages.UserAdministration()}<div
-                class={cardBlockClass}
-              >
-                <ContentSkeleton label="Loading settings" count={1} />
-              </div>{:then { default: UserAdministration }}<UserAdministration
-                {person}
-                approval={approvals[person.id]}
-                currentId={user.id}
-                changed={loadSettings}
-                close={() => (expandedUser = '')}
-              />{:catch caught}<div class={cardBlockClass}>
-                {@render failed(caught)}
-              </div>{/await}{/each}
-        </Accordion.Root>
-      </SettingsCard>
-    {/if}
+    {#if section === 'people'}<PeopleSettings {user} {revision} />{/if}
     {#if section === 'audit'}{#await settingsPages.AuditSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: AuditSettings }}<AuditSettings
           {user}
-          {timeFormat}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
     {#if section === 'jobs'}{#await settingsPages.ActivitySettings()}{@render loading(
           'Loading settings',
         )}{:then { default: ActivitySettings }}<ActivitySettings
-          {jobs}
-          loading={loadingData('jobs')}
+          {revision}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
   {/if}
 {/snippet}

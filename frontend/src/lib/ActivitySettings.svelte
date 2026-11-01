@@ -1,5 +1,9 @@
 <script lang="ts">
-  import type { Job } from './api';
+  import { onDestroy, untrack } from 'svelte';
+  import { api, type Job } from './api';
+  import { LatestRequest } from './latest-request';
+  import { isServerUpdateInterruption } from './server-updates';
+  import Notice from './ui/Notice.svelte';
   import { attention, acknowledgeAttention } from './attention';
   import { activity } from './activity';
   import AttentionDot from './ui/AttentionDot.svelte';
@@ -11,14 +15,31 @@
   import { cardBlockClass, formControlClass } from './ui/styles';
   import { twMerge } from 'tailwind-merge';
 
-  let {
-    jobs,
-    loading = false,
-  }: {
-    jobs: Job[];
-    loading?: boolean;
-  } = $props();
-  let state = $state<'all' | Job['state']>('all');
+  let { revision }: { revision: number } = $props();
+  let jobs = $state<Job[]>([]),
+    loading = $state(true),
+    error = $state('');
+  const requests = new LatestRequest();
+  onDestroy(() => requests.invalidate());
+  $effect(() => {
+    void revision;
+    untrack(() => void load());
+  });
+  async function load() {
+    const latest = requests.begin();
+    try {
+      const value = await api<{ items: Job[] }>('/admin/jobs');
+      if (!latest()) return;
+      jobs = value.items;
+      error = '';
+    } catch (caught) {
+      if (latest() && !isServerUpdateInterruption(caught))
+        error = String(caught);
+    } finally {
+      if (latest()) loading = false;
+    }
+  }
+  let shown = $state<'all' | Job['state']>('all');
   const states: Record<Job['state'], string> = {
     running: 'Running',
     queued: 'Queued',
@@ -41,7 +62,7 @@
   // Failures stay on top until they are dismissed; the sort keeps each group's order.
   const visible = $derived(
     jobs
-      .filter((job) => state === 'all' || job.state === state)
+      .filter((job) => shown === 'all' || job.state === shown)
       .sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id))),
   );
 </script>
@@ -54,7 +75,7 @@
     <select
       aria-label="Job state"
       class={twMerge(formControlClass, 'h-8.5 w-40 py-1.5 text-xs')}
-      bind:value={state}
+      bind:value={shown}
     >
       <option value="all">All states</option>
       {#each Object.entries(states) as [value, label] (value)}<option {value}
@@ -69,6 +90,9 @@
         : 'jobs'}</span
     >
   </p>
+  {#if error}<div class={cardBlockClass}>
+      <Notice variant="error" role="alert" class="mb-0">{error}</Notice>
+    </div>{/if}
   {#if loading}<div class={cardBlockClass}>
       <ContentSkeleton label="Loading background jobs" />
     </div>{:else}{#each visible as job (job.id)}
@@ -93,7 +117,7 @@
           >{/each}
       </SettingRow>
     {:else}<p class="m-0 {cardBlockClass} text-xs text-muted">
-        {state === 'all'
+        {shown === 'all'
           ? 'No background jobs yet.'
           : 'No matching jobs in the latest activity.'}
       </p>{/each}{/if}
