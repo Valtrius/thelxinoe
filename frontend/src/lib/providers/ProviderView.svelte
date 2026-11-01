@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onServerEvent, revisions } from '../server-events.svelte';
   import { providerPages } from '../pages';
   import { onMount, untrack } from 'svelte';
   import { toolsApi } from './tools-api';
@@ -37,7 +38,6 @@
     platform,
     admin,
     userId,
-    revision,
     playing,
     play,
     settings,
@@ -47,7 +47,6 @@
     platform: 'youtube' | 'twitch' | 'kick';
     admin: boolean;
     userId: string;
-    revision: number;
     playing: PlayingMedia[];
     play: (choice: MediaChoice) => Promise<void>;
     settings: (section: string) => void;
@@ -270,7 +269,7 @@
   });
   let revisionReady = false;
   $effect(() => {
-    void revision;
+    void revisions.media;
     untrack(() => {
       if (!revisionReady) {
         revisionReady = true;
@@ -298,12 +297,12 @@
       preferences.setItem('youtube-selected-watchlist-id', String(selected));
   });
   onMount(() => {
-    const downloading = (event: Event) => {
-      youtubeDownload = downloadEvent(
-        (event as CustomEvent<Parameters<typeof downloadEvent>[0]>).detail,
-      );
-    };
-    window.addEventListener('thelxinoe-download-progress', downloading);
+    const stopDownloads = onServerEvent((event) => {
+      if (event.kind === 'online.download.progress')
+        youtubeDownload = downloadEvent(
+          event.payload as Parameters<typeof downloadEvent>[0],
+        );
+    });
     const progress = (event: Event) => {
       const detail = (event as CustomEvent<YoutubeProgressEvent>).detail;
       if (watchlistController.pendingManualWatchedVideoIds.has(detail.videoId))
@@ -342,7 +341,7 @@
       accountRequests.invalidate();
       clearTimeout(refreshTimer);
       clearToasts();
-      window.removeEventListener('thelxinoe-download-progress', downloading);
+      stopDownloads();
       window.removeEventListener(
         'thelxinoe-provider-auth-cancelled',
         cancelled,

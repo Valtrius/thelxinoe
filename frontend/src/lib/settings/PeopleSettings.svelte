@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from '../server-events.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { Accordion } from 'bits-ui';
   import { api, type User } from '../api';
@@ -15,7 +16,7 @@
   import SettingsCard from '../ui/SettingsCard.svelte';
   import { cardBlockClass, formControlClass } from '../ui/styles';
 
-  let { user, revision } = $props<{ user: User; revision: number }>();
+  let { user } = $props<{ user: User }>();
   let users = $state<User[] | null>(null),
     // Who may request without review, keyed by user id. Only people the
     // server lists get a toggle.
@@ -31,7 +32,7 @@
   const ownsSession = captureSession();
   onDestroy(() => requests.invalidate());
   $effect(() => {
-    void revision;
+    void revisions.settings;
     untrack(() => void load());
   });
   async function load() {

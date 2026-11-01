@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from './server-events.svelte';
   import SectionHeading from './ui/SectionHeading.svelte';
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
@@ -25,9 +26,8 @@
     revision: number;
     items?: Card[];
   };
-  let { userId, revision, play, selectedId, selectedChanged } = $props<{
+  let { userId, play, selectedId, selectedChanged } = $props<{
     userId: string;
-    revision: number;
     play: (item: MediaChoice) => void;
     selectedId?: string;
     selectedChanged: (id?: string, replace?: boolean) => void;
@@ -110,7 +110,8 @@
     tracks = selected?.items ?? [];
   }
   $effect(() => {
-    if (revision >= 0) untrack(() => void load());
+    void revisions.media;
+    untrack(() => void load());
   });
   async function load() {
     const current = lists.begin();

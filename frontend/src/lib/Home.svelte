@@ -6,6 +6,7 @@
 </script>
 
 <script lang="ts">
+  import { revisions } from './server-events.svelte';
   import { onMount, untrack } from 'svelte';
   import { RefreshCw, Radio } from '@lucide/svelte';
   import { api, type User } from './api';
@@ -37,16 +38,13 @@
   import LibraryVideoMenu from './providers/components/youtube/LibraryVideoMenu.svelte';
   import PlatformIcon from './ui/PlatformIcon.svelte';
 
-  let { user, revision, accountRevision, playing, play, navigate, details } =
-    $props<{
-      user: User;
-      revision: number;
-      accountRevision: number;
-      playing: PlayingMedia[];
-      play: (choice: MediaChoice) => Promise<void>;
-      navigate: (section: string) => void;
-      details: (id: string, kind: string) => void;
-    }>();
+  let { user, playing, play, navigate, details } = $props<{
+    user: User;
+    playing: PlayingMedia[];
+    play: (choice: MediaChoice) => Promise<void>;
+    navigate: (section: string) => void;
+    details: (id: string, kind: string) => void;
+  }>();
 
   type Item = {
     id: string;
@@ -355,7 +353,7 @@
   $effect(() => {
     const id = user.id;
     void $providers;
-    void accountRevision;
+    void revisions.account;
     untrack(() => {
       if (id !== owner) {
         owner = id;
@@ -376,7 +374,7 @@
     });
   });
   $effect(() => {
-    void revision;
+    void revisions.media;
     untrack(() => {
       if (!progressReady) {
         progressReady = true;

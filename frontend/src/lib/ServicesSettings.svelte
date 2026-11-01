@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from './server-events.svelte';
   import FormField from './ui/FormField.svelte';
   import { formatTimestamp } from './display.svelte';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
@@ -49,18 +50,11 @@
     type ServiceConnection,
   } from './ServiceConnections.svelte';
 
-  let {
-    selected,
-    workflow,
-    onSelect,
-    openSettings,
-    revision = 0,
-  } = $props<{
+  let { selected, workflow, onSelect, openSettings } = $props<{
     selected?: string;
     workflow?: 'setup' | 'updates';
     onSelect?: (kind: string) => void;
     openSettings?: (name: string) => void;
-    revision?: number;
   }>();
 
   import {
@@ -552,7 +546,7 @@
   );
   let observedRevision: number | undefined;
   $effect(() => {
-    const next = revision;
+    const next = revisions.settings;
     untrack(() => {
       if (observedRevision !== undefined && observedRevision !== next)
         void refresh();
@@ -1690,7 +1684,6 @@
           </div>{/if}
       {/if}
       {#if selectedKind === 'recyclarr' && item?.state === 'complete' && operational('recyclarr')}<RecyclarrSettings
-          {revision}
         />{/if}
       {#if operational(selectedKind) && (connected || (definition.role === 'job' && live)) && !setupActive(selectedKind)}
         <section

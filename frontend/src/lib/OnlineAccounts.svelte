@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from './server-events.svelte';
   import Notice from './ui/Notice.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { api } from './api';
@@ -18,13 +19,8 @@
   import { cardBlockClass } from './ui/styles';
   import { reveal } from './ui/reveal';
 
-  let {
-    navigate,
-    revision = 0,
-    configureProviders,
-  } = $props<{
+  let { navigate, configureProviders } = $props<{
     navigate: (section: string) => void;
-    revision?: number;
     configureProviders?: () => void;
   }>();
   const linked = [
@@ -69,7 +65,7 @@
     }
   }
   $effect(() => {
-    void revision;
+    void revisions.account;
     void $providers;
     untrack(() => void load().catch((caught) => (error = String(caught))));
   });

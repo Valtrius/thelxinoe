@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from '../server-events.svelte';
   import { tick, untrack } from 'svelte';
   import { FileCode } from '@lucide/svelte';
   import { api } from '../api';
@@ -8,9 +9,8 @@
     RecyclarrConfiguration,
     YamlFiles,
   } from './recyclarr-configuration';
-  let { provisionId, revision = 0 } = $props<{
+  let { provisionId } = $props<{
     provisionId: string;
-    revision?: number;
   }>();
   let configuration = $state<RecyclarrConfiguration | null>(null),
     error = $state(''),
@@ -51,7 +51,7 @@
   }
   // Configuration saves and service connection changes bump the revision.
   $effect(() => {
-    void revision;
+    void revisions.settings;
     untrack(() => {
       if (!editor && !review) void refresh();
     });

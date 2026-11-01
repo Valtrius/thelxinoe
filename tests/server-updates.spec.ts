@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { current, next } from './helpers/versions';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 import type { ServerUpdateStatus } from '../frontend/src/lib/server-updates';
 
 async function setup(
@@ -57,6 +57,7 @@ async function setup(
     role: 'admin',
     settingsSection: 'server',
   });
+  const events = await installServerEvents(page);
   const status: ServerUpdateStatus = {
     version: current,
     timezone: 'UTC',
@@ -99,6 +100,7 @@ async function setup(
       );
     });
   await page.goto('/');
+  await expect.poll(events.connected).toBe(true);
   const version = page.getByLabel('Product version', { exact: true });
   await expect(
     version.getByRole('button', {
@@ -106,10 +108,7 @@ async function setup(
       exact: true,
     }),
   ).toBeVisible();
-  const refresh = () =>
-    page.evaluate(() =>
-      window.dispatchEvent(new Event('thelxinoe-product-update')),
-    );
+  const refresh = async () => events.send('product.changed');
   function stage(stage: string) {
     status.controller.items = [
       {

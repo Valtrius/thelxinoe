@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from './server-events.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { api } from './api';
   import { LatestRequest } from './latest-request';
@@ -12,7 +13,6 @@
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import { cardBlockClass } from './ui/styles';
 
-  let { revision = 0 } = $props<{ revision?: number }>();
   type Policy = { video_transcoding: boolean; audio_transcoding: boolean };
   const ids = $props.id();
   let confirmed = $state<Policy | null>(null);
@@ -34,7 +34,7 @@
     requests.invalidate();
   });
   $effect(() => {
-    void revision;
+    void revisions.preferences;
     untrack(() => void load());
   });
   $effect(() => {

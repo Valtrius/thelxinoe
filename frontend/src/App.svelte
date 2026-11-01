@@ -37,7 +37,7 @@
     type AppRoute,
   } from './lib/navigation';
   import { captureSession, invalidateSession } from './lib/session';
-  import { invalidatePageEvent } from './lib/navigation-cache';
+  import { publish } from './lib/server-events.svelte';
   import Sidebar from './lib/ui/Sidebar.svelte';
   import SectionIcon from './lib/ui/SectionIcon.svelte';
   import Drawer from './lib/ui/Drawer.svelte';
@@ -163,7 +163,6 @@
         ? [{ id: playing.id, launching: false }]
         : [],
   );
-  let mediaRevision = $state(0);
   import { Menu } from '@lucide/svelte';
   import {
     api,
@@ -196,11 +195,9 @@
   const providerPage = $derived(
     ['YouTube', 'Twitch', 'Kick'].includes(section),
   );
-  let preferencesRevision = $state(0);
   let unsavedChanges = $state(false);
   let events: Events | undefined;
   let navigationReady = $state(false);
-  let settingsRevision = $state(0);
   function savedRoute(current: User): AppRoute {
     let saved: AppRoute = { ...homeRoute };
     try {
@@ -241,7 +238,6 @@
     if (routeHref(allowed) !== routeHref(route)) go(allowed, true);
     document.title = `${section} · Thelxinoe`;
   });
-  let catalogRevision = $state(0);
   const attentionUserId = $derived(user?.id);
   $effect(() => {
     const id = attentionUserId;
@@ -251,7 +247,6 @@
   $effect(() => {
     if (attentionUserId && !desktop) void prefetchVideoPlayer();
   });
-  let accountRevision = $state(0);
   let serverAddress = $state('');
   let updateRequired = $state('');
   async function act(fn: () => Promise<void>) {
@@ -381,21 +376,21 @@
           if (playback.state === 'stopped') playbackStates.delete(playback.id);
           else playbackStates.set(playback.id, playback.state);
         }
-        invalidatePageEvent(event.kind, progressReport);
+        if (event.kind === 'preferences.changed') {
+          const preference = event.payload as {
+            timezone: string;
+            time_format: '12h' | '24h';
+          };
+          display.timezone = preference.timezone;
+          display.timeFormat = preference.time_format;
+        }
+        publish(event, progressReport);
         if (
           ['online.configuration.changed', 'server.reconnected'].includes(
             event.kind,
           )
-        ) {
+        )
           void loadProviders().catch((e) => (error = String(e)));
-          accountRevision++;
-        }
-        if (event.kind === 'online.download.progress')
-          window.dispatchEvent(
-            new CustomEvent('thelxinoe-download-progress', {
-              detail: event.payload,
-            }),
-          );
         const progress =
           event.kind === 'playback.changed'
             ? playbackProgress(
@@ -411,39 +406,17 @@
             (event.payload as { appearance: Appearance }).appearance,
           );
         // The server recomputes attention after every change and notifies affected users.
-        if (event.kind === 'attention.changed') void refreshAttention();
-        if (event.kind === 'server.reconnected') {
+        if (['attention.changed', 'server.reconnected'].includes(event.kind))
           void refreshAttention();
-          mediaRevision++;
-          catalogRevision++;
-          accountRevision++;
-          settingsRevision++;
-        }
         if (['stack.changed', 'server.reconnected'].includes(event.kind))
           forgetSeerrStatus();
-        if (['tools.changed', 'server.reconnected'].includes(event.kind))
-          window.dispatchEvent(new Event('thelxinoe-tools'));
-        if (['product.changed', 'server.reconnected'].includes(event.kind))
-          window.dispatchEvent(new Event('thelxinoe-product-update'));
-        if (event.kind === 'online.account.changed') accountRevision++;
         if (
           event.kind === 'preferences.changed' ||
           event.kind === 'server.settings.changed' ||
           event.kind === 'account.profile.changed'
         ) {
-          preferencesRevision++;
-          if (event.kind === 'preferences.changed') {
-            const preference = event.payload as {
-              timezone: string;
-              time_format: '12h' | '24h';
-            };
-            display.timezone = preference.timezone;
-            display.timeFormat = preference.time_format;
-          }
-          if (event.kind === 'server.settings.changed') {
-            settingsRevision++;
+          if (event.kind === 'server.settings.changed')
             void loadDisplayPreferences().catch((e) => (error = String(e)));
-          }
           const userId = user?.id;
           void api<{ user: User }>('/auth/me')
             .then((result) => {
@@ -451,42 +424,6 @@
             })
             .catch((e) => (error = String(e)));
         }
-        if (
-          [
-            'media-state.changed',
-            'playback.changed',
-            'playlists.changed',
-            'catalog.changed',
-            'youtube.changed',
-            'online.account.changed',
-            'online.configuration.changed',
-            'online.download.changed',
-          ].includes(event.kind) &&
-          !progressReport
-        )
-          mediaRevision++;
-        if (event.kind === 'catalog.changed') {
-          catalogRevision++;
-        }
-        if (
-          ['media-state.changed', 'catalog.status.changed'].includes(
-            event.kind,
-          ) ||
-          (event.kind === 'playback.changed' && !progressReport)
-        )
-          catalogRevision++;
-        // Settings pages reload the data these events change instead of polling.
-        if (
-          [
-            'jobs.changed',
-            'stack.changed',
-            'recyclarr.changed',
-            'retention.changed',
-            'online.download.changed',
-            'users.changed',
-          ].includes(event.kind)
-        )
-          settingsRevision++;
       },
       (value) => {
         if (!ownsSession()) return;
@@ -1199,11 +1136,6 @@
           <FeatureOutlet
             {route}
             {user}
-            {mediaRevision}
-            {catalogRevision}
-            {accountRevision}
-            {preferencesRevision}
-            {settingsRevision}
             playing={playingMedia}
             play={playMedia}
             navigate={(name) => void navigate(name)}

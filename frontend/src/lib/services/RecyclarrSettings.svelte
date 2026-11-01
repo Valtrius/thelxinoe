@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from '../server-events.svelte';
   import { untrack } from 'svelte';
   import { api } from '../api';
   import { LatestRequest } from '../latest-request';
@@ -10,7 +11,6 @@
   import Notice from '../ui/Notice.svelte';
   import { formControlClass } from '../ui/styles';
 
-  let { revision = 0 } = $props<{ revision?: number }>();
   type Snapshot = {
     settings: { provision_id: string; paused: boolean; hour: number } | null;
     runs: { id: string; state: string; error: string | null }[];
@@ -70,7 +70,7 @@
   }
   // Run, configuration and stack events bump the settings revision.
   $effect(() => {
-    void revision;
+    void revisions.settings;
     untrack(() => void refresh());
     return () => requests.invalidate();
   });
@@ -90,10 +90,7 @@
       >{error || loadError}</Notice
     >{/if}
   {#if loaded && snapshot?.settings}
-    <RecyclarrConfiguration
-      provisionId={snapshot.settings.provision_id}
-      {revision}
-    />
+    <RecyclarrConfiguration provisionId={snapshot.settings.provision_id} />
     <AutoSaveForm
       value={schedule}
       label="Daily guide sync"

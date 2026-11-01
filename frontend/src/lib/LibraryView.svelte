@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from './server-events.svelte';
   import SectionHeading from './ui/SectionHeading.svelte';
   import Notice from './ui/Notice.svelte';
   import { Folder, RefreshCw, ArrowLeft, Ellipsis } from '@lucide/svelte';
@@ -46,7 +47,6 @@
   let {
     domain,
     admin,
-    revision = 0,
     play,
     userId,
     focusId,
@@ -58,7 +58,6 @@
   } = $props<{
     domain: string;
     admin: boolean;
-    revision?: number;
     play: (choice: MediaChoice) => void;
     userId: string;
     focusId?: string;
@@ -254,7 +253,7 @@
   });
   let observedRevision: number | undefined;
   $effect(() => {
-    const next = revision;
+    const next = revisions.catalog;
     untrack(() => {
       if (observedRevision !== undefined && observedRevision !== next) {
         navigationCache.invalidate('catalog');

@@ -122,56 +122,6 @@ export class NavigationCache {
 
 export const navigationCache = new NavigationCache();
 
-// `progress` marks a playback report that repeats its session's state: it only
-// moves a position, which pages may show a moment late.
-export function invalidatePageEvent(kind: string, progress = false) {
-  if (progress) {
-    navigationCache.expire('catalog', 'youtube');
-    return;
-  }
-  if (kind === 'server.reconnected' || kind === 'account.profile.changed') {
-    navigationCache.invalidate(
-      'catalog',
-      'discover',
-      'youtube',
-      'twitch',
-      'kick',
-    );
-    return;
-  }
-  if (
-    [
-      'catalog.changed',
-      'catalog.status.changed',
-      'media-state.changed',
-      'playlists.changed',
-      'playback.changed',
-    ].includes(kind)
-  )
-    navigationCache.invalidate('catalog');
-  if (
-    [
-      'youtube.changed',
-      'online.download.changed',
-      'playback.changed',
-      'media-state.changed',
-      'playlists.changed',
-    ].includes(kind)
-  )
-    navigationCache.invalidate('youtube');
-  if (['online.account.changed', 'online.configuration.changed'].includes(kind))
-    navigationCache.invalidate('youtube', 'twitch', 'kick');
-  if (
-    [
-      'stack.changed',
-      'catalog.status.changed',
-      'requests.changed',
-      'attention.changed',
-    ].includes(kind)
-  )
-    navigationCache.invalidate('discover');
-}
-
 export function invalidatePageWrite(path: string) {
   if (/^\/(catalog|playlists)(\/|\?|$)/.test(path))
     navigationCache.invalidate('catalog');

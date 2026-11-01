@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { revisions } from './server-events.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import Notice from './ui/Notice.svelte';
   import { cardBlockClass, formControlClass } from './ui/styles';
@@ -13,14 +14,9 @@
   import ProfilePicture from './ProfilePicture.svelte';
   import AppearanceSettings from './AppearanceSettings.svelte';
   import { display } from './display.svelte';
-  let {
-    user,
-    avatarChanged,
-    revision = 0,
-  } = $props<{
+  let { user, avatarChanged } = $props<{
     user: User;
     avatarChanged: (id: string, avatar: string | null) => void;
-    revision?: number;
   }>();
   type Preferences = {
     timezone: string;
@@ -54,7 +50,7 @@
   });
   $effect(() => {
     void userId;
-    void revision;
+    void revisions.preferences;
     untrack(() => void load());
   });
   $effect(() => {
