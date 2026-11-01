@@ -93,6 +93,11 @@ async fn main() -> Result<()> {
         thelxinoe_server::run_service_connections,
     ));
     workers.spawn(supervise(
+        "services watch",
+        state.clone(),
+        thelxinoe_server::run_services_watch,
+    ));
+    workers.spawn(supervise(
         "retention",
         state.clone(),
         thelxinoe_server::run_retention,

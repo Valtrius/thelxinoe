@@ -140,7 +140,6 @@ const server = await preview({
                   let raw = '';
                   for await (const chunk of req) raw += chunk;
                   controlScenario(state, JSON.parse(raw));
-                  events.emit('services.changed', {});
                 } else if (req.method !== 'GET') {
                   res.writeHead(405);
                   return res.end();

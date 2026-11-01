@@ -112,6 +112,9 @@ pub(super) fn router() -> Router<AppState> {
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
+    Ok(Json(listing(&state).await?))
+}
+pub(super) async fn listing(state: &AppState) -> Result<Value> {
     let endpoints = storage::endpoints(&state.db).await?;
     let links = storage::list(&state.db).await?;
     let mut items = Vec::new();
@@ -135,7 +138,7 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
             items.push(link.presentation(source, target));
         }
     }
-    Ok(Json(json!({"items":items})))
+    Ok(json!({"items":items}))
 }
 #[derive(Deserialize)]
 struct Configure {

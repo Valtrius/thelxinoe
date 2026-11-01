@@ -430,8 +430,10 @@ async fn register_with_actor(
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let rows = storage::list(&state.db).await?;
-    Ok(Json(json!({"items":rows})))
+    Ok(Json(listing(&state).await?))
+}
+pub(super) async fn listing(state: &AppState) -> Result<Value> {
+    Ok(json!({"items":storage::list(&state.db).await?}))
 }
 /// Read-only health and identity check of a saved connection, in any stage.
 pub(super) async fn test(state: &AppState, key: &str) -> Result<Value> {

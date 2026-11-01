@@ -138,7 +138,10 @@ async fn templates(State(state): State<AppState>, headers: HeaderMap) -> Result<
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let mut value = controller(&state, "", None).await?;
+    Ok(Json(listing(&state).await?))
+}
+pub(super) async fn listing(state: &AppState) -> Result<Value> {
+    let mut value = controller(state, "", None).await?;
     value["provisions"] = storage::list(&state.db).await?;
     let provisions = value["provisions"]
         .as_array()
@@ -157,7 +160,7 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
             item["can_remove"] = json!(false);
         }
     }
-    Ok(Json(value))
+    Ok(value)
 }
 /// NZBGet's control login, for Owned services whose normal operations are released.
 async fn login(
