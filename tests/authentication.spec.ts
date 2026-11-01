@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
+import { responseGate } from './helpers/response-gate';
 
 test('sign-in rechecks setup and requires confirmation before creating an account', async ({
   page,
@@ -357,4 +358,100 @@ test('a password change can also revoke client passwords', async ({ page }) => {
   ]);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
+});
+
+test('a failed sign-out keeps the session and says so', async ({ page }) => {
+  const fixture = await installUiFixture(page);
+  let reachable = false;
+  await page.route('**/api/v1/auth/logout', (route) =>
+    reachable
+      ? route.fulfill({ json: { signed_out: true } })
+      : route.fulfill({
+          status: 502,
+          contentType: 'text/html',
+          body: '<h1>Bad gateway</h1>',
+        }),
+  );
+  await page.goto('/');
+  const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
+  await signOut.click();
+  await expect(page.getByRole('alert')).toHaveText(
+    "Couldn't sign out: Request failed (502)",
+  );
+  await expect(signOut).toBeVisible();
+  await expect(page.getByLabel('Username', { exact: true })).toHaveCount(0);
+  reachable = true;
+  await signOut.click();
+  await expect(page.getByLabel('Username', { exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('a verification that ends with its session leaves no error for the next one', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page);
+  await page.route('**/api/v1/me/auth', (route) =>
+    route.fulfill({
+      json: {
+        password: true,
+        totp: true,
+        passkeys: [],
+        oidc: null,
+        fresh: false,
+      },
+    }),
+  );
+  const held = responseGate();
+  let verifying = false;
+  await page.route('**/api/v1/auth/verify', async (route) => {
+    verifying = true;
+    await held.promise;
+    await route.fulfill({
+      status: 400,
+      json: { error: { code: 'invalid_code', message: 'Incorrect code' } },
+    });
+  });
+  await page.goto('/#settings/account');
+  const proof = page.getByRole('dialog', { name: 'Verify your identity' });
+  const changePassword = async () => {
+    await page
+      .getByLabel('New password', { exact: true })
+      .fill('verified password change');
+    await page
+      .getByLabel('Confirm new password', { exact: true })
+      .fill('verified password change');
+    await page
+      .getByRole('button', { name: 'Change password', exact: true })
+      .click();
+    await expect(proof).toBeVisible();
+  };
+  await changePassword();
+  await proof.getByLabel('Authentication code', { exact: true }).fill('123456');
+  await proof
+    .getByRole('button', { name: 'Verify identity', exact: true })
+    .click();
+  await expect.poll(() => verifying).toBe(true);
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event('thelxinoe-session-expired')),
+  );
+  await expect(proof).not.toBeVisible();
+  const failed = page.waitForResponse((response) =>
+    response.url().endsWith('/auth/verify'),
+  );
+  held.release();
+  await failed;
+  await page.getByLabel('Username', { exact: true }).fill('layout-fixture');
+  await page
+    .getByLabel('Password', { exact: true })
+    .fill('local test password');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Sign out', exact: true }),
+  ).toBeVisible();
+  await page.goto('/#settings/account');
+  await changePassword();
+  await expect(proof.getByRole('alert')).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
 });

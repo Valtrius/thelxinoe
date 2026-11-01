@@ -10,7 +10,11 @@
   import Recovery from './lib/Recovery.svelte';
   import DesktopApproval from './lib/DesktopApproval.svelte';
   import AuthVerification from './lib/AuthVerification.svelte';
-  import { cancelVerification, type AuthOptions } from './lib/authentication';
+  import {
+    cancelVerification,
+    errorMessage,
+    type AuthOptions,
+  } from './lib/authentication';
   import { statsClass } from './lib/ui/styles';
   import { onMount, tick, untrack } from 'svelte';
   import { SvelteMap, SvelteURL } from 'svelte/reactivity';
@@ -525,11 +529,21 @@
     }
     return false;
   }
+  // The session ends when the server ends it. Until then its cookie, or the
+  // desktop's stored credential, still signs in, so this window stays in it.
   async function logout() {
-    await act(async () => {
-      teardownSession();
+    error = '';
+    mobileNavOpen = false;
+    try {
       await api('/auth/logout', 'POST');
-    });
+    } catch (caught) {
+      // A 401 means the server holds no session to end.
+      if (!(caught instanceof ApiError && caught.status === 401)) {
+        error = `Couldn't sign out: ${errorMessage(caught)}`;
+        return;
+      }
+    }
+    teardownSession();
   }
   function teardownSession() {
     pageTransition.cancel();

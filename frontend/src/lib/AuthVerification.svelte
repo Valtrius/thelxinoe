@@ -64,7 +64,9 @@
       pending?.finish(true);
       proof = '';
     } catch (caught) {
-      error = errorMessage(caught);
+      // A canceled prompt's attempt fails after it closes; the next prompt
+      // starts without its error.
+      if ($verification === pending) error = errorMessage(caught);
     } finally {
       busy = false;
     }
