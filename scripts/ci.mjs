@@ -160,6 +160,9 @@ async function web() {
 
 async function mock() {
   ensurePlaywright();
+  await group('mock status rules', () =>
+    run(process.execPath, ['--test', 'scripts/mock/service-view.test.mjs']),
+  );
   await group('mock', () => pnpm('run', 'test:ui:mock'));
 }
 

@@ -1,115 +1,25 @@
 use super::*;
 use crate::test_support::fixture;
 
+#[derive(Deserialize)]
+struct Case {
+    service: Value,
+    #[serde(default)]
+    unavailable: bool,
+    status: (String, String),
+}
+
+/// The mocks' copy of these rules is held to the same cases.
 #[test]
 fn status_follows_the_first_rule_that_applies() {
-    let transfer =
-        |state: &str| json!({"stage":"owned","operation":{"type":"transfer","state":state}});
-    let owned = |runtime: Value| json!({"stage":"owned","runtime":runtime});
-    for (service, unavailable, expected) in [
-        (
-            json!({"runtime":{"registered":false},"operation":{"type":"transfer","state":"running"}}),
-            false,
-            ("Setup mismatch", "warn"),
-        ),
-        (transfer("queued"), false, ("Transfer queued", "busy")),
-        (transfer("running"), false, ("Transferring", "busy")),
-        (
-            transfer("committed"),
-            false,
-            ("Owned · finishing transfer", "busy"),
-        ),
-        (transfer("recovery"), false, ("Recovering", "busy")),
-        (
-            transfer("failed"),
-            false,
-            ("Transfer needs attention", "bad"),
-        ),
-        (transfer("suspended"), false, ("Transfer suspended", "warn")),
-        (
-            json!({"stage":"connected","connection":{"verified":true,"error":null},"provision":{"state":"blocked"}}),
-            false,
-            ("Connected", "ok"),
-        ),
-        (
-            json!({"stage":"connected","connection":{"verified":true,"error":"Unreachable"}}),
-            false,
-            ("Unverified", "warn"),
-        ),
-        (
-            json!({"stage":"connected","connection":{"verified":false,"error":null}}),
-            false,
-            ("Unverified", "warn"),
-        ),
-        (
-            json!({"provision":{"state":"queued"}}),
-            false,
-            ("Installing", "busy"),
-        ),
-        (
-            json!({"provision":{"state":"installing"}}),
-            false,
-            ("Installing", "busy"),
-        ),
-        (
-            json!({"provision":{"state":"connecting"}}),
-            false,
-            ("Connecting API", "busy"),
-        ),
-        (
-            json!({"provision":{"state":"retiring"}}),
-            false,
-            ("Retiring", "busy"),
-        ),
-        (
-            json!({"provision":{"state":"blocked"},"runtime":{"running":true}}),
-            false,
-            ("Setup blocked", "bad"),
-        ),
-        (
-            json!({"update":{"latest":{"state":"activating"}},"runtime":{"running":true}}),
-            false,
-            ("Connecting API", "busy"),
-        ),
-        (
-            owned(json!({"status":"unavailable","running":false})),
-            false,
-            ("Status unavailable", "warn"),
-        ),
-        (
-            owned(json!({"status":"missing"})),
-            false,
-            ("Container missing", "bad"),
-        ),
-        (
-            owned(json!({"status":"ready","running":false})),
-            false,
-            ("Ready", "ok"),
-        ),
-        (
-            json!({"runtime":{"running":false},"integration":{"error":"Unreachable"}}),
-            false,
-            ("Stopped", "muted"),
-        ),
-        (
-            json!({"runtime":{"running":true},"integration":{"error":"Unreachable"}}),
-            false,
-            ("API unavailable", "warn"),
-        ),
-        (
-            json!({"runtime":{"running":true},"integration":{"error":""}}),
-            false,
-            ("Running", "ok"),
-        ),
-        (
-            json!({"integration":{"error":null}}),
-            true,
-            ("Connected", "ok"),
-        ),
-        (json!({}), true, ("Status unavailable", "warn")),
-        (json!({}), false, ("Not connected", "muted")),
-    ] {
-        assert_eq!(label(&service, unavailable), expected, "{service}");
+    let cases: Vec<Case> = serde_json::from_str(include_str!("status_cases.json")).unwrap();
+    for case in cases {
+        assert_eq!(
+            label(&case.service, case.unavailable),
+            (case.status.0.as_str(), case.status.1.as_str()),
+            "{}",
+            case.service
+        );
     }
 }
 

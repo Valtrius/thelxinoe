@@ -1,5 +1,6 @@
 // The server's services view (apps/server/src/managers/view.rs), composed from
 // the same parts. Each part is { value } or { error }; a missing part is empty.
+// service-view.test.mjs holds the status rules to the server's own cases.
 const kinds = [
   'seerr',
   'recyclarr',
@@ -11,39 +12,42 @@ const kinds = [
   'nzbget',
 ];
 const managerKinds = ['radarr', 'sonarr', 'lidarr'];
-const transferStates = {
-  queued: ['Transfer queued', 'busy'],
-  running: ['Transferring', 'busy'],
-  committed: ['Owned · finishing transfer', 'busy'],
-  recovery: ['Recovering', 'busy'],
-  failed: ['Transfer needs attention', 'bad'],
-  suspended: ['Transfer suspended', 'warn'],
-};
+const transferStates = new Map([
+  ['queued', ['Transfer queued', 'busy']],
+  ['running', ['Transferring', 'busy']],
+  ['committed', ['Owned · finishing transfer', 'busy']],
+  ['recovery', ['Recovering', 'busy']],
+  ['failed', ['Transfer needs attention', 'bad']],
+  ['suspended', ['Transfer suspended', 'warn']],
+]);
+const setupStates = new Map([
+  ['queued', ['Installing', 'busy']],
+  ['installing', ['Installing', 'busy']],
+  ['connecting', ['Connecting API', 'busy']],
+  ['retiring', ['Retiring', 'busy']],
+  ['blocked', ['Setup blocked', 'bad']],
+]);
+const runtimeStates = new Map([
+  ['unavailable', ['Status unavailable', 'warn']],
+  ['missing', ['Container missing', 'bad']],
+  ['ready', ['Ready', 'ok']],
+]);
 
-function label(service, unavailable) {
+export function statusLabel(service, unavailable) {
   const { runtime, integration, provision, operation, connection } = service;
   if (runtime?.registered === false) return ['Setup mismatch', 'warn'];
-  if (operation?.type === 'transfer' && transferStates[operation.state])
-    return transferStates[operation.state];
+  const transfer =
+    operation?.type === 'transfer' && transferStates.get(operation.state);
+  if (transfer) return transfer;
   if (service.stage === 'connected')
     return connection?.verified && !connection.error
       ? ['Connected', 'ok']
       : ['Unverified', 'warn'];
-  const setup = {
-    queued: ['Installing', 'busy'],
-    installing: ['Installing', 'busy'],
-    connecting: ['Connecting API', 'busy'],
-    retiring: ['Retiring', 'busy'],
-    blocked: ['Setup blocked', 'bad'],
-  }[provision?.state];
+  const setup = setupStates.get(provision?.state);
   if (setup) return setup;
   if (service.update?.latest?.state === 'activating')
     return ['Connecting API', 'busy'];
-  const live = {
-    unavailable: ['Status unavailable', 'warn'],
-    missing: ['Container missing', 'bad'],
-    ready: ['Ready', 'ok'],
-  }[runtime?.status];
+  const live = runtimeStates.get(runtime?.status);
   if (live) return live;
   if (runtime?.running === false) return ['Stopped', 'muted'];
   if (integration?.error) return ['API unavailable', 'warn'];
@@ -102,7 +106,7 @@ export function serviceView(parts) {
           }
         : null,
     };
-    const [text, tone] = label(
+    const [text, tone] = statusLabel(
       service,
       !!(errors.stack || errors[manager ? 'managers' : 'support']),
     );

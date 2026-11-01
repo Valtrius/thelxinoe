@@ -1,0 +1,164 @@
+[
+  {
+    "service": {
+      "runtime": { "registered": false },
+      "operation": { "type": "transfer", "state": "running" }
+    },
+    "status": ["Setup mismatch", "warn"]
+  },
+  {
+    "service": {
+      "stage": "owned",
+      "operation": { "type": "transfer", "state": "queued" }
+    },
+    "status": ["Transfer queued", "busy"]
+  },
+  {
+    "service": {
+      "stage": "owned",
+      "operation": { "type": "transfer", "state": "running" }
+    },
+    "status": ["Transferring", "busy"]
+  },
+  {
+    "service": {
+      "stage": "owned",
+      "operation": { "type": "transfer", "state": "committed" }
+    },
+    "status": ["Owned · finishing transfer", "busy"]
+  },
+  {
+    "service": {
+      "stage": "owned",
+      "operation": { "type": "transfer", "state": "recovery" }
+    },
+    "status": ["Recovering", "busy"]
+  },
+  {
+    "service": {
+      "stage": "owned",
+      "operation": { "type": "transfer", "state": "failed" }
+    },
+    "status": ["Transfer needs attention", "bad"]
+  },
+  {
+    "service": {
+      "stage": "owned",
+      "operation": { "type": "transfer", "state": "suspended" }
+    },
+    "status": ["Transfer suspended", "warn"]
+  },
+  {
+    "service": {
+      "stage": "owned",
+      "operation": { "type": "transfer", "state": "complete" },
+      "runtime": { "running": true }
+    },
+    "status": ["Running", "ok"]
+  },
+  {
+    "service": {
+      "stage": "connected",
+      "connection": { "verified": true, "error": null },
+      "provision": { "state": "blocked" }
+    },
+    "status": ["Connected", "ok"]
+  },
+  {
+    "service": {
+      "stage": "connected",
+      "connection": { "verified": true, "error": "Unreachable" }
+    },
+    "status": ["Unverified", "warn"]
+  },
+  {
+    "service": {
+      "stage": "connected",
+      "connection": { "verified": false, "error": null }
+    },
+    "status": ["Unverified", "warn"]
+  },
+  {
+    "service": { "provision": { "state": "queued" } },
+    "status": ["Installing", "busy"]
+  },
+  {
+    "service": { "provision": { "state": "installing" } },
+    "status": ["Installing", "busy"]
+  },
+  {
+    "service": { "provision": { "state": "connecting" } },
+    "status": ["Connecting API", "busy"]
+  },
+  {
+    "service": { "provision": { "state": "retiring" } },
+    "status": ["Retiring", "busy"]
+  },
+  {
+    "service": {
+      "provision": { "state": "blocked" },
+      "runtime": { "running": true }
+    },
+    "status": ["Setup blocked", "bad"]
+  },
+  {
+    "service": {
+      "update": { "latest": { "state": "activating" } },
+      "runtime": { "running": true }
+    },
+    "status": ["Connecting API", "busy"]
+  },
+  {
+    "service": {
+      "stage": "owned",
+      "runtime": { "status": "unavailable", "running": false }
+    },
+    "status": ["Status unavailable", "warn"]
+  },
+  {
+    "service": { "stage": "owned", "runtime": { "status": "missing" } },
+    "status": ["Container missing", "bad"]
+  },
+  {
+    "service": {
+      "stage": "owned",
+      "runtime": { "status": "ready", "running": false }
+    },
+    "status": ["Ready", "ok"]
+  },
+  {
+    "service": {
+      "runtime": { "running": false },
+      "integration": { "error": "Unreachable" }
+    },
+    "status": ["Stopped", "muted"]
+  },
+  {
+    "service": {
+      "runtime": { "running": true },
+      "integration": { "error": "Unreachable" }
+    },
+    "status": ["API unavailable", "warn"]
+  },
+  {
+    "service": {
+      "runtime": { "running": true },
+      "integration": { "error": "" }
+    },
+    "status": ["Running", "ok"]
+  },
+  {
+    "service": { "integration": { "error": null } },
+    "unavailable": true,
+    "status": ["Connected", "ok"]
+  },
+  {
+    "service": {},
+    "unavailable": true,
+    "status": ["Status unavailable", "warn"]
+  },
+  {
+    "service": {},
+    "status": ["Not connected", "muted"]
+  }
+]
