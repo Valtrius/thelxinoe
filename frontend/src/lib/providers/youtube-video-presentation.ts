@@ -4,9 +4,8 @@ import type { YoutubeDownloadEvent, YoutubeVideo } from './types';
 export function youtubeVideoPresentation(
   video: YoutubeVideo,
   context: {
-    mpvReady: boolean;
-    ytdlpReady: boolean;
-    ffmpegReady: boolean;
+    playerReady: boolean;
+    downloadsEnabled: boolean;
     isPlaying: boolean;
     isLaunching: boolean;
     downloadBusy: boolean;
@@ -14,9 +13,8 @@ export function youtubeVideoPresentation(
   },
 ) {
   const {
-    mpvReady,
-    ytdlpReady,
-    ffmpegReady,
+    playerReady,
+    downloadsEnabled,
     isPlaying,
     isLaunching,
     downloadBusy,
@@ -32,14 +30,12 @@ export function youtubeVideoPresentation(
   ].includes(activeDownload?.status ?? '');
   const isBusy = isPlaying || isLaunching;
   const canPlay =
-    mpvReady &&
-    (downloadReady || ytdlpReady) &&
+    playerReady &&
     (video.availabilityStatus !== 'unavailable' || downloadReady) &&
     !video.isUpcoming &&
     !isBusy;
   const canDownload =
-    ytdlpReady &&
-    ffmpegReady &&
+    downloadsEnabled &&
     video.availabilityStatus !== 'unavailable' &&
     !video.isLive &&
     !video.isUpcoming &&

@@ -13,7 +13,6 @@
     ExternalLink,
     ListMinus,
     ListPlus,
-    LogIn,
     Pin,
     PinOff,
     RotateCcw,
@@ -43,21 +42,17 @@
     actions,
     onShortcutDeleteRequest,
     onShortcutDeleteCancel,
-    signedInPlaybackAvailable,
     downloadBusy,
     isPlaying,
     menuOpen,
     shortcutDeleteConfirming,
-    ytdlpReady,
-    ffmpegReady,
+    downloadsEnabled,
   }: {
     presentation: YoutubeVideoPresentation;
     actions: YoutubeVideoActions;
     video: YoutubeVideo;
-    ytdlpReady: boolean;
-    ffmpegReady: boolean;
+    downloadsEnabled: boolean;
     youtubeCardShortcuts: YoutubeCardShortcut[];
-    signedInPlaybackAvailable: boolean;
     isPlaying: boolean;
     downloadBusy: boolean;
     watchlists: YoutubeWatchlist[];
@@ -195,8 +190,6 @@
 
   function shortcutAvailable(shortcut: YoutubeCardShortcut) {
     switch (shortcut) {
-      case 'play_signed_in':
-        return signedInPlaybackAvailable && !downloadReady;
       case 'download':
         return tracksVideoProgress && !downloadReady;
       case 'play_from_beginning':
@@ -216,7 +209,6 @@
   function shortcutDisabled(shortcut: YoutubeCardShortcut) {
     switch (shortcut) {
       case 'play_from_beginning':
-      case 'play_signed_in':
         return !canPlay;
       case 'download':
         return !canDownload || downloadPending;
@@ -237,8 +229,6 @@
     switch (shortcut) {
       case 'play_from_beginning':
         return 'Play from beginning';
-      case 'play_signed_in':
-        return 'Play signed in';
       case 'download':
         return downloadPending
           ? (downloadLabel ?? 'Download in progress')
@@ -268,9 +258,6 @@
     switch (shortcut) {
       case 'play_from_beginning':
         actions.onBeginning(video);
-        break;
-      case 'play_signed_in':
-        actions.onSignedIn(video);
         break;
       case 'download':
         actions.onDownload(video);
@@ -389,8 +376,6 @@
 {#snippet shortcutIcon(shortcut: YoutubeCardShortcut)}
   {#if shortcut === 'play_from_beginning'}
     <RotateCcw />
-  {:else if shortcut === 'play_signed_in'}
-    <LogIn />
   {:else if shortcut === 'download'}
     <Download />
   {:else if shortcut === 'watch_toggle'}
@@ -554,15 +539,6 @@
             ><RotateCcw />Play from beginning</button
           >
         {/if}
-        {#if signedInPlaybackAvailable && !downloadReady}
-          <button
-            class={menuItemClass}
-            type="button"
-            disabled={!canPlay}
-            onclick={() => run(actions.onSignedIn)}
-            ><LogIn />Play signed in</button
-          >
-        {/if}
         {#if tracksVideoProgress}<span class="my-1 h-px bg-line"></span>{/if}
         {#if downloadReady}
           <button
@@ -595,27 +571,11 @@
             class={menuItemClass}
             type="button"
             disabled={!canDownload}
-            title={!ytdlpReady
-              ? 'Server extraction tools must be available.'
-              : !ffmpegReady
-                ? 'Downloads must be enabled by the administrator.'
-                : undefined}
+            title={downloadsEnabled
+              ? undefined
+              : 'Downloads must be enabled by the administrator.'}
             onclick={() => run(actions.onDownload)}><Download />Download</button
           >
-          {#if signedInPlaybackAvailable}
-            <button
-              class={menuItemClass}
-              type="button"
-              disabled={!canDownload}
-              title={!ytdlpReady
-                ? 'Server extraction tools must be available.'
-                : !ffmpegReady
-                  ? 'Downloads must be enabled by the administrator.'
-                  : undefined}
-              onclick={() => run(actions.onDownloadSignedIn)}
-              ><LogIn />Download signed in</button
-            >
-          {/if}
           {#if activeDownload}
             {@render deleteDownloadMenuItem(
               'Delete partial download',

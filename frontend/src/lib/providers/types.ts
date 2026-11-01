@@ -2,8 +2,6 @@ export type Platform = 'youtube' | 'twitch' | 'kick';
 export type Route =
   '/youtube' | '/twitch' | '/kick' | '/statistics' | '/settings';
 export type Theme = 'system' | 'light' | 'dark';
-export type YoutubeCookieBrowser =
-  'none' | 'chrome' | 'edge' | 'firefox' | 'brave';
 export type YoutubeWatchState = 'unwatched' | 'in_progress' | 'watched';
 export type YoutubeSortField = 'date' | 'channel' | 'duration';
 export type YoutubeSortDirection = 'asc' | 'desc';
@@ -17,7 +15,6 @@ export type YoutubeDownloadQuality =
 export type YoutubeVideoCodec = 'av1' | 'vp9' | 'h264';
 export type YoutubeCardShortcut =
   | 'play_from_beginning'
-  | 'play_signed_in'
   | 'download'
   | 'watch_toggle'
   | 'copy_url'
@@ -58,29 +55,6 @@ export interface AppError {
   technical: string;
 }
 
-export interface AppSettings {
-  theme: Theme;
-  sidebarCollapsed: boolean;
-  lastRoute: Route;
-  mpvPath?: string | null;
-  ytdlpPath?: string | null;
-  streamlinkPath?: string | null;
-  ffmpegPath?: string | null;
-  youtubeCookieBrowser: YoutubeCookieBrowser;
-  youtubeDownloadQuality: YoutubeDownloadQuality;
-  youtubeDownloadStorageLimitGib: number;
-  youtubeCardShortcuts: YoutubeCardShortcut[];
-  watchedPercentageThreshold: number;
-  remainingTimeThresholdSeconds: number;
-  fadeWatchedCards: boolean;
-}
-
-export type AppPreferences = Omit<
-  AppSettings,
-  'theme' | 'sidebarCollapsed' | 'lastRoute'
->;
-export type AppNavigation = Pick<AppSettings, 'sidebarCollapsed' | 'lastRoute'>;
-
 export interface PlatformAccount {
   platform: 'youtube' | 'twitch';
   externalUserId: string;
@@ -89,19 +63,6 @@ export interface PlatformAccount {
   connectedAt: string;
   updatedAt: string;
   lastValidatedAt?: string | null;
-}
-
-export type OAuthClientSource = 'saved' | 'environment' | 'missing';
-
-export interface OAuthClientConfiguration {
-  googleClientId?: string | null;
-  googleClientSecretConfigured: boolean;
-  googleSource: OAuthClientSource;
-  twitchClientId?: string | null;
-  twitchSource: OAuthClientSource;
-  kickClientId?: string | null;
-  kickClientSecretConfigured: boolean;
-  kickSource: OAuthClientSource;
 }
 
 export interface SyncStatus {
@@ -300,56 +261,8 @@ export interface ExecutableDiagnostic {
   error?: AppError | null;
 }
 
-export interface PlaybackDiagnostics {
-  mpv: ExecutableDiagnostic;
-  ytdlp: ExecutableDiagnostic;
-  streamlink: ExecutableDiagnostic;
-  ffmpeg: ExecutableDiagnostic;
-  activeSessionCount: number;
-}
-
-export interface DataStats {
-  databasePath: string;
-  databaseSizeBytes: number;
-  downloadDirectory: string;
-  downloadStorageBytes: number;
-  partialDownloadBytes: number;
-  readyDownloadCount: number;
-  cachedYoutubeVideoCount: number;
-  savedProgressEntryCount: number;
-  cachedTwitchChannelCount: number;
-}
-
-export interface PlaybackSession {
-  sessionId: string;
-  platform: Platform;
-  mediaId: string;
-  processId?: number | null;
-  ipcEndpoint: string;
-  startedAt: string;
-  positionSeconds?: number | null;
-  durationSeconds?: number | null;
-  playbackState: string;
-  connected: boolean;
-  sourceKind: 'remote' | 'download';
-}
-
-export interface PlaybackEvent {
-  sessionId: string;
-  platform: Platform;
-  mediaId: string;
-  state: string;
-  detail?: string | null;
-}
-
 export type StatisticsRange = '7d' | '30d' | '90d' | 'all';
 export type StatisticsPlatform = 'all' | Platform;
-
-export interface StatisticsQuery {
-  range: StatisticsRange;
-  platform: StatisticsPlatform;
-  timezone: string;
-}
 
 export interface StatisticsActivityPoint {
   periodStart: string;
@@ -405,25 +318,6 @@ export interface StatisticsOverview {
   youtubeContentMix: StatisticsYoutubeContentMix;
 }
 
-export interface MigrationFailure {
-  databasePath: string;
-  migration: number;
-  error: AppError;
-}
-
-export interface BootstrapData {
-  settings: AppSettings;
-  youtubeAccount?: PlatformAccount | null;
-  twitchAccount?: PlatformAccount | null;
-  youtubeSync: SyncStatus;
-  twitchSync: SyncStatus;
-  kickSync: SyncStatus;
-  playback: PlaybackDiagnostics;
-  dataStats: DataStats;
-  migrationFailure?: MigrationFailure | null;
-  oauthClientConfiguration: OAuthClientConfiguration;
-}
-
 export interface AuthState {
   platform: 'youtube' | 'twitch';
   phase?: 'waiting' | 'connecting';
@@ -441,18 +335,4 @@ export interface AuthState {
   userCode?: string | null;
   verificationUri?: string | null;
   expiresAt?: string | null;
-}
-
-export interface SyncEvent {
-  operationId: string;
-  status: SyncStatus;
-}
-
-export interface AuthEvent {
-  operationId: string;
-  status: AuthState['status'];
-  message?: string | null;
-  userCode?: string;
-  verificationUri?: string;
-  expiresAt?: string;
 }

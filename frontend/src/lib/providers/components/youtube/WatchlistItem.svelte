@@ -29,9 +29,8 @@
     downloadBusy,
     isPlaying = false,
     isLaunching = false,
-    mpvReady,
-    ytdlpReady,
-    ffmpegReady,
+    playerReady,
+    downloadsEnabled,
     sortable = false,
     dragging = false,
     suppressClick = false,
@@ -44,9 +43,8 @@
     downloadBusy: boolean;
     isPlaying?: boolean;
     isLaunching?: boolean;
-    mpvReady: boolean;
-    ytdlpReady: boolean;
-    ffmpegReady: boolean;
+    playerReady: boolean;
+    downloadsEnabled: boolean;
     sortable?: boolean;
     dragging?: boolean;
     suppressClick?: boolean;
@@ -57,9 +55,8 @@
   const current = $derived(withNativePosition(video));
   const presentation = $derived(
     youtubeVideoPresentation(current, {
-      mpvReady,
-      ytdlpReady,
-      ffmpegReady,
+      playerReady,
+      downloadsEnabled,
       isPlaying,
       isLaunching,
       downloadBusy,

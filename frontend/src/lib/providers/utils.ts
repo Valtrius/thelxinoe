@@ -190,7 +190,3 @@ export function twitchChatUrl(login: string): string {
 export function kickUrl(slug: string): string {
   return `https://kick.com/${slug}`;
 }
-
-export function isPlaybackLaunching(state: string): boolean {
-  return ['launching', 'starting', 'connected'].includes(state);
-}

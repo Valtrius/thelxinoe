@@ -1,5 +1,6 @@
 import type { User } from './api';
 import type { ProviderAvailability } from './providers/availability';
+import { definitions } from './services/feature';
 
 export const sectionNames = [
   'Home',
@@ -152,16 +153,7 @@ export function readRoute(url: URL, fallback: AppRoute = homeRoute): AppRoute {
       ...sectionRoute('Settings', parts[1]),
       service:
         parts[1] === 'services' &&
-        [
-          'seerr',
-          'recyclarr',
-          'radarr',
-          'sonarr',
-          'lidarr',
-          'bazarr',
-          'prowlarr',
-          'nzbget',
-        ].includes(parts[2])
+        definitions.some((definition) => definition.kind === parts[2])
           ? parts[2]
           : undefined,
       workflow:

@@ -46,9 +46,8 @@
     downloadBusyIds,
     activeVideoIds,
     launchingVideoIds,
-    mpvReady,
-    ytdlpReady,
-    ffmpegReady,
+    playerReady,
+    downloadsEnabled,
     onSelect,
     onCreate,
     onUpdate,
@@ -64,9 +63,8 @@
     downloadBusyIds: Set<string>;
     activeVideoIds: Set<string>;
     launchingVideoIds: Set<string>;
-    mpvReady: boolean;
-    ytdlpReady: boolean;
-    ffmpegReady: boolean;
+    playerReady: boolean;
+    downloadsEnabled: boolean;
     onSelect: (watchlistId: number) => void;
     onCreate: (name: string) => Promise<void>;
     onUpdate: (
@@ -754,9 +752,8 @@
                   downloadBusy={downloadBusyIds.has(item.video.videoId)}
                   isPlaying={activeVideoIds.has(item.video.videoId)}
                   isLaunching={launchingVideoIds.has(item.video.videoId)}
-                  {mpvReady}
-                  {ytdlpReady}
-                  {ffmpegReady}
+                  {playerReady}
+                  {downloadsEnabled}
                   sortable={canReorder}
                   dragging={draggingVideoId === item.video.videoId}
                   suppressClick={suppressDragClickVideoId ===

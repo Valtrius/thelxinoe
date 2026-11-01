@@ -20,10 +20,8 @@
     cardColumns,
     fadeWatchedCards,
     youtubeCardShortcuts,
-    signedInPlaybackAvailable,
-    mpvReady,
-    ytdlpReady,
-    ffmpegReady,
+    playerReady,
+    downloadsEnabled,
     activeVideoIds,
     launchingVideoIds,
     downloadBusyIds,
@@ -39,10 +37,8 @@
     cardColumns: number;
     fadeWatchedCards: boolean;
     youtubeCardShortcuts: YoutubeCardShortcut[];
-    signedInPlaybackAvailable: boolean;
-    mpvReady: boolean;
-    ytdlpReady: boolean;
-    ffmpegReady: boolean;
+    playerReady: boolean;
+    downloadsEnabled: boolean;
     activeVideoIds: Set<string>;
     launchingVideoIds: Set<string>;
     downloadBusyIds: Set<string>;
@@ -139,12 +135,10 @@
               {actions}
               {video}
               {avatarSizes}
-              {mpvReady}
-              {ytdlpReady}
-              {ffmpegReady}
+              {playerReady}
+              {downloadsEnabled}
               {fadeWatchedCards}
               {youtubeCardShortcuts}
-              {signedInPlaybackAvailable}
               isPlaying={activeVideoIds.has(video.videoId)}
               isLaunching={launchingVideoIds.has(video.videoId)}
               downloadBusy={downloadBusyIds.has(video.videoId)}

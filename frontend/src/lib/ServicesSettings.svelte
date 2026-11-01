@@ -271,6 +271,13 @@
   const item = $derived(provision(selectedKind));
   const live = $derived(runtime(selectedKind));
   const selectedStage = $derived(stageOf(selectedKind));
+  const selectedContainer = $derived(containerFor(definition));
+  const selectedStatus = $derived(status(selectedKind));
+  const nativeUrl = $derived(
+    hasNativeAccess(selectedKind) ? connected?.access_url : null,
+  );
+  const progress = $derived(activity(selectedKind));
+  const operating = $derived(serviceOperationActive(selectedKind));
   const supportData = $derived(snapshots[selectedKind]);
   const nzbgetLoginTarget = $derived(
     provision('nzbget') ?? supportService('nzbget'),
@@ -825,8 +832,6 @@
     confirmLabel="Remove service and configuration"
     eyebrow="REMOVE / MEDIA SERVICE"
     danger
-    busy={removalKind ? isBusy(removalKind, true) : false}
-    error={removalKind ? (feedback[removalKind] ?? '') : ''}
     onCancel={() => (removalKind = null)}
     onConfirm={() => {
       const kind = removalKind;
@@ -840,8 +845,6 @@
     message="Thelxinoe deletes only its own connection record. The container, its configuration and its data are not touched."
     confirmLabel="Forget connection"
     eyebrow="FORGET / CONNECTED SERVICE"
-    busy={forgetKind ? isBusy(forgetKind) : false}
-    error={forgetKind ? (feedback[forgetKind] ?? '') : ''}
     onCancel={() => (forgetKind = null)}
     onConfirm={() => {
       const kind = forgetKind;
@@ -943,51 +946,36 @@
       class="service-rail panel settings-card min-w-0 border border-line bg-surface"
       aria-label="Service controls"
     >
-      {#each [definition] as service (service.kind)}
-        {@const active = service.kind === selectedKind}
-        {@const attached = integration(service)}
-        {@const provisioned = provision(service.kind)}
-        {@const runtimeService = runtime(service.kind)}
-        {@const stageInfo = stageOf(service.kind)}
-        {@const container = containerFor(service)}
-        {@const state = status(service.kind)}
-        {@const url = hasNativeAccess(service.kind)
-          ? attached?.access_url
-          : null}
-        {@const progress = activity(service.kind)}
-        {@const operating = serviceOperationActive(service.kind)}
+      {#key selectedKind}
         <div
-          class={[
-            'rail-identity flex min-w-0 flex-col gap-3 px-5.5 py-4 compact:px-4',
-            !active && 'inactive invisible pointer-events-none compact:hidden',
-          ]}
-          inert={!active}
+          class="rail-identity flex min-w-0 flex-col gap-3 px-5.5 py-4 compact:px-4"
         >
           <div
             class="rail-heading flex items-center gap-3.5 [&_img]:size-11 [&_img]:shrink-0 [&_img]:object-contain"
           >
-            <img src={icons[service.kind]} alt="" />
+            <img src={icons[definition.kind]} alt="" />
             <div class="min-w-0">
               <h2 class="m-0 text-lg font-semibold tracking-[-0.01em]">
-                {service.label}
+                {definition.label}
               </h2>
-              <span class="block text-xs text-muted">{service.description}</span
+              <span class="block text-xs text-muted"
+                >{definition.description}</span
               >
             </div>
             <StatusIndicator
               class="service-status ml-auto shrink-0 text-[11px]"
-              tone={state.tone}>{state.label}</StatusIndicator
+              tone={selectedStatus.tone}>{selectedStatus.label}</StatusIndicator
             >
           </div>
-          {#if url && attached}<div
+          {#if nativeUrl && connected}<div
               class="service-url-line flex min-h-4.5 min-w-0 items-center gap-1"
             >
               <NativeServiceLink
-                id={attached.id}
-                label={service.label}
-                path={url}
+                id={connected.id}
+                label={definition.label}
+                path={nativeUrl}
               />
-              {#if service.kind === 'nzbget' && nzbgetLoginTarget && !operating}
+              {#if definition.kind === 'nzbget' && nzbgetLoginTarget && !operating}
                 <div class="ml-auto flex shrink-0 items-center gap-1">
                   <Button
                     variant="secondary"
@@ -1039,139 +1027,133 @@
               <ProgressBar
                 class="activity-bar mt-1.75 h-0.75"
                 indeterminate
-                label={`${service.label}: ${progress}`}
-              ></ProgressBar>{:else if feedback[service.kind]}<span
+                label={`${definition.label}: ${progress}`}
+              ></ProgressBar>{:else if feedback[definition.kind]}<span
                 class="action-feedback block truncate"
                 role="status"
-                title={feedback[service.kind]}>{feedback[service.kind]}</span
+                title={feedback[definition.kind]}
+                >{feedback[definition.kind]}</span
               >{/if}
           </div>
         </div>
         <div
-          class={[
-            'rail-actions flex min-w-0 flex-wrap items-center gap-2 border-t border-line px-5.5 py-3 compact:px-4 [&_button]:whitespace-normal',
-            !active && 'inactive invisible pointer-events-none compact:hidden',
-          ]}
-          inert={!active}
+          class="rail-actions flex min-w-0 flex-wrap items-center gap-2 border-t border-line px-5.5 py-3 compact:px-4 [&_button]:whitespace-normal"
         >
-          {#if stageInfo?.operation?.type === 'transfer'}
+          {#if selectedStage?.operation?.type === 'transfer'}
             <!-- The operation stays reachable while its modal is closed. -->
-            <Button size="form" onclick={() => openOwnership(service.kind)}
-              >{['failed', 'suspended'].includes(stageInfo.operation.state)
+            <Button size="form" onclick={() => openOwnership(definition.kind)}
+              >{['failed', 'suspended'].includes(selectedStage.operation.state)
                 ? 'Open transfer recovery'
                 : 'Open ownership transfer'}</Button
             >
           {:else if !operating}
-            {#if stageInfo?.stage === 'connected'}
+            {#if selectedStage?.stage === 'connected'}
               <Button
                 size="form"
-                disabled={isBusy(service.kind)}
-                onclick={() => openOwnership(service.kind)}
-                >{stageInfo.draft_review
+                disabled={isBusy(definition.kind)}
+                onclick={() => openOwnership(definition.kind)}
+                >{selectedStage.draft_review
                   ? 'Continue ownership review'
                   : 'Take ownership'}</Button
               >
               <Button
                 size="form"
                 variant="secondary"
-                disabled={isBusy(service.kind)}
+                disabled={isBusy(definition.kind)}
                 onclick={() =>
                   void work(
-                    () => testConnection(service.kind),
-                    `${service.label} connection checked.`,
+                    () => testConnection(definition.kind),
+                    `${definition.label} connection checked.`,
                   )}>Test connection</Button
               >
               <Button
                 size="form"
                 variant="ghost"
-                disabled={isBusy(service.kind)}
+                disabled={isBusy(definition.kind)}
                 onclick={() => {
-                  feedback[service.kind] = '';
-                  forgetKind = service.kind;
+                  feedback[definition.kind] = '';
+                  forgetKind = definition.kind;
                 }}>Forget connection</Button
               >
-            {:else if provisioned?.state === 'blocked'}
+            {:else if item?.state === 'blocked'}
               <Button
                 size="form"
-                disabled={isBusy(service.kind)}
+                disabled={isBusy(definition.kind)}
                 onclick={() =>
-                  void operate(service.kind, () =>
-                    retryProvision(service.kind),
+                  void operate(definition.kind, () =>
+                    retryProvision(definition.kind),
                   )}>Retry setup</Button
               >
-            {:else if runtimeService && runtimeService.registered !== false && !setupActive(service.kind) && operational(service.kind)}
-              {#if runtimeService.existence === 'present'}
-                {#each service.role === 'job' ? ['reconcile'] : runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
+            {:else if live && live.registered !== false && !setupActive(definition.kind) && operational(definition.kind)}
+              {#if live.existence === 'present'}
+                {#each definition.role === 'job' ? ['reconcile'] : live.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
                   <Button
                     size="form"
                     variant="secondary"
-                    disabled={!canControl(service.kind, action)}
+                    disabled={!canControl(definition.kind, action)}
                     onclick={() =>
-                      void work(() => stackAction(service.kind, action))}
+                      void work(() => stackAction(definition.kind, action))}
                     >{action === 'reconcile'
                       ? 'Repair configuration'
                       : action[0].toUpperCase() + action.slice(1)}</Button
                   >
                 {/each}
               {/if}
-              {#if runtimeService.can_recreate}<Button
+              {#if live.can_recreate}<Button
                   size="form"
-                  disabled={isBusy(service.kind)}
+                  disabled={isBusy(definition.kind)}
                   onclick={() =>
-                    void operate(service.kind, () =>
-                      stackAction(service.kind, 'recreate'),
+                    void operate(definition.kind, () =>
+                      stackAction(definition.kind, 'recreate'),
                     )}>Recreate and start</Button
                 >{/if}
             {/if}
-            {#if canRetire(service.kind)}
+            {#if canRetire(definition.kind)}
               <Button
                 size="form"
                 variant="danger"
                 class="ml-auto"
-                disabled={isBusy(service.kind) || setupActive(service.kind)}
+                disabled={isBusy(definition.kind) ||
+                  setupActive(definition.kind)}
                 onclick={() =>
-                  void work(() => stackAction(service.kind, 'retire'))}
+                  void work(() => stackAction(definition.kind, 'retire'))}
                 >Retire and keep data</Button
               >
             {/if}
-            {#if provisioned && !provisioned.hold?.startsWith('transfer') && (runtimeService?.can_remove || (provisioned.state === 'retiring' && provisioned.operation === 'remove'))}
+            {#if item && !item.hold?.startsWith('transfer') && (live?.can_remove || (item.state === 'retiring' && item.operation === 'remove'))}
               <Button
                 size="form"
                 variant="danger"
-                class={canRetire(service.kind) ? '' : 'ml-auto'}
-                disabled={isBusy(service.kind, true)}
+                class={canRetire(definition.kind) ? '' : 'ml-auto'}
+                disabled={isBusy(definition.kind, true)}
                 onclick={() => {
-                  feedback[service.kind] = '';
-                  removalKind = service.kind;
+                  feedback[definition.kind] = '';
+                  removalKind = definition.kind;
                 }}>Remove service</Button
               >
             {/if}
-            {#if canRetire(service.kind)}
+            {#if canRetire(definition.kind)}
               <p class="m-0 basis-full text-xs text-muted">
                 Retiring removes the installation and its API connection.
                 Appdata, request history, and media files are kept.
               </p>
             {/if}
-            {#if !stageInfo || stageInfo.stage === 'none'}<span
+            {#if !selectedStage || selectedStage.stage === 'none'}<span
                 class="text-xs text-muted">Choose how to connect below.</span
               >{/if}
           {/if}
         </div>
         <dl
-          class={[
-            'rail-meta m-0 grid min-w-0 grid-cols-4 gap-x-4 gap-y-3 border-t border-line bg-surface-soft px-5.5 py-3 compact:grid-cols-2 compact:px-4',
-            !active && 'inactive invisible pointer-events-none compact:hidden',
-          ]}
-          inert={!active}
+          class="rail-meta m-0 grid min-w-0 grid-cols-4 gap-x-4 gap-y-3 border-t border-line bg-surface-soft px-5.5 py-3 compact:grid-cols-2 compact:px-4"
         >
           <div>
             <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
               Ownership
             </dt>
             <dd class="mt-0.75 wrap-anywhere text-[11px]">
-              {stageInfo?.stage === 'owned'
-                ? `Owned${stageInfo.ownership?.origin === 'transferred' ? ' · transferred' : ''}${stageInfo.hold ? ' · held' : ''}`
-                : stageInfo?.stage === 'connected'
+              {selectedStage?.stage === 'owned'
+                ? `Owned${selectedStage.ownership?.origin === 'transferred' ? ' · transferred' : ''}${selectedStage.hold ? ' · held' : ''}`
+                : selectedStage?.stage === 'connected'
                   ? 'Connected · external'
                   : 'Not configured'}
             </dd>
@@ -1181,7 +1163,7 @@
               Application version
             </dt>
             <dd class="mt-0.75 wrap-anywhere text-[11px]">
-              {attached?.version || stageInfo?.connection?.version || '—'}
+              {connected?.version || selectedStage?.connection?.version || '—'}
             </dd>
           </div>
           <div>
@@ -1189,10 +1171,10 @@
               Container
             </dt>
             <dd class="mt-0.75 wrap-anywhere text-[11px]">
-              {runtimeService?.name ||
-                container?.names[0]?.replace(/^\//, '') ||
-                stageInfo?.connection?.container_name ||
-                (attached ? 'Unavailable' : '—')}
+              {live?.name ||
+                selectedContainer?.names[0]?.replace(/^\//, '') ||
+                selectedStage?.connection?.container_name ||
+                (connected ? 'Unavailable' : '—')}
             </dd>
           </div>
           <div>
@@ -1200,11 +1182,11 @@
               Installed image
             </dt>
             <dd class="image-value mt-0.75 wrap-anywhere text-[10px]">
-              {runtimeService?.image || container?.image || '—'}
+              {live?.image || selectedContainer?.image || '—'}
             </dd>
           </div>
         </dl>
-      {/each}
+      {/key}
     </aside>
     <div class="service-workspace contents [&_form>button]:w-fit">
       {#if live?.registered === false}
@@ -1459,7 +1441,7 @@
           />
         {/if}
 
-        {#if operational(selectedKind) && (definition.role === 'manager' || ['prowlarr', 'nzbget', 'bazarr', 'seerr'].includes(definition.kind))}
+        {#if operational(selectedKind) && definition.role !== 'job'}
           <div class="grid min-w-0 gap-5">
             {#if definition.role === 'manager' || definition.kind === 'prowlarr' || definition.kind === 'nzbget'}
               <section

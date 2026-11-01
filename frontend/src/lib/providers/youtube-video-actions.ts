@@ -3,9 +3,7 @@ import type { YoutubeCardShortcut, YoutubeVideo } from './types';
 export interface YoutubeVideoActions {
   onPlay: (video: YoutubeVideo) => void;
   onBeginning: (video: YoutubeVideo) => void;
-  onSignedIn: (video: YoutubeVideo) => void;
   onDownload: (video: YoutubeVideo) => void;
-  onDownloadSignedIn: (video: YoutubeVideo) => void;
   onCancelDownload: (video: YoutubeVideo) => void;
   onPinDownload: (video: YoutubeVideo) => void;
   onUnpinDownload: (video: YoutubeVideo) => void;

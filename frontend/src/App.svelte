@@ -850,15 +850,9 @@
       });
     }
   }
+  // `allowedRoute` leaves a disabled platform's pages; its media stops too.
   $effect(() => {
     void $providers;
-    if (!navigationReady || !user) return;
-    if (!providerEnabled(section)) void navigate('Home');
-    if (
-      settingsSection === 'online' &&
-      !Object.values($providers).some(Boolean)
-    )
-      openSettings('account');
     if (playing && !providerEnabled(playing.id)) playing = null;
   });
   $effect(() => {

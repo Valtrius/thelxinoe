@@ -21,20 +21,16 @@ import type {
 } from './types';
 
 let launch: ((choice: MediaChoice) => Promise<void>) | undefined;
-let owner = '';
 const videos = new Map<string, YoutubeVideo>();
 const streams = new Map<string, { id: string; title: string }>();
 export function connectPresentation(
-  user: string,
   play: (choice: MediaChoice) => Promise<void>,
 ) {
-  owner = user;
   launch = play;
   return () => {
     launch = undefined;
     videos.clear();
     streams.clear();
-    owner = '';
   };
 }
 export function activeMediaId(choice: { id: string }): string {
@@ -43,14 +39,13 @@ export function activeMediaId(choice: { id: string }): string {
     return [...streams].find(([, stream]) => stream.id === id)?.[0] ?? id;
   return id;
 }
+// Saved with the account's appearance, so every device shares them.
 export const preferences = {
   subscribe: derived(appearance, (value) => value.provider_preferences)
     .subscribe,
-  getItem: (key: string) =>
-    get(appearance).provider_preferences[key] ??
-    localStorage.getItem(`thelxinoe:${serverUrl()}:${owner}:${key}`),
+  getItem: (key: string): string | null =>
+    get(appearance).provider_preferences[key] ?? null,
   setItem: (key: string, value: string) => {
-    localStorage.setItem(`thelxinoe:${serverUrl()}:${owner}:${key}`, value);
     if (get(appearance).provider_preferences[key] !== value)
       updateAppearance({ provider_preferences: { [key]: value } });
   },
@@ -409,15 +404,7 @@ export const api = {
     await request('/online/kick/sync', 'POST');
     return 'kick';
   },
-  async launchYoutube(
-    videoId: string,
-    startMode: 'resume' | 'beginning',
-    _signedIn = false,
-  ) {
-    if (_signedIn)
-      throw new Error(
-        'Signed-in browser cookies are not supported by this server.',
-      );
+  async launchYoutube(videoId: string, startMode: 'resume' | 'beginning') {
     if (!launch) throw new Error('Sign in before playing a video.');
     if (!videos.has(videoId))
       await request('/online/youtube/resolve', 'POST', { video_id: videoId });
@@ -437,11 +424,7 @@ export const api = {
     if (!launch) throw new Error('Sign in before playing a channel.');
     await launch({ id: `kick:${slug}`, title: slug });
   },
-  async startYoutubeDownload(videoId: string, _signedIn = false) {
-    if (_signedIn)
-      throw new Error(
-        'Signed-in browser cookies are not supported by this server.',
-      );
+  async startYoutubeDownload(videoId: string) {
     await request(`/online/youtube/videos/${videoId}/download`, 'POST');
     const download = await getDownload(videoId);
     return download;
