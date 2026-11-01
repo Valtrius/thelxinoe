@@ -23,8 +23,6 @@
   import type {
     AuthState,
     PlatformAccount,
-    PlaybackDiagnostics,
-    PlaybackSession,
     SyncStatus,
     YoutubeProgressEvent,
     YoutubeProgressUpdate,
@@ -59,7 +57,7 @@
   const cardColumns = $derived(
     compactViewport.current ? 2 : $appearance.video_columns,
   );
-  const disconnect = untrack(() => connectPresentation(userId, play));
+  const disconnect = untrack(() => connectPresentation(play));
   const ownsSession = captureSession();
   const watchlistController = createYoutubeWatchlists(
     Number(preferences.getItem('youtube-selected-watchlist-id')),
@@ -198,30 +196,13 @@
       error: error ? normalizeError(error) : null,
     };
   });
-  // Extraction tools are installed and checked by the server on demand. These
-  // readiness inputs describe whether an operation can be requested by this UI.
-  const playback = $derived<PlaybackDiagnostics>({
-    mpv: { kind: desktop ? 'mpv' : 'browser', detected: nativeReady },
-    ytdlp: { kind: 'server', detected: true },
-    streamlink: { kind: 'server', detected: true },
-    ffmpeg: {
-      kind: 'server-downloads',
-      detected: accounts.youtube?.downloads_enabled ?? false,
-    },
-    activeSessionCount: playing.length,
-  });
-  const activeSessions = $derived<PlaybackSession[]>(
+  // This platform's media, by the platform's own id.
+  const activeMedia = $derived<PlayingMedia[]>(
     playing
       .filter((media: PlayingMedia) => media.id.startsWith(platform + ':'))
       .map((media: PlayingMedia) => ({
-        sessionId: media.id,
-        platform,
-        mediaId: activeMediaId(media),
-        ipcEndpoint: '',
-        startedAt: '',
-        playbackState: media.launching ? 'starting' : 'playing',
-        connected: true,
-        sourceKind: 'remote',
+        id: activeMediaId(media),
+        launching: media.launching,
       })),
   );
   async function readAccount() {
@@ -408,12 +389,12 @@
         onWatchlistSelected={watchlistChanged}
         showWatchlist={watchlistId !== undefined}
         {syncStatus}
-        {playback}
-        {activeSessions}
+        playerReady={nativeReady}
+        downloadsEnabled={accounts.youtube?.downloads_enabled ?? false}
+        {activeMedia}
         {cardColumns}
         fadeWatchedCards={$appearance.fade_watched}
         youtubeCardShortcuts={$appearance.youtube_card_shortcuts}
-        signedInPlaybackAvailable={false}
         {authState}
         clientConfigured={!!rawAccount?.configured &&
           !!rawAccount.linking_available}
@@ -439,8 +420,8 @@
         {admin}
         {account}
         {syncStatus}
-        {playback}
-        {activeSessions}
+        playerReady={nativeReady}
+        {activeMedia}
         {cardColumns}
         {authState}
         clientConfigured={!!rawAccount?.configured}
@@ -462,8 +443,8 @@
         connected={!!kick?.connected}
         onAccountChanged={load}
         {syncStatus}
-        {playback}
-        {activeSessions}
+        playerReady={nativeReady}
+        {activeMedia}
         {cardColumns}
         metadataConfigured={!!kick?.configured}
         feed={kick}

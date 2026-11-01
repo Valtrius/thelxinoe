@@ -334,7 +334,7 @@ test('removal and installation keep independent locks, feedback and polling', as
   await expect.poll(() => stackReads, { timeout: 7000 }).toBeGreaterThan(reads);
   finishRemoval!();
   await page.getByRole('link', { name: 'Radarr', exact: true }).click();
-  await expect(page.locator('.rail-identity:not(.inactive)')).toContainText(
+  await expect(page.locator('.rail-identity')).toContainText(
     'Removal needs attention',
   );
   await expect(
@@ -344,7 +344,7 @@ test('removal and installation keep independent locks, feedback and polling', as
   await expect(
     page.getByRole('button', { name: 'Install Sonarr', exact: true }),
   ).toBeDisabled();
-  await expect(page.locator('.rail-identity:not(.inactive)')).not.toContainText(
+  await expect(page.locator('.rail-identity')).not.toContainText(
     'Removal needs attention',
   );
   finishInstall!();
@@ -900,9 +900,9 @@ test('media services preserve real controls across adaptive layouts', async ({
   await selectRadarr(page);
   const nav = page.getByRole('navigation', { name: 'Select service' });
   const radarr = page.getByRole('article', { name: 'Radarr service' });
-  await expect(
-    radarr.locator('.rail-identity:not(.inactive) .service-status'),
-  ).toHaveText('Running');
+  await expect(radarr.locator('.rail-identity .service-status')).toHaveText(
+    'Running',
+  );
   await expect(
     radarr.getByRole('link', { name: /Open Radarr/ }),
   ).toHaveAttribute('href', '/services/radarr');
@@ -1095,7 +1095,7 @@ test('NZBGet URL has compact login and password copy buttons', async ({
     'data-page-phase',
     'idle',
   );
-  const line = page.locator('.rail-identity:not(.inactive) .service-url-line');
+  const line = page.locator('.rail-identity .service-url-line');
   const url = line.getByRole('link', { name: 'Open NZBGet', exact: true });
   const copyLogin = line.getByRole('button', { name: 'Copy NZBGet login' });
   const copyPassword = line.getByRole('button', {
@@ -1188,7 +1188,7 @@ test('NZBGet copy buttons appear after installation and use managed credentials'
     .getByRole('navigation', { name: 'Select service' })
     .getByRole('link', { name: 'NZBGet', exact: true })
     .click();
-  const line = page.locator('.rail-identity:not(.inactive) .service-url-line');
+  const line = page.locator('.rail-identity .service-url-line');
   await expect(
     page
       .getByRole('complementary', { name: 'Service controls' })
@@ -1256,9 +1256,9 @@ for (const state of [
     if (state === 'recovery-required') await expect(recover).toBeEnabled();
     if (state === 'blocked') await expect(recover).toHaveCount(0);
     const service = page.getByRole('article', { name: 'Radarr service' });
-    await expect(
-      service.locator('.rail-identity:not(.inactive) .service-status'),
-    ).toHaveText('Running');
+    await expect(service.locator('.rail-identity .service-status')).toHaveText(
+      'Running',
+    );
     if (state === 'blocked' || state === 'committed')
       await expect(
         service.getByRole('region', { name: 'Updates' }),
@@ -1346,21 +1346,17 @@ for (const state of ['connecting', 'blocked']) {
     await page.goto('/');
     await selectRadarr(page);
     const radarr = page.getByRole('article', { name: 'Radarr service' });
-    await expect(
-      radarr.locator('.rail-identity:not(.inactive) .service-status'),
-    ).toHaveText(state === 'connecting' ? 'Connecting API' : 'Setup blocked');
+    await expect(radarr.locator('.rail-identity .service-status')).toHaveText(
+      state === 'connecting' ? 'Connecting API' : 'Setup blocked',
+    );
     if (state === 'connecting') {
       await expect(
-        radarr
-          .locator('.rail-identity:not(.inactive)')
-          .getByRole('progressbar'),
+        radarr.locator('.rail-identity').getByRole('progressbar'),
       ).toBeVisible();
       await expect(
-        radarr.locator('.rail-actions:not(.inactive)').getByRole('progressbar'),
+        radarr.locator('.rail-actions').getByRole('progressbar'),
       ).toHaveCount(0);
-      const progress = radarr.locator(
-        '.rail-identity:not(.inactive) .activity-bar > span',
-      );
+      const progress = radarr.locator('.rail-identity .activity-bar > span');
       expect(
         await progress.evaluate((node) => getComputedStyle(node).animationName),
       ).not.toBe('none');

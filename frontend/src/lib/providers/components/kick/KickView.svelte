@@ -7,14 +7,9 @@
   import { scaleCardScope } from '../../../card-grid-zoom';
   import { createLayoutMotion } from '../../../layout-motion';
   import { dismissToastByKey, showToast } from '../../toasts';
-  import type {
-    AppError,
-    KickChannel,
-    PlaybackDiagnostics,
-    PlaybackSession,
-    SyncStatus,
-  } from '../../types';
-  import { isPlaybackLaunching, kickUrl, relativeTime } from '../../utils';
+  import type { AppError, KickChannel, SyncStatus } from '../../types';
+  import { kickUrl, relativeTime } from '../../utils';
+  import type { PlayingMedia } from '../../../playback';
   import Button from '../../../ui/Button.svelte';
   import ConfirmDialog from '../ui/ConfirmDialog.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
@@ -26,8 +21,8 @@
     connected,
     onAccountChanged,
     syncStatus,
-    playback,
-    activeSessions,
+    playerReady,
+    activeMedia,
     cardColumns,
     metadataConfigured,
     feed,
@@ -38,8 +33,8 @@
     connected: boolean;
     onAccountChanged: () => Promise<void>;
     syncStatus: SyncStatus;
-    playback: PlaybackDiagnostics;
-    activeSessions: PlaybackSession[];
+    playerReady: boolean;
+    activeMedia: PlayingMedia[];
     cardColumns: number;
     metadataConfigured: boolean;
     /** The channels the page read with the account, or null until it has. */
@@ -70,26 +65,15 @@
   const layoutMotion = createLayoutMotion();
   const connectLayoutMotion = layoutMotion.connect;
   const pendingSlugs = new SvelteSet<string>();
-  const playbackReady = $derived(
-    playback.mpv.detected && playback.streamlink.detected,
-  );
   const activeSlugs = $derived(
-    new Set(
-      activeSessions
-        .filter((session) => session.platform === 'kick')
-        .map((session) => session.mediaId.toLowerCase()),
-    ),
+    new Set(activeMedia.map((media) => media.id.toLowerCase())),
   );
   const launchingSlugs = $derived(
     new Set([
       ...pendingSlugs,
-      ...activeSessions
-        .filter(
-          (session) =>
-            session.platform === 'kick' &&
-            isPlaybackLaunching(session.playbackState),
-        )
-        .map((session) => session.mediaId.toLowerCase()),
+      ...activeMedia
+        .filter((media) => media.launching)
+        .map((media) => media.id.toLowerCase()),
     ]),
   );
   const displayedChannels = $derived(
@@ -114,7 +98,7 @@
   );
 
   $effect(() => {
-    if (channels.length > 0 && !playbackReady) {
+    if (channels.length > 0 && !playerReady) {
       showToast({
         key: 'kick-playback-missing',
         tone: 'warning',
@@ -389,7 +373,7 @@
             >
               <KickCard
                 {channel}
-                {playbackReady}
+                playbackReady={playerReady}
                 offlineConfirmed={liveMetadataIsFresh && !channel.liveStream}
                 isPlaying={activeSlugs.has(channel.slug.toLowerCase())}
                 isLaunching={launchingSlugs.has(channel.slug.toLowerCase())}

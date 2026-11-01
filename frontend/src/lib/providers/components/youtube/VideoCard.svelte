@@ -31,12 +31,10 @@
     actions,
     video,
     avatarSizes,
-    mpvReady,
-    ytdlpReady,
-    ffmpegReady,
+    playerReady,
+    downloadsEnabled,
     fadeWatchedCards,
     youtubeCardShortcuts,
-    signedInPlaybackAvailable,
     isPlaying,
     isLaunching,
     downloadBusy,
@@ -52,12 +50,10 @@
     video: YoutubeVideo;
     /** The channel avatar's on-screen width, for picking its image size. */
     avatarSizes: string;
-    mpvReady: boolean;
-    ytdlpReady: boolean;
-    ffmpegReady: boolean;
+    playerReady: boolean;
+    downloadsEnabled: boolean;
     fadeWatchedCards: boolean;
     youtubeCardShortcuts: YoutubeCardShortcut[];
-    signedInPlaybackAvailable: boolean;
     isPlaying: boolean;
     isLaunching: boolean;
     downloadBusy: boolean;
@@ -73,9 +69,8 @@
   const current = $derived(withNativePosition(video));
   const presentation = $derived(
     youtubeVideoPresentation(current, {
-      mpvReady,
-      ytdlpReady,
-      ffmpegReady,
+      playerReady,
+      downloadsEnabled,
       isPlaying,
       isLaunching,
       downloadBusy,
@@ -137,13 +132,11 @@
     {actions}
     {onShortcutDeleteRequest}
     {onShortcutDeleteCancel}
-    {signedInPlaybackAvailable}
     {downloadBusy}
     {isPlaying}
     {menuOpen}
     {shortcutDeleteConfirming}
-    {ytdlpReady}
-    {ffmpegReady}
+    {downloadsEnabled}
   />
 
   <button

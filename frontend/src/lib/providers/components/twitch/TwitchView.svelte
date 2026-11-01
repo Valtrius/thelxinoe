@@ -18,17 +18,11 @@
     AppError,
     AuthState,
     PlatformAccount,
-    PlaybackDiagnostics,
-    PlaybackSession,
     SyncStatus,
     TwitchLiveStream,
   } from '../../types';
-  import {
-    isPlaybackLaunching,
-    relativeTime,
-    twitchChatUrl,
-    twitchUrl,
-  } from '../../utils';
+  import { relativeTime, twitchChatUrl, twitchUrl } from '../../utils';
+  import type { PlayingMedia } from '../../../playback';
   import Button from '../../../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import ProviderConnection from '../../ProviderConnection.svelte';
@@ -40,8 +34,8 @@
     admin,
     account,
     syncStatus,
-    playback,
-    activeSessions,
+    playerReady,
+    activeMedia,
     cardColumns,
     authState,
     clientConfigured,
@@ -54,8 +48,8 @@
     admin: boolean;
     account?: PlatformAccount | null;
     syncStatus: SyncStatus;
-    playback: PlaybackDiagnostics;
-    activeSessions: PlaybackSession[];
+    playerReady: boolean;
+    activeMedia: PlayingMedia[];
     cardColumns: number;
     authState: AuthState;
     clientConfigured: boolean;
@@ -80,26 +74,15 @@
   }
   const pendingChannelLogins = new SvelteSet<string>();
   const requests = new LatestRequest();
-  const playbackReady = $derived(
-    playback.mpv.detected && playback.streamlink.detected,
-  );
   const activeChannelLogins = $derived(
-    new Set(
-      activeSessions
-        .filter((session) => session.platform === 'twitch')
-        .map((session) => session.mediaId.toLowerCase()),
-    ),
+    new Set(activeMedia.map((media) => media.id.toLowerCase())),
   );
   const launchingChannelLogins = $derived(
     new Set([
       ...pendingChannelLogins,
-      ...activeSessions
-        .filter(
-          (session) =>
-            session.platform === 'twitch' &&
-            isPlaybackLaunching(session.playbackState),
-        )
-        .map((session) => session.mediaId.toLowerCase()),
+      ...activeMedia
+        .filter((media) => media.launching)
+        .map((media) => media.id.toLowerCase()),
     ]),
   );
   const authFailureTitle = $derived.by(() => {
@@ -134,7 +117,7 @@
   });
 
   $effect(() => {
-    if (account && !playbackReady) {
+    if (account && !playerReady) {
       showToast({
         key: 'twitch-playback-missing',
         tone: 'warning',
@@ -454,7 +437,7 @@
               <StreamCard
                 {stream}
                 thumbnailSizes={`${Math.ceil(100 / cardColumns)}vw`}
-                {playbackReady}
+                playbackReady={playerReady}
                 isPlaying={activeChannelLogins.has(stream.login.toLowerCase())}
                 isLaunching={launchingChannelLogins.has(
                   stream.login.toLowerCase(),

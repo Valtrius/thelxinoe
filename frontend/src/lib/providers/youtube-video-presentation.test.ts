@@ -3,9 +3,8 @@ import type { YoutubeDownload, YoutubeVideo } from './types';
 import { youtubeVideoPresentation } from './youtube-video-presentation';
 
 const context = {
-  mpvReady: true,
-  ytdlpReady: true,
-  ffmpegReady: true,
+  playerReady: true,
+  downloadsEnabled: true,
   isPlaying: false,
   isLaunching: false,
   downloadBusy: false,

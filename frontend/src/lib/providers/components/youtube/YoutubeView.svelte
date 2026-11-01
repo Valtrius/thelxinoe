@@ -26,8 +26,6 @@
     AppError,
     AuthState,
     PlatformAccount,
-    PlaybackDiagnostics,
-    PlaybackSession,
     SyncStatus,
     YoutubeCardShortcut,
     YoutubeDownload,
@@ -37,12 +35,8 @@
     YoutubeProgressUpdate,
     YoutubeVideo,
   } from '../../types';
-  import {
-    isPlaybackLaunching,
-    localDateTime,
-    relativeTime,
-    youtubeUrl,
-  } from '../../utils';
+  import { localDateTime, relativeTime, youtubeUrl } from '../../utils';
+  import type { PlayingMedia } from '../../../playback';
   import { applyYoutubeProgress } from '../../youtube-progress';
   import { groupYoutubeVideos } from '../../youtube-feed';
   import {
@@ -66,12 +60,12 @@
     account,
     watchlistController,
     syncStatus,
-    playback,
-    activeSessions,
+    playerReady,
+    downloadsEnabled,
+    activeMedia,
     cardColumns,
     fadeWatchedCards,
     youtubeCardShortcuts,
-    signedInPlaybackAvailable,
     authState,
     clientConfigured,
     dataRevision,
@@ -92,12 +86,12 @@
     onWatchlistSelected?: (id: number) => void;
     showWatchlist?: boolean;
     syncStatus: SyncStatus;
-    playback: PlaybackDiagnostics;
-    activeSessions: PlaybackSession[];
+    playerReady: boolean;
+    downloadsEnabled: boolean;
+    activeMedia: PlayingMedia[];
     cardColumns: number;
     fadeWatchedCards: boolean;
     youtubeCardShortcuts: YoutubeCardShortcut[];
-    signedInPlaybackAvailable: boolean;
     authState: AuthState;
     clientConfigured: boolean;
     dataRevision: number;
@@ -113,9 +107,7 @@
   const videoActions = $derived<YoutubeVideoActions>({
     onPlay: (video) => play(video),
     onBeginning: (video) => play(video, true),
-    onSignedIn: (video) => play(video, false, true),
     onDownload: (video) => startDownload(video),
-    onDownloadSignedIn: (video) => startDownload(video, true),
     onCancelDownload: cancelDownload,
     onPinDownload: (video) => setDownloadPinned(video, true),
     onUnpinDownload: (video) => setDownloadPinned(video, false),
@@ -242,26 +234,15 @@
       ),
     ),
   );
-  const playbackReady = $derived(
-    playback.mpv.detected && playback.ytdlp.detected,
-  );
   const activeVideoIds = $derived(
-    new Set(
-      activeSessions
-        .filter((session) => session.platform === 'youtube')
-        .map((session) => session.mediaId),
-    ),
+    new Set(activeMedia.map((media) => media.id)),
   );
   const launchingVideoIds = $derived(
     new Set([
       ...pendingVideoIds,
-      ...activeSessions
-        .filter(
-          (session) =>
-            session.platform === 'youtube' &&
-            isPlaybackLaunching(session.playbackState),
-        )
-        .map((session) => session.mediaId),
+      ...activeMedia
+        .filter((media) => media.launching)
+        .map((media) => media.id),
     ]),
   );
   const directLaunchState = $derived.by(() => {
@@ -537,7 +518,7 @@
   });
 
   $effect(() => {
-    if (account && !playbackReady) {
+    if (account && !playerReady) {
       showToast({
         key: 'youtube-playback-missing',
         tone: 'warning',
@@ -708,14 +689,13 @@
   async function launchVideo(
     videoId: string,
     startMode: 'resume' | 'beginning',
-    signedIn = false,
   ): Promise<boolean> {
     if (pendingVideoIds.has(videoId) || activeVideoIds.has(videoId))
       return false;
     pendingVideoIds.add(videoId);
     error = null;
     try {
-      await api.launchYoutube(videoId, startMode, signedIn);
+      await api.launchYoutube(videoId, startMode);
       return true;
     } catch (caught) {
       error = normalizeError(caught);
@@ -725,11 +705,7 @@
     }
   }
 
-  async function play(
-    video: YoutubeVideo,
-    beginning = false,
-    signedIn = false,
-  ) {
+  async function play(video: YoutubeVideo, beginning = false) {
     await launchVideo(
       video.videoId,
       beginning || video.isWatched
@@ -737,13 +713,12 @@
         : video.positionSeconds > 1
           ? 'resume'
           : 'beginning',
-      signedIn,
     );
   }
 
   async function submitSearch(event: SubmitEvent) {
     event.preventDefault();
-    if (!directVideoId || !playbackReady) return;
+    if (!directVideoId || !playerReady) return;
     if (await launchVideo(directVideoId, 'resume')) {
       filters.searchText = '';
       search = '';
@@ -826,9 +801,9 @@
     }
   }
 
-  function startDownload(video: YoutubeVideo, signedIn = false) {
+  function startDownload(video: YoutubeVideo) {
     void runDownloadAction(video.videoId, () =>
-      api.startYoutubeDownload(video.videoId, signedIn),
+      api.startYoutubeDownload(video.videoId),
     );
   }
 
@@ -890,9 +865,8 @@
     downloadBusyIds={watchlistController.downloadBusyIds}
     {activeVideoIds}
     {launchingVideoIds}
-    mpvReady={playback.mpv.detected}
-    ytdlpReady={playback.ytdlp.detected}
-    ffmpegReady={playback.ffmpeg.detected}
+    {playerReady}
+    {downloadsEnabled}
     {onClose}
     onSelect={(watchlistId) => {
       watchlistController.selectedWatchlistId = watchlistId;
@@ -1103,10 +1077,8 @@
           {cardColumns}
           {fadeWatchedCards}
           {youtubeCardShortcuts}
-          {signedInPlaybackAvailable}
-          mpvReady={playback.mpv.detected}
-          ytdlpReady={playback.ytdlp.detected}
-          ffmpegReady={playback.ffmpeg.detected}
+          {playerReady}
+          {downloadsEnabled}
           {activeVideoIds}
           {launchingVideoIds}
           downloadBusyIds={watchlistController.downloadBusyIds}
