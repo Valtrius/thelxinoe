@@ -462,69 +462,66 @@ function recoveryPlan(s, t) {
   };
 }
 
+export function stageItems(s) {
+  return [
+    'seerr',
+    'recyclarr',
+    'radarr',
+    'sonarr',
+    'lidarr',
+    'bazarr',
+    'prowlarr',
+    'nzbget',
+  ].map((kind) => {
+    const service = s.services.find((item) => item.kind === kind);
+    const owned = s.stack.find((item) => item.kind === kind);
+    const transfer = Object.values(s.transfers).find(
+      (item) =>
+        item.kind === kind &&
+        !['review', 'complete', 'cancelled', 'returned'].includes(item.state),
+    );
+    const draft = Object.values(s.transfers).find(
+      (item) => item.kind === kind && item.state === 'review',
+    );
+    const hold = owned && transfer ? 'transfer' : null;
+    return {
+      kind,
+      stage: owned ? 'owned' : service ? 'connected' : 'none',
+      hold,
+      agreed: true,
+      draft_review: draft?.id ?? null,
+      actions: [],
+      connection: service
+        ? {
+            id: service.id,
+            container_id: `${service.container_id}`.padEnd(64, '0'),
+            container_name: kind,
+            engine: 'preview-engine',
+            version: service.version ?? '',
+            verified: !service.error,
+            operational: !!owned && !transfer,
+            checked_at: (service.checked_at ??= now()),
+            error: service.error ?? null,
+          }
+        : null,
+      ownership: owned ? { ...owned.provision, hold } : null,
+      operation: transfer
+        ? {
+            type: 'transfer',
+            id: transfer.id,
+            state: transfer.state,
+            step: transfer.step,
+            error: transfer.error,
+          }
+        : null,
+    };
+  });
+}
+
 export async function stagesApi(s, c) {
   const { path, method, body, json, fail } = c;
   s.transfers ??= {};
   syncTransfers(s);
-  if (path === '/admin/services' && method === 'GET') {
-    return json({
-      items: [
-        'seerr',
-        'recyclarr',
-        'radarr',
-        'sonarr',
-        'lidarr',
-        'bazarr',
-        'prowlarr',
-        'nzbget',
-      ].map((kind) => {
-        const service = s.services.find((item) => item.kind === kind);
-        const owned = s.stack.find((item) => item.kind === kind);
-        const transfer = Object.values(s.transfers).find(
-          (item) =>
-            item.kind === kind &&
-            !['review', 'complete', 'cancelled', 'returned'].includes(
-              item.state,
-            ),
-        );
-        const draft = Object.values(s.transfers).find(
-          (item) => item.kind === kind && item.state === 'review',
-        );
-        const hold = owned && transfer ? 'transfer' : null;
-        return {
-          kind,
-          stage: owned ? 'owned' : service ? 'connected' : 'none',
-          hold,
-          agreed: true,
-          draft_review: draft?.id ?? null,
-          actions: [],
-          connection: service
-            ? {
-                id: service.id,
-                container_id: `${service.container_id}`.padEnd(64, '0'),
-                container_name: kind,
-                engine: 'preview-engine',
-                version: service.version ?? '',
-                verified: !service.error,
-                operational: !!owned && !transfer,
-                checked_at: (service.checked_at ??= now()),
-                error: service.error ?? null,
-              }
-            : null,
-          ownership: owned ? { ...owned.provision, hold } : null,
-          operation: transfer
-            ? {
-                type: 'transfer',
-                id: transfer.id,
-                state: transfer.state,
-                step: transfer.step,
-                error: transfer.error,
-              }
-            : null,
-        };
-      }),
-    });
-  }
   const serviceAction = path.match(
     /^\/admin\/services\/([^/]+)\/(transfer|test|forget)$/,
   );

@@ -38,6 +38,7 @@ pub(crate) use stack::controller as controller_request;
 pub(crate) use stack::message as controller_message;
 pub(crate) use stack::provision;
 pub(crate) use updates::{run as run_updates, run_job as update_service};
+mod view;
 mod watch;
 pub(crate) use watch::run as run_watch;
 mod connection_settings;
@@ -140,6 +141,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(stack::router())
         .merge(transfers::router())
         .merge(updates::router())
+        .merge(view::router())
         .merge(retention::router())
         .merge(status::router())
         .route("/api/v1/admin/managers/containers", get(containers))

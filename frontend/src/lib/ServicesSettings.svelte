@@ -37,7 +37,6 @@
     hasNativeAccess,
     activeServiceUpdate,
     isSetupActive,
-    serviceStatus,
     hasServiceUrlBase,
     type Container,
   } from './services/presentation';
@@ -64,16 +63,11 @@
     type ServiceKind,
     type Definition,
     type ManagerDefaults,
-    type ManagerService,
-    type SupportService,
     type ManagerOptions,
     type SupportSnapshot,
-    type StackService,
-    type Provision,
-    type ServiceStage,
-    type UpdatePolicy,
-    type Update,
-    type UpdateTarget,
+    type ServiceView,
+    type ServicesView,
+    type LoaderKey,
     type ServerUpdatePolicy,
     type SetupDraft,
     type InstallDraft,
@@ -132,7 +126,6 @@
       ]),
     ) as Record<ServiceKind, UpdateDraft>,
   );
-  let serviceStages = $state<ServiceStage[]>([]);
   // The guided ownership workflow; reopening resumes its durable operation.
   let ownershipModal = $state<{
     kind: ServiceKind;
@@ -149,15 +142,9 @@
     {},
   );
 
-  let managers = $state<ManagerService[]>([]),
+  let services = $state<ServiceView[]>([]),
     connections = $state<ServiceConnection[]>([]),
-    support = $state<SupportService[]>([]),
-    containers = $state<Container[]>([]),
-    stackServices = $state<StackService[]>([]),
-    provisions = $state<Provision[]>([]),
-    policies = $state<UpdatePolicy[]>([]),
-    updates = $state<Update[]>([]),
-    updateTargets = $state<UpdateTarget[]>([]);
+    containers = $state<Container[]>([]);
   let timezone = $state(''),
     serverPolicy = $state<ServerUpdatePolicy>({
       policy: 'automatic',
@@ -173,35 +160,29 @@
   >({});
   const feedback = $state<Partial<Record<ServiceKind | 'general', string>>>({});
   let removalKind = $state<ServiceKind | null>(null);
-  const loadErrors = $state({
-    managers: '',
-    support: '',
-    updates: '',
-    containers: '',
-    stack: '',
-    connections: '',
-    stages: '',
-  });
+  // The parts the server could not read, and the read itself.
+  let loadErrors = $state<Partial<Record<LoaderKey, string>>>({});
 
-  function integration(definition: Definition) {
-    return definition.role === 'manager'
-      ? managers.find((service) => service.kind === definition.kind)
-      : support.find((service) => service.kind === definition.kind);
+  function stageOf(kind: ServiceKind) {
+    return services.find((item) => item.kind === kind);
   }
+  function integration(definition: Definition) {
+    return stageOf(definition.kind)?.integration ?? undefined;
+  }
+  // Only managers have request defaults.
   function manager(kind: ServiceKind) {
-    return managers.find((service) => service.kind === kind);
+    const found = stageOf(kind)?.integration;
+    return found && 'defaults' in found ? found : undefined;
   }
   function supportService(kind: ServiceKind) {
-    return support.find((service) => service.kind === kind);
+    const found = stageOf(kind)?.integration;
+    return found && !('defaults' in found) ? found : undefined;
   }
   function provision(kind: ServiceKind) {
-    return provisions.find((item) => item.kind === kind);
+    return stageOf(kind)?.provision ?? undefined;
   }
   function runtime(kind: ServiceKind) {
-    return stackServices.find((item) => item.kind === kind);
-  }
-  function stageOf(kind: ServiceKind) {
-    return serviceStages.find((item) => item.kind === kind);
+    return stageOf(kind)?.runtime ?? undefined;
   }
   /** Owned, set up and not held: the only state with normal operations. */
   function operational(kind: ServiceKind) {
@@ -222,19 +203,14 @@
     };
   }
   function updateTarget(kind: ServiceKind) {
-    return updateTargets.find((item) => item.kind === kind);
+    return stageOf(kind)?.update?.target;
   }
   function updatePolicy(kind: ServiceKind) {
-    const target = updateTarget(kind);
-    return target
-      ? policies.find((policy) => policy.service_id === target.id)
-      : undefined;
+    return stageOf(kind)?.update?.policy ?? undefined;
   }
   function serviceUpdates(kind: ServiceKind) {
-    const target = updateTarget(kind);
-    return target
-      ? updates.filter((update) => update.service_id === target.id)
-      : [];
+    const latest = stageOf(kind)?.update?.latest;
+    return latest ? [latest] : [];
   }
   let selectedKind = $state<ServiceKind>('seerr');
   $effect(() => {
@@ -335,18 +311,7 @@
     );
   }
   function status(kind: ServiceKind) {
-    const definition = definitions.find((entry) => entry.kind === kind)!;
-    return serviceStatus({
-      item: provision(kind),
-      live: runtime(kind),
-      connected: integration(definition),
-      update: serviceUpdates(kind)[0],
-      stage: stageOf(kind),
-      unavailable: Boolean(
-        loadErrors[definition.role === 'manager' ? 'managers' : 'support'] ||
-        loadErrors.stack,
-      ),
-    });
+    return stageOf(kind)?.status ?? { label: 'Not connected', tone: 'muted' };
   }
   function containerFor(definition: Definition) {
     const id =
@@ -415,76 +380,27 @@
       draft.targetId = target.id;
     }
   }
-  // Each read returns a step that shows its result, so a refresh can show
-  // every part at once instead of pairing fresh parts with stale ones.
-  type Read<T> = { value: T; error?: never } | { value?: never; error: string };
-  const read = <T,>(path: string): Promise<Read<T>> =>
-    api<T>(path).then(
-      (value) => ({ value }),
-      (error: unknown) => ({ error: String(error) }),
-    );
-  let updateLoad = 0;
-  async function readUpdates() {
-    const request = ++updateLoad;
-    const result = await read<{
-      policies: UpdatePolicy[];
-      timezone: string;
-      items: Update[];
-      services: UpdateTarget[];
-      server_policy: ServerUpdatePolicy;
-    }>('/admin/service-updates');
-    return () => {
-      if (request !== updateLoad) return;
-      loadErrors.updates = result.error ?? '';
-      if (!result.value) return;
-      policies = result.value.policies;
-      updates = result.value.items;
-      updateTargets = result.value.services;
-      timezone = result.value.timezone;
-      serverPolicy = result.value.server_policy;
-      syncUpdateDrafts();
-    };
-  }
-  async function loadUpdateData() {
-    (await readUpdates())();
-  }
-  async function readManagers() {
-    const result = await read<{ items: ManagerService[] }>('/admin/managers');
-    return () => {
-      loadErrors.managers = result.error ?? '';
-      if (!result.value) return;
-      managers = result.value.items;
+  // A read that started before a newer one or a local change is dropped.
+  let viewLoad = 0;
+  async function loadView() {
+    const request = ++viewLoad;
+    try {
+      const view = await api<ServicesView>('/admin/services');
+      if (request !== viewLoad) return;
+      services = view.items;
+      containers = view.containers;
+      connections = view.connections;
+      timezone = view.timezone;
+      serverPolicy = view.server_policy;
+      loadErrors = view.errors;
       for (const definition of definitions) {
         const draft = defaults[definition.kind];
         if (draft && !manager(definition.kind)) draft.loaded = false;
       }
-    };
-  }
-  async function loadManagers() {
-    (await readManagers())();
-  }
-  async function readSupport() {
-    const result = await read<{ items: SupportService[] }>('/admin/support');
-    return () => {
-      loadErrors.support = result.error ?? '';
-      if (result.value) support = result.value.items;
-    };
-  }
-  async function readContainers() {
-    const result = await read<{ items: Container[] }>(
-      '/admin/managers/containers',
-    );
-    return () => {
-      loadErrors.containers = result.error ?? '';
-      if (result.value) containers = result.value.items;
-    };
-  }
-  async function readStages() {
-    const result = await read<{ items: ServiceStage[] }>('/admin/services');
-    return () => {
-      loadErrors.stages = result.error ?? '';
-      if (result.value) serviceStages = result.value.items;
-    };
+      syncUpdateDrafts();
+    } catch (error) {
+      if (request === viewLoad) loadErrors = { services: String(error) };
+    }
   }
   async function testConnection(kind: ServiceKind) {
     const id = stageOf(kind)?.connection?.id;
@@ -497,30 +413,6 @@
     if (!id) return;
     await api(`/admin/services/${id}/forget`, 'POST', {});
     await refresh();
-  }
-  async function readStack() {
-    const result = await read<{
-      items: StackService[];
-      provisions: Provision[];
-    }>('/admin/stack');
-    return () => {
-      loadErrors.stack = result.error ?? '';
-      if (result.value) {
-        stackServices = result.value.items;
-        provisions = result.value.provisions;
-        return;
-      }
-      stackServices = stackServices.map((service) => ({
-        ...service,
-        status: 'unavailable',
-        existence: 'unknown',
-        running: null,
-        drift: null,
-        can_recreate: false,
-        can_retire: false,
-        can_remove: false,
-      }));
-    };
   }
   // The server announces each change to what this page shows; the slow poll
   // only covers a lost event stream.
@@ -536,16 +428,7 @@
   async function refreshData() {
     const reread = changed;
     changed = false;
-    const shows = await Promise.all([
-      readManagers(),
-      readSupport(),
-      readUpdates(),
-      readStack(),
-      readStages(),
-      readConnections(),
-      readContainers(),
-    ]);
-    for (const show of shows) show();
+    await loadView();
     // The panel shows its own skeleton while it loads.
     if (reread || selectedRead !== selectedKind)
       void inBackground(() => loadSelectedData());
@@ -564,18 +447,6 @@
       observedRevision = next;
     });
   });
-  let connectionLoad = 0;
-  async function readConnections() {
-    const request = ++connectionLoad;
-    const result = await read<{ items: ServiceConnection[] }>(
-      '/admin/service-connections',
-    );
-    return () => {
-      if (request !== connectionLoad) return;
-      loadErrors.connections = result.error ?? '';
-      if (result.value) connections = result.value.items;
-    };
-  }
   async function connectionAction(
     connection: ServiceConnection,
     action: ConnectionAction,
@@ -586,7 +457,7 @@
       message: `${action === 'disconnect' ? 'Disconnecting' : 'Connecting'} ${connection.target_name}`,
     });
     try {
-      ++connectionLoad;
+      ++viewLoad;
       const updated = await api<ServiceConnection>(
         '/admin/service-connections',
         'POST',
@@ -596,7 +467,7 @@
           action,
         },
       );
-      ++connectionLoad;
+      ++viewLoad;
       connections = connections.map((item) =>
         item.id === updated.id ? updated : item,
       );
@@ -811,11 +682,11 @@
     const target = updateTarget(kind);
     if (!target) return;
     await api(`/admin/service-updates/preflight/${target.id}`, 'POST', {});
-    await loadUpdateData();
+    await loadView();
   }
   async function updateAction(id: string, action: 'activate' | 'recover') {
     await api(`/admin/service-updates/${id}/${action}`, 'POST', {});
-    await loadUpdateData();
+    await loadView();
   }
 
   onMount(() => {
@@ -1589,7 +1460,7 @@
                               'PUT',
                               { enabled },
                             );
-                            await loadManagers();
+                            await loadView();
                           })}>Allow auto-delete for this service</Switch
                       >
                       {#if definition.kind === 'lidarr'}<div class="mt-4">

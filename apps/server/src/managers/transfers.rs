@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/admin/services", get(services))
         .route("/api/v1/admin/services/{id}/test", post(test))
         .route("/api/v1/admin/services/{id}/forget", post(forget))
         .route("/api/v1/admin/services/{id}/transfer", post(review))
@@ -209,24 +208,22 @@ async fn load(state: &AppState, id: &str) -> Result<storage::Row> {
 // ---------- Stage list and Connected actions ----------
 
 /// Each service kind's stage, its available actions and any operation in progress.
-async fn services(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
-    security::require(&state, &headers, Capability::ManageServer).await?;
-    Ok(Json(listing(&state).await?))
-}
+pub(super) const KINDS: [&str; 8] = [
+    "seerr",
+    "recyclarr",
+    "radarr",
+    "sonarr",
+    "lidarr",
+    "bazarr",
+    "prowlarr",
+    "nzbget",
+];
+/// Each service's stage, hold, operation and the actions they allow.
 pub(super) async fn listing(state: &AppState) -> Result<Value> {
     let records = storage::stages(&state.db).await?;
     let controller = controller_request(state, "/transfers", None).await.ok();
     let mut items = Vec::new();
-    for kind in [
-        "seerr",
-        "recyclarr",
-        "radarr",
-        "sonarr",
-        "lidarr",
-        "bazarr",
-        "prowlarr",
-        "nzbget",
-    ] {
+    for kind in KINDS {
         let of = |field: &str| {
             records[field]
                 .as_array()

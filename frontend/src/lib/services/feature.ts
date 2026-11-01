@@ -1,5 +1,7 @@
 import type { ServiceRelease } from './ServiceUpdateRelease.svelte';
 import type { SupportDownload } from './downloads';
+import type { Container } from './presentation';
+import type { ServiceConnection } from '../ServiceConnections.svelte';
 export type ServiceKind =
   | 'radarr'
   | 'sonarr'
@@ -241,6 +243,7 @@ export const stages: Record<string, string> = {
   'queued-recover': 'Waiting to restore',
 };
 export const loaderSubsystems = [
+  { key: 'services', label: 'Media services' },
   { key: 'managers', label: 'Acquisition managers' },
   { key: 'support', label: 'Support services' },
   { key: 'updates', label: 'Service updates' },
@@ -249,6 +252,7 @@ export const loaderSubsystems = [
   { key: 'connections', label: 'Optional service connections' },
   { key: 'stages', label: 'Service stages' },
 ] as const;
+export type LoaderKey = (typeof loaderSubsystems)[number]['key'];
 
 /** Thelxinoe's two service stages; setup, transfer and recovery are operations. */
 export type ServiceStageName = 'none' | 'connected' | 'owned';
@@ -284,6 +288,26 @@ export type ServiceStage = {
     step?: string;
     error: string | null;
   } | null;
+};
+/** A service with everything the services page shows about it. */
+export type ServiceView = ServiceStage & {
+  integration: ManagerService | SupportService | null;
+  provision: Provision | null;
+  runtime: StackService | null;
+  update: {
+    target: UpdateTarget;
+    policy: UpdatePolicy | null;
+    latest: Update | null;
+  } | null;
+  status: { label: string; tone: string };
+};
+export type ServicesView = {
+  items: ServiceView[];
+  containers: Container[];
+  connections: ServiceConnection[];
+  timezone: string;
+  server_policy: ServerUpdatePolicy;
+  errors: Partial<Record<LoaderKey, string>>;
 };
 export type TransferStepStatus =
   | 'complete'

@@ -7,7 +7,13 @@ import {
   protection,
   viewer,
 } from './data.mjs';
-import { checkConnection, connectionFailure, stagesApi } from './transfers.mjs';
+import {
+  checkConnection,
+  connectionFailure,
+  stageItems,
+  stagesApi,
+} from './transfers.mjs';
+import { serviceView } from './service-view.mjs';
 import { readFileSync } from 'node:fs';
 
 // The preview server runs the version the web app was built as, so its update
@@ -961,10 +967,31 @@ function jellyfinImportApi(s, c) {
   return fail(404, 'Unknown Jellyfin import endpoint');
 }
 
+// The parts the server composes its services view from.
+const viewParts = {
+  managers: '/admin/managers',
+  support: '/admin/support',
+  containers: '/admin/managers/containers',
+  stack: '/admin/stack',
+  connections: '/admin/service-connections',
+  updates: '/admin/service-updates',
+};
+
 export async function servicesApi(s, c) {
   const { path, method, body, json, fail } = c;
   const staged = await stagesApi(s, c);
   if (staged) return staged;
+  if (path === '/admin/services' && method === 'GET') {
+    const parts = { stages: { value: { items: stageItems(s) } } };
+    for (const [name, part] of Object.entries(viewParts))
+      await servicesApi(s, {
+        ...c,
+        path: part,
+        json: (value) => (parts[name] = { value }),
+        fail: (status, message) => (parts[name] = { error: message }),
+      });
+    return json(serviceView(parts));
+  }
   if (path === '/admin/managers' || path === '/admin/support') {
     const manager = path.endsWith('managers');
     if (method === 'POST') {
