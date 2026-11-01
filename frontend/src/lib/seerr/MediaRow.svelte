@@ -1,14 +1,15 @@
+<script lang="ts" module>
+  /** The rendered width of a card in a row, for picking its image size. */
+  export const rowCardSizes =
+    '(max-width: 1046px) 136px, (max-width: 1415px) 13vw, 184px';
+</script>
+
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { ChevronLeft, ChevronRight } from '@lucide/svelte';
   import Button from '../ui/Button.svelte';
   import { scrollWithMotion } from '../motion';
-  import PosterCard from './PosterCard.svelte';
-  import type { Media } from './types';
-  let { label, items, open } = $props<{
-    label: string;
-    items: Media[];
-    open: (item: Media) => void;
-  }>();
+  let { label, children } = $props<{ label: string; children: Snippet }>();
   let rail: HTMLDivElement;
   function scroll(direction: number) {
     scrollWithMotion(rail, {
@@ -44,10 +45,6 @@
     data-sidebar-group
     class="media-row-rail grid auto-cols-[clamp(8.5rem,13vw,11.5rem)] grid-flow-col gap-4 overflow-x-auto overscroll-x-contain pt-1 pb-4 compact:auto-cols-[8.5rem] compact:gap-3"
   >
-    {#each items as item (`${item.mediaType}:${item.id}`)}<PosterCard
-        {item}
-        {open}
-        sizes="(max-width: 1046px) 136px, (max-width: 1415px) 13vw, 184px"
-      />{/each}
+    {@render children()}
   </div>
 </section>

@@ -667,6 +667,7 @@ export async function installUiFixture(
       });
     if (path === '/acquisition/requests')
       return json({ items: [], page: 1, pages: 1 });
+    if (path === '/acquisition/services') return json({ items: [] });
     if (path === '/catalog/roots')
       return json({ items: [], media_mount: '/media' });
     if (path === '/catalog/lookup')

@@ -19,6 +19,7 @@ export default defineConfig({
         'provider-setup.spec.ts',
         'settings-details.spec.ts',
         'seerr.spec.ts',
+        'music-requests.spec.ts',
         'service-onboarding.spec.ts',
         'service-updates.spec.ts',
         'service-ownership.spec.ts',

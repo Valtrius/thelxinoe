@@ -18,7 +18,8 @@
   import PlayIcon from '../ui/PlayIcon.svelte';
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   import Notice from '../ui/Notice.svelte';
-  import MediaRow from '../seerr/MediaRow.svelte';
+  import MediaRow, { rowCardSizes } from '../seerr/MediaRow.svelte';
+  import PosterCard from '../seerr/PosterCard.svelte';
   import { compactViewport } from '../responsive';
   import { forgetSeerrStatus, seerrStatus } from '../seerr/status';
   import RequestButton, {
@@ -612,12 +613,14 @@
         </div>
       </section>{/if}
     {#if related.length}<div class="mt-9">
-        <MediaRow
-          label="Recommendations"
-          items={related}
-          open={(media: Media) =>
-            openTitle({ kind: seerrKind(media), id: media.id })}
-        />
+        <MediaRow label="Recommendations"
+          >{#each related as media (`${media.mediaType}:${media.id}`)}<PosterCard
+              item={media}
+              open={(media: Media) =>
+                openTitle({ kind: seerrKind(media), id: media.id })}
+              sizes={rowCardSizes}
+            />{/each}</MediaRow
+        >
       </div>{/if}
   </article>
   {#if choosingSeasons && seerr}<RequestSeasons

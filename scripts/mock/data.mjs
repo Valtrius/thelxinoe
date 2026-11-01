@@ -122,6 +122,61 @@ export function librarySeed() {
   return items;
 }
 
+// Lidarr albums: new ones from the library's artists, then ListenBrainz
+// charts. Some albums sit in several rows.
+export function musicSeed(library) {
+  const names = [
+    'Long Exposure',
+    'Salt and Signal',
+    'Slow Weather',
+    'Afterimage',
+    'Blue Hour',
+    'Field Recordings',
+    'Static Bloom',
+    'Small Hours',
+    'Night Ferry',
+    'Common Ground',
+    'Second Light',
+    'Open Season',
+  ];
+  const strangers = [
+    'Harbor Lights',
+    'The Quiet Hours',
+    'Northern Choir',
+    'Velvet Static',
+    'Low Tide',
+    'Copper Sky',
+    'Paper Satellites',
+    'Mira Sol',
+  ];
+  const artists = library
+    .filter((item) => item.kind === 'artist')
+    .map((item) => item.title);
+  const albums = [];
+  const album = (index, artist, feeds, extra = {}) =>
+    albums.push({
+      external_id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      title: names[index % names.length] + (index >= names.length ? ' II' : ''),
+      artist,
+      year: 2026 - (index % 3),
+      cover: art('album', index + 3),
+      in_library: false,
+      feeds,
+      ...extra,
+    });
+  for (let i = 0; i < 6; i++)
+    album(i, artists[i % artists.length], ['artists', i < 2 ? 'fresh' : null]);
+  for (let i = 6; i < 20; i++)
+    album(i, strangers[i % strangers.length], [
+      i < 16 ? 'trending' : null,
+      i >= 12 ? 'fresh' : null,
+    ]);
+  // Charts list albums the library already has.
+  albums[7].in_library = true;
+  albums[10].in_library = true;
+  return albums;
+}
+
 // `extra` adds the Radarr and Sonarr titles that only exist upstream so far.
 export function discoverSeed(extra = []) {
   const items = [];

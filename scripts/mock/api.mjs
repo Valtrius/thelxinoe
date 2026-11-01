@@ -5,6 +5,7 @@ import {
   iso,
   librarySeed,
   member,
+  musicSeed,
   now,
   videoSeed,
   viewer,
@@ -21,6 +22,27 @@ export function createMockState() {
   const titles = titleSeed();
   const discover = discoverSeed(titleDiscover(titles));
   const videos = videoSeed();
+  const music = musicSeed(library);
+  const musicRequests = [
+    [music[0], 'requested', admin],
+    [music[8], 'pending', member],
+    [music[12], 'failed', member],
+  ].map(([album, state, user], i) => ({
+    id: `music-request-${i + 1}`,
+    external_id: album.external_id,
+    title: album.title,
+    state,
+    created_at: now() - (i + 1) * 3600,
+    error:
+      state === 'failed'
+        ? 'Lidarr found no release matching the quality profile'
+        : null,
+    username: user.username,
+    user_id: user.id,
+    service: 'Lidarr',
+    kind: 'lidarr',
+    attention: null,
+  }));
   const requests = discover
     .filter((m) => [2, 3].includes(m.mediaInfo.status))
     .slice(0, 8)
@@ -80,6 +102,8 @@ export function createMockState() {
     library,
     discover,
     requests,
+    music,
+    musicRequests,
     videos,
     videoTemplate: structuredClone(videos[5]),
     users: [

@@ -563,7 +563,11 @@ export async function mediaApi(s, c) {
     }
     return json({ ...p, count: p.items.length });
   }
-  if (path === '/seerr/status') return json({ configured: true, ready: true });
+  // Service scenarios can remove Seerr or a manager.
+  if (path === '/seerr/status') {
+    const configured = s.services.some((item) => item.kind === 'seerr');
+    return json({ configured, ready: configured });
+  }
   if (path === '/requests/capabilities')
     return json({ movies: true, tv: true, music: true });
   if (path === '/seerr/requests') {
@@ -699,25 +703,96 @@ export async function mediaApi(s, c) {
         : media,
     );
   }
-  if (path === '/acquisition/requests')
+  if (path === '/acquisition/services')
     return json({
-      items: [
-        {
-          id: 'music-request-1',
-          title: 'Night Studio · Studio Sessions',
-          kind: 'lidarr',
-          state: 'available',
-        },
-        {
-          id: 'music-request-2',
-          title: 'Open Roads · Night Sessions',
-          kind: 'lidarr',
-          state: 'searching',
-        },
-      ],
+      items: s.services
+        .filter((item) => ['radarr', 'sonarr', 'lidarr'].includes(item.kind))
+        .map((item) => ({
+          id: item.id,
+          name: item.kind[0].toUpperCase() + item.kind.slice(1),
+          kind: item.kind,
+          ready: true,
+        })),
+    });
+  // The viewer's latest request for each album.
+  const albumView = (album) => {
+    const request = s.musicRequests.find(
+      (r) => r.external_id === album.external_id && r.user_id === viewer(s).id,
+    );
+    const rest = { ...album };
+    delete rest.feeds;
+    return {
+      ...rest,
+      request: request && { id: request.id, state: request.state },
+    };
+  };
+  const musicFeed = path.match(
+    /^\/acquisition\/music\/(artists|trending|fresh)$/,
+  );
+  if (musicFeed)
+    return json({
+      items: s.music
+        .filter((album) => album.feeds.includes(musicFeed[1]))
+        .map(albumView),
+    });
+  if (path === '/acquisition/search') {
+    const term = (query.get('term') ?? '').toLowerCase();
+    return json({
+      service: 'Lidarr',
+      local: [],
+      items: s.music
+        .filter((album) =>
+          `${album.title} ${album.artist}`.toLowerCase().includes(term),
+        )
+        .map(albumView),
+    });
+  }
+  if (path === '/acquisition/requests') {
+    if (method === 'POST') {
+      const album = s.music.find((a) => a.external_id === body.external_id);
+      if (!album) return fail(404, 'Album not found');
+      const existing = s.musicRequests.find(
+        (r) =>
+          r.external_id === album.external_id &&
+          r.user_id === viewer(s).id &&
+          !['denied', 'cancelled', 'failed'].includes(r.state),
+      );
+      if (existing) return json({ id: existing.id, state: existing.state });
+      const request = {
+        id: `music-request-${++s.sequence}`,
+        external_id: album.external_id,
+        title: album.title,
+        state: viewer(s).role === 'admin' ? 'requested' : 'pending',
+        created_at: now(),
+        error: null,
+        username: viewer(s).username,
+        user_id: viewer(s).id,
+        service: 'Lidarr',
+        kind: 'lidarr',
+        attention: null,
+      };
+      s.musicRequests.unshift(request);
+      return json({ id: request.id, state: request.state });
+    }
+    return json({
+      items:
+        viewer(s).role === 'admin'
+          ? s.musicRequests
+          : s.musicRequests.filter((r) => r.user_id === viewer(s).id),
       page: 1,
       pages: 1,
     });
+  }
+  const musicRequest = path.match(/^\/acquisition\/requests\/([^/]+)$/);
+  if (musicRequest && method === 'POST') {
+    const item = s.musicRequests.find((r) => r.id === musicRequest[1]);
+    if (!item) return fail(404, 'Request not found');
+    item.state = { approve: 'requested', deny: 'denied', cancel: 'cancelled' }[
+      body.action
+    ];
+    item.error = null;
+    return json({ saved: true });
+  }
   if (path === '/metadata/search')
     return json({
       items: s.library
