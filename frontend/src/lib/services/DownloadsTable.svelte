@@ -18,6 +18,7 @@
     downloadState,
     downloadProgress,
     formatDownloadSize,
+    type DownloadRow,
     type SupportDownload,
   } from './downloads';
 
@@ -46,6 +47,54 @@
     processing: LoaderCircle,
     unknown: CircleHelp,
   };
+  const rowKey = (row: DownloadRow) =>
+    `${row.history ? 'history' : 'queue'}:${row.id}`;
+  // The status detail shows in the top layer: the scrolling table neither
+  // clips it nor grows to fit it, and neither does the settings page.
+  let tooltip = $state<HTMLElement>();
+  let hovered = $state<{ key: string; anchor: HTMLElement } | null>(null);
+  const hoveredRow = $derived(
+    hovered && rows.find((row) => rowKey(row) === hovered!.key),
+  );
+  const tooltipLabel = $derived(
+    hoveredRow ? downloadState(hoveredRow, paused).label : '',
+  );
+  function showStatus(event: Event, row: DownloadRow) {
+    hovered = { key: rowKey(row), anchor: event.currentTarget as HTMLElement };
+  }
+  function hideStatus(event: Event) {
+    if (hovered?.anchor === event.currentTarget) hovered = null;
+  }
+  $effect(() => {
+    if (!tooltip) return;
+    const anchor = hovered?.anchor;
+    if (!anchor || !tooltipLabel || !anchor.isConnected) {
+      if (tooltip.matches(':popover-open')) tooltip.hidePopover();
+      return;
+    }
+    if (!tooltip.matches(':popover-open')) tooltip.showPopover();
+    const gap = 4;
+    const bounds = anchor.getBoundingClientRect();
+    const below = bounds.bottom + gap;
+    tooltip.style.top = `${
+      below + tooltip.offsetHeight > innerHeight
+        ? bounds.top - gap - tooltip.offsetHeight
+        : below
+    }px`;
+    tooltip.style.left = `${Math.max(
+      gap,
+      Math.min(bounds.left, innerWidth - tooltip.offsetWidth - gap),
+    )}px`;
+    // A placement only holds until a scroll moves the status. A scroll that
+    // ended before it opened can still report afterwards.
+    const close = () => {
+      const moved = anchor.getBoundingClientRect();
+      if (moved.top !== bounds.top || moved.left !== bounds.left)
+        hovered = null;
+    };
+    window.addEventListener('scroll', close, { capture: true });
+    return () => window.removeEventListener('scroll', close, { capture: true });
+  });
 </script>
 
 {#if rows.length === 0}
@@ -53,7 +102,7 @@
 {:else}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex (The scroll region must be keyboard scrollable.) -->
   <div
-    class="downloads-scroll max-h-136 overflow-auto [scrollbar-width:thin] [scrollbar-color:var(--line-strong)_transparent]"
+    class="downloads-scroll relative max-h-136 overflow-auto [scrollbar-width:thin] [scrollbar-color:var(--line-strong)_transparent]"
     tabindex="0"
     role="region"
     aria-label="Current and recent downloads"
@@ -73,7 +122,7 @@
         ></thead
       >
       <tbody class="tight:block">
-        {#each rows as row (`${row.history ? 'history' : 'queue'}:${row.id}`)}
+        {#each rows as row (rowKey(row))}
           {@const state = downloadState(row, paused)}
           {@const progress = downloadProgress(row)}
           {@const StateIcon = icons[state.icon as keyof typeof icons]}
@@ -86,11 +135,15 @@
             >
               <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard focus reveals the same status detail as hover.) -->
               <span
-                class="state-symbol group/status inline-flex cursor-help"
+                class="state-symbol inline-flex cursor-help"
                 tabindex="0"
                 role="img"
                 aria-label={state.label}
                 title={state.label}
+                onpointerenter={(event) => showStatus(event, row)}
+                onpointerleave={hideStatus}
+                onfocus={(event) => showStatus(event, row)}
+                onblur={hideStatus}
               >
                 <StateIcon
                   size={15}
@@ -99,10 +152,6 @@
                     : ''}
                   aria-hidden="true"
                 />
-                <span
-                  class="status-tooltip absolute z-2 mt-5 hidden max-w-57.5 border border-line-strong bg-surface-strong px-2 py-1.25 text-[11px] text-foreground group-hover/status:block group-focus/status:block"
-                  aria-hidden="true">{state.label}</span
-                >
               </span>
             </td>
             <td
@@ -177,4 +226,10 @@
       </tbody>
     </table>
   </div>
+  <span
+    bind:this={tooltip}
+    popover="manual"
+    class="status-tooltip inset-auto m-0 max-w-57.5 border border-line-strong bg-surface-strong px-2 py-1.25 text-[11px] text-foreground"
+    aria-hidden="true">{tooltipLabel}</span
+  >
 {/if}
