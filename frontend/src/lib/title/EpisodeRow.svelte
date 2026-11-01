@@ -167,7 +167,7 @@
       {@render picture()}
     </div>{/if}
   <div class="min-w-0 compact:contents">
-    <div class="min-w-0">
+    <div class="min-w-0 compact:contents">
       <p
         class={[
           'mb-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium',
@@ -184,7 +184,7 @@
           >{/if}
       </p>
       <p
-        class="mt-1 mb-0 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted"
+        class="mt-1 mb-0 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted empty:hidden compact:col-span-full compact:mt-2"
       >
         {#if episode.air_date && current !== 'upcoming'}<span
             >{airDate(episode.air_date)}</span

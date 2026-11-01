@@ -741,7 +741,7 @@ test('Keep on a series covers its seasons and episodes and blocks their deletion
   expect(errors).toEqual([]);
 });
 
-test('phone episode rows put the overview and Sonarr actions under the still, across the row', async ({
+test('phone episode rows put the details, overview and Sonarr actions under the still, across the row', async ({
   page,
 }) => {
   const errors = track(page);
@@ -752,6 +752,7 @@ test('phone episode rows put the overview and Sonarr actions under the still, ac
     .getByRole('listitem');
   const row = rows.first();
   const still = row.getByRole('button', { name: /^Play episode 1:/ });
+  const details = row.locator('p').filter({ hasText: 'WEBDL-1080p' });
   const overview = row.locator('p').filter({ hasText: 'A remote observatory' });
   const missing = rows.filter({
     has: page.locator('[data-title-status="missing"]'),
@@ -762,20 +763,24 @@ test('phone episode rows put the overview and Sonarr actions under the still, ac
     await page.setViewportSize({ width, height: 900 });
     await expect(overview).toBeVisible();
     await expect(search).toBeVisible();
-    const [rowBox, stillBox, overviewBox, searchBox, menuBox] =
+    const [rowBox, stillBox, detailsBox, overviewBox, searchBox, menuBox] =
       await Promise.all(
-        [row, still, overview, search, menu].map(
+        [row, still, details, overview, search, menu].map(
           async (part) => (await part.boundingBox())!,
         ),
       );
     // The still keeps its inset from the Next up rail.
     expect(stillBox.x - rowBox.x).toBeGreaterThanOrEqual(8);
     if (width > 720) {
+      expect(detailsBox.x).toBeGreaterThan(stillBox.x + stillBox.width);
       expect(overviewBox.x).toBeGreaterThan(stillBox.x + stillBox.width);
       expect(searchBox.x).toBeCloseTo(overviewBox.x, 0);
     } else {
+      expect(detailsBox.x).toBeCloseTo(stillBox.x, 0);
+      expect(detailsBox.y).toBeGreaterThan(stillBox.y + stillBox.height);
+      expect(detailsBox.width).toBeGreaterThan(rowBox.width - 20);
       expect(overviewBox.x).toBeCloseTo(stillBox.x, 0);
-      expect(overviewBox.y).toBeGreaterThan(stillBox.y + stillBox.height);
+      expect(overviewBox.y).toBeGreaterThan(detailsBox.y + detailsBox.height);
       expect(overviewBox.width).toBeGreaterThan(rowBox.width - 20);
       expect(searchBox.x).toBeCloseTo(stillBox.x, 0);
       expect(searchBox.y).toBeGreaterThan(menuBox.y + menuBox.height);
