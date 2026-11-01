@@ -1353,3 +1353,66 @@ test('backup restore selects every Owned service and explains held services', as
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
+
+test('a started backup keeps its guidance while the server restarts', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'backups',
+  });
+  let reachable = true;
+  await page.route('**/api/v1/admin/backups**', (route) => {
+    if (route.request().method() === 'POST')
+      return route.fulfill({
+        json: {
+          id: '22222222-2222-2222-2222-222222222222',
+          stage: 'queued',
+          created_at: 1760000000,
+          error: null,
+          archive: '',
+        },
+      });
+    if (!reachable)
+      return route.fulfill({
+        status: 502,
+        contentType: 'text/html',
+        body: '<h1>Bad gateway</h1>',
+      });
+    return route.fulfill({
+      json: {
+        items: [],
+        destination: '/backups',
+        policy: { policy: 'manual', retain: 7 },
+        passphrase_saved: false,
+        automatic: null,
+        window: { start: 3, end: 5 },
+      },
+    });
+  });
+  await page.goto('/');
+  await page.getByLabel('Backup passphrase').fill('started backup passphrase');
+  await page
+    .getByRole('switch', {
+      name: 'I understand that services will temporarily stop.',
+    })
+    .check();
+  reachable = false;
+  await page
+    .getByRole('button', { name: 'Create encrypted backup', exact: true })
+    .click();
+  const guidance = page.getByText(/^Operation started\./);
+  const refreshError = page.getByText(
+    "Couldn't refresh backups: Request failed (502)",
+  );
+  await expect(guidance).toBeVisible();
+  await expect(refreshError).toBeVisible();
+  reachable = true;
+  await page
+    .getByRole('button', { name: 'Refresh backups', exact: true })
+    .click();
+  await expect(refreshError).toHaveCount(0);
+  await expect(guidance).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});

@@ -12,7 +12,7 @@
   import { activity, startActivity } from './activity';
   import { refreshAttention } from './attention';
   import AttentionDot from './ui/AttentionDot.svelte';
-  import { withVerification } from './authentication';
+  import { errorMessage, withVerification } from './authentication';
   import { captureSession } from './session';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import Button from './ui/Button.svelte';
@@ -71,6 +71,9 @@
     selected = $state<string[]>([]),
     restoreConfirmation = $state(''),
     message = $state(''),
+    // Reads fail while the server restarts for an operation; they do not
+    // replace what the operation reported.
+    loadError = $state(''),
     busy = $state(false),
     destination = $state('');
   let mode = $state<Policy['policy']>('manual'),
@@ -125,6 +128,7 @@
       passphraseSaved = data.passphrase_saved;
       run = data.automatic;
       maintenance = data.window;
+      loadError = '';
       // Polling must not overwrite an edit that is still being saved.
       if (!initialized) {
         mode = data.policy.policy;
@@ -132,7 +136,7 @@
         initialized = true;
       }
     } catch (e) {
-      message = String(e);
+      loadError = errorMessage(e);
     }
   }
   onMount(() => reads.start());
@@ -525,9 +529,11 @@
       </p>
     </div>
   {/if}
-  {#if message && !items.length}
+  {#if loadError}
     <div class={cardBlockClass}>
-      <Notice role="status" class="mb-0">{message}</Notice>
+      <Notice role="status" class="mb-0"
+        >Couldn't refresh backups: {loadError}</Notice
+      >
     </div>
   {/if}
 </SettingsCard>
