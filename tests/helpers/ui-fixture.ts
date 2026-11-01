@@ -147,26 +147,29 @@ export async function installUiFixture(
     connections: '/admin/service-connections',
     updates: '/admin/service-updates',
   };
+  // Undefined once the page has closed or navigated away from the read.
   const composeView = async (stages: unknown) => {
-    const parts = await page.evaluate(
-      async (paths) =>
-        Object.fromEntries(
-          await Promise.all(
-            Object.entries(paths).map(async ([name, path]) => {
-              const response = await fetch(`/api/v1${path}`);
-              const body = await response.json();
-              return [
-                name,
-                response.ok
-                  ? { value: body }
-                  : { error: body.error?.message ?? String(response.status) },
-              ];
-            }),
+    const parts = await page
+      .evaluate(
+        async (paths) =>
+          Object.fromEntries(
+            await Promise.all(
+              Object.entries(paths).map(async ([name, path]) => {
+                const response = await fetch(`/api/v1${path}`);
+                const body = await response.json();
+                return [
+                  name,
+                  response.ok
+                    ? { value: body }
+                    : { error: body.error?.message ?? String(response.status) },
+                ];
+              }),
+            ),
           ),
-        ),
-      viewParts,
-    );
-    return serviceView({ ...parts, stages: { value: stages } });
+        viewParts,
+      )
+      .catch(() => undefined);
+    return parts && serviceView({ ...parts, stages: { value: stages } });
   };
   const writes: { path: string; method: string; body: unknown }[] = [];
   const errors: string[] = [];
@@ -542,7 +545,8 @@ export async function installUiFixture(
           };
         }),
       };
-      return json(await composeView(stages));
+      const view = await composeView(stages);
+      return view ? json(view) : route.abort().catch(() => {});
     }
     if (path === '/admin/managers/containers')
       return json({
