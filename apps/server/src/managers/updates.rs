@@ -47,10 +47,13 @@ async fn policy(
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let server_policy = crate::product::configured_policy(&state).await?;
+    Ok(Json(listing(&state).await?))
+}
+pub(super) async fn listing(state: &AppState) -> Result<Value> {
+    let server_policy = crate::product::configured_policy(state).await?;
     let mut value = storage::list(&state.db).await?;
     value["server_policy"] = json!(server_policy);
-    if let Ok(observed) = controller(&state, "/updates", None).await {
+    if let Ok(observed) = controller(state, "/updates", None).await {
         for item in value["items"].as_array_mut().ok_or_else(unavailable)? {
             if let Some(current) = observed["items"]
                 .as_array()
@@ -62,7 +65,7 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
             }
         }
     }
-    Ok(Json(value))
+    Ok(value)
 }
 async fn discover(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;

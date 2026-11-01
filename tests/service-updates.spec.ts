@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 
 test('available service releases show versions, container rebuilds and honest fallbacks', async ({
   page,
@@ -8,6 +8,7 @@ test('available service releases show versions, container rebuilds and honest fa
     role: 'admin',
     settingsSection: 'services',
   });
+  const events = await installServerEvents(page);
   const image = `lscr.io/linuxserver/radarr@sha256:${'a'.repeat(64)}`;
   let release: {
     image: string;
@@ -72,6 +73,7 @@ test('available service releases show versions, container rebuilds and honest fa
     build_version: '6.0.0-ls300',
     release_notes_url: null,
   };
+  events.send('stack.changed');
   await expect(
     updates.getByText('Container update available', { exact: true }),
   ).toBeVisible();
@@ -83,6 +85,7 @@ test('available service releases show versions, container rebuilds and honest fa
     contentType: 'image/png',
   });
   release = null;
+  events.send('stack.changed');
   await expect(
     updates.getByText('Available image:', { exact: false }),
   ).toBeVisible();
@@ -117,6 +120,7 @@ test('available service releases show versions, container rebuilds and honest fa
     contentType: 'image/png',
   });
   candidate = 'ghcr.io/example/radarr:stable';
+  events.send('stack.changed');
   await expect(updates.getByText('Up to date.', { exact: true })).toBeVisible();
   await expect(
     updates.getByText('Available image:', { exact: false }),

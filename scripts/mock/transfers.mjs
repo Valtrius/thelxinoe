@@ -391,7 +391,6 @@ export async function checkConnection(s, c, service, save = true) {
     service.error = error;
     service.checked_at = now();
   }
-  c.emit('services.changed', {});
   return error
     ? c.fail(422, error)
     : c.json({ healthy: true, version: service.version });
@@ -508,7 +507,7 @@ export async function stagesApi(s, c) {
                 version: service.version ?? '',
                 verified: !service.error,
                 operational: !!owned && !transfer,
-                checked_at: service.checked_at ?? now(),
+                checked_at: (service.checked_at ??= now()),
                 error: service.error ?? null,
               }
             : null,
@@ -605,7 +604,6 @@ export async function stagesApi(s, c) {
         409,
         'This action is not available at the current transfer step',
       );
-    c.emit('services.changed', {});
     return json(transferView(t));
   }
   if (path === '/admin/recyclarr/connection' && method === 'POST')

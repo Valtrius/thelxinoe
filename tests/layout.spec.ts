@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { current } from './helpers/versions';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 import { waitForViewportFit } from '../scripts/ci-readiness.mjs';
 
 test('Connected services retain a connection editor with test and save', async ({
@@ -121,22 +121,21 @@ async function selectRadarr(page: Page) {
     .click();
 }
 
-test('installation progress polls automatically without queued banners across tabs', async ({
+test('installation progress follows server announcements without queued banners across tabs', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
   });
+  const events = await installServerEvents(page);
   let installed = false;
   let phase = 'queued';
-  let stackReads = 0;
   await page.route('**/api/v1/admin/stack/install', async (route) => {
     installed = true;
     await route.fulfill({ json: { id: 'managed-sonarr', state: 'queued' } });
   });
   await page.route('**/api/v1/admin/stack', async (route) => {
-    stackReads++;
     await route.fulfill({
       json: {
         items: [],
@@ -158,10 +157,7 @@ test('installation progress polls automatically without queued banners across ta
   await page.getByRole('link', { name: 'Radarr', exact: true }).click();
   await expect(page.locator('.service-workspace > .notice')).toHaveCount(0);
   phase = 'complete';
-  const before = stackReads;
-  await expect
-    .poll(() => stackReads, { timeout: 7000 })
-    .toBeGreaterThan(before);
+  events.send('stack.changed');
   await expect(
     page.getByRole('link', { name: 'Sonarr', exact: true }),
   ).not.toContainText('Installing');
@@ -176,6 +172,7 @@ test('a stopped service can be removed after reviewing its configuration cleanup
     role: 'admin',
     settingsSection: 'services',
   });
+  const events = await installServerEvents(page);
   let stopped = false;
   let removed = false;
   const actions: unknown[] = [];
@@ -223,9 +220,10 @@ test('a stopped service can be removed after reviewing its configuration cleanup
     page.getByRole('button', { name: 'Remove service', exact: true }),
   ).toHaveCount(0);
   stopped = true;
+  events.send('stack.changed');
   await expect(
     page.getByRole('link', { name: 'Radarr', exact: true }),
-  ).toContainText('Stopped', { timeout: 7000 });
+  ).toContainText('Stopped');
   await page
     .getByRole('button', { name: 'Remove service', exact: true })
     .click();
@@ -247,13 +245,14 @@ test('a stopped service can be removed after reviewing its configuration cleanup
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('removal and installation keep independent locks, feedback and polling', async ({
+test('removal and installation keep independent locks and feedback through refreshes', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
   });
+  const events = await installServerEvents(page);
   let finishRemoval: (() => void) | undefined;
   let finishInstall: (() => void) | undefined;
   let stackReads = 0;
@@ -331,7 +330,8 @@ test('removal and installation keep independent locks, feedback and polling', as
     page.getByRole('button', { name: 'Install Lidarr', exact: true }),
   ).toBeEnabled();
   const reads = stackReads;
-  await expect.poll(() => stackReads, { timeout: 7000 }).toBeGreaterThan(reads);
+  events.send('stack.changed');
+  await expect.poll(() => stackReads).toBeGreaterThan(reads);
   finishRemoval!();
   await page.getByRole('link', { name: 'Radarr', exact: true }).click();
   await expect(page.locator('.rail-identity')).toContainText(
@@ -355,7 +355,7 @@ test('removal and installation keep independent locks, feedback and polling', as
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('an older update poll cannot unlock a newly queued update', async ({
+test('an older update read cannot unlock a newly queued update', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {
@@ -367,9 +367,10 @@ test('an older update poll cannot unlock a newly queued update', async ({
       can_recreate: true,
     },
   });
+  const events = await installServerEvents(page);
   let reads = 0;
   let queued = false;
-  let finishOldPoll: (() => void) | undefined;
+  let finishOldRead: (() => void) | undefined;
   let finishSubmission: (() => void) | undefined;
   await page.route('**/api/v1/admin/service-updates', async (route) => {
     reads++;
@@ -378,7 +379,7 @@ test('an older update poll cannot unlock a newly queued update', async ({
       : [];
     if (reads === 2)
       await new Promise<void>((resolve) => {
-        finishOldPoll = resolve;
+        finishOldRead = resolve;
       });
     await route.fulfill({
       json: {
@@ -417,7 +418,12 @@ test('an older update poll cannot unlock a newly queued update', async ({
     exact: true,
   });
   await expect(check).toBeEnabled();
-  await expect.poll(() => !!finishOldPoll, { timeout: 7000 }).toBe(true);
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
+  events.send('stack.changed');
+  await expect.poll(() => !!finishOldRead).toBe(true);
   await check.click();
   await expect.poll(() => !!finishSubmission).toBe(true);
   const controls = page.getByRole('complementary', {
@@ -434,7 +440,7 @@ test('an older update poll cannot unlock a newly queued update', async ({
   const staleResponse = page.waitForResponse((response) =>
     response.url().endsWith('/admin/service-updates'),
   );
-  finishOldPoll!();
+  finishOldRead!();
   await staleResponse;
   await page.getByRole('link', { name: 'Sonarr', exact: true }).click();
   await expect(
@@ -1228,6 +1234,7 @@ test('NZBGet copy buttons appear after installation and use managed credentials'
     stackProvisionState: 'queued',
   };
   const fixture = await installUiFixture(page, options);
+  const events = await installServerEvents(page);
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
@@ -1240,6 +1247,7 @@ test('NZBGet copy buttons appear after installation and use managed credentials'
       .getByRole('button'),
   ).toHaveCount(0);
   options.stackProvisionState = 'complete';
+  events.send('stack.changed');
   await line.getByRole('button', { name: 'Copy NZBGet login' }).click();
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))

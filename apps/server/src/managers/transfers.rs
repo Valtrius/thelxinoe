@@ -211,8 +211,11 @@ async fn load(state: &AppState, id: &str) -> Result<storage::Row> {
 /// Each service kind's stage, its available actions and any operation in progress.
 async fn services(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
+    Ok(Json(listing(&state).await?))
+}
+pub(super) async fn listing(state: &AppState) -> Result<Value> {
     let records = storage::stages(&state.db).await?;
-    let controller = controller_request(&state, "/transfers", None).await.ok();
+    let controller = controller_request(state, "/transfers", None).await.ok();
     let mut items = Vec::new();
     for kind in [
         "seerr",
@@ -292,7 +295,7 @@ async fn services(State(state): State<AppState>, headers: HeaderMap) -> Result<J
         items.push(json!({"kind":kind,"stage":stage,"connection":connection,"ownership":ownership,"hold":hold,
             "operation":operation,"draft_review":draft,"actions":actions,"agreed":agreed}));
     }
-    Ok(Json(json!({"items":items})))
+    Ok(json!({"items":items}))
 }
 
 /// Read-only health and identity validation of a saved connection.

@@ -522,7 +522,9 @@
       }));
     };
   }
-  const reads = new RefreshTask(refreshData, 4000);
+  // The server announces each change to what this page shows; the slow poll
+  // only covers a lost event stream.
+  const reads = new RefreshTask(refreshData, 60_000);
   // The selected service itself is asked when it is chosen and after a change,
   // made here or reported by an event, not on every poll.
   let changed = true;

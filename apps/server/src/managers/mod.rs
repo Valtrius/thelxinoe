@@ -38,6 +38,8 @@ pub(crate) use stack::controller as controller_request;
 pub(crate) use stack::message as controller_message;
 pub(crate) use stack::provision;
 pub(crate) use updates::{run as run_updates, run_job as update_service};
+mod watch;
+pub(crate) use watch::run as run_watch;
 mod connection_settings;
 #[cfg(test)]
 mod tests;
@@ -546,9 +548,12 @@ async fn containers(State(state): State<AppState>, headers: HeaderMap) -> Result
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
+    Ok(Json(listing(&state).await?))
+}
+async fn listing(state: &AppState) -> Result<Value> {
     let mut rows = storage::list(&state.db).await?;
-    libraries::decorate(&state, &mut rows);
-    Ok(Json(json!({"items":rows})))
+    libraries::decorate(state, &mut rows);
+    Ok(json!({"items":rows}))
 }
 #[derive(Deserialize)]
 struct Register {

@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 import { responseGate } from './helpers/response-gate';
 
 async function installClock(page: Page) {
@@ -17,7 +17,7 @@ test('automatic library discovery errors stay with their service and clear after
     managerLibraryError: message as string | null,
   };
   const fixture = await installUiFixture(page, options);
-  await page.clock.install();
+  const events = await installServerEvents(page);
   await page.goto('/');
   const services = page.getByRole('navigation', { name: 'Select service' });
   await services.getByRole('link', { name: 'Radarr', exact: true }).click();
@@ -26,7 +26,7 @@ test('automatic library discovery errors stay with their service and clear after
   await expect(page.getByText(message, { exact: true })).toHaveCount(0);
   await services.getByRole('link', { name: 'Radarr', exact: true }).click();
   options.managerLibraryError = null;
-  await page.clock.runFor(4000);
+  events.send('stack.changed');
   await expect(page.getByText(message, { exact: true })).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
@@ -62,13 +62,13 @@ test('a refresh shows what changed only once every part has arrived', async ({
     settingsSection: 'services',
     connected: ['prowlarr'],
   });
+  const events = await installServerEvents(page);
   const stack = responseGate();
   let holdStack = false;
   await page.route('**/api/v1/admin/stack', async (route) => {
     if (holdStack) await stack.promise;
     await route.fallback();
   });
-  await page.clock.install();
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
@@ -89,10 +89,10 @@ test('a refresh shows what changed only once every part has arrived', async ({
   const stages = page.waitForResponse((response) =>
     response.url().endsWith('/api/v1/admin/services'),
   );
-  await page.clock.runFor(4000);
+  events.send('stack.changed');
   await stages;
   // The stages report the transfer; the stack has not answered yet.
-  await page.clock.runFor(500);
+  await page.waitForTimeout(500);
   await expect(transferring).toHaveCount(0);
   stack.release();
   await expect(transferring.first()).toBeVisible();
@@ -113,7 +113,7 @@ test('installation keeps the workspace empty until the API is connected', async 
     },
   };
   const fixture = await installUiFixture(page, options);
-  await page.clock.install();
+  const events = await installServerEvents(page);
   await page.goto('/');
   const select = page.getByRole('navigation', { name: 'Select service' });
   await select.getByRole('link', { name: 'Sonarr', exact: true }).click();
@@ -131,7 +131,7 @@ test('installation keeps the workspace empty until the API is connected', async 
   await select.getByRole('link', { name: 'Radarr', exact: true }).click();
   for (const state of ['queued', 'installing', 'connecting']) {
     options.stackProvisionState = state;
-    await page.clock.runFor(4000);
+    events.send('stack.changed');
     await expect(page.locator('.service-workspace')).toHaveText('');
     await expect(
       page
@@ -147,7 +147,7 @@ test('installation keeps the workspace empty until the API is connected', async 
     contentType: 'image/png',
   });
   options.stackProvisionState = 'complete';
-  await page.clock.runFor(4000);
+  events.send('stack.changed');
   await expect(
     page.getByRole('region', { name: 'Updates', exact: true }),
   ).toBeVisible();
@@ -173,14 +173,14 @@ test('installation keeps the workspace empty until the API is connected', async 
     page.getByText('Retiring removes the installation', { exact: false }),
   ).toBeVisible();
   options.stackProvisionState = 'blocked';
-  await page.clock.runFor(4000);
+  events.send('stack.changed');
   await expect(
     page.getByRole('button', { name: 'Retry setup', exact: true }),
   ).toBeEnabled();
   expect(fixture.errors).toEqual([]);
 });
 
-test('connection actions spin locally, survive polling, and show errors in their row', async ({
+test('connection actions spin locally, survive refreshes, and show errors in their row', async ({
   page,
 }, testInfo) => {
   await installClock(page);
@@ -188,6 +188,7 @@ test('connection actions spin locally, survive polling, and show errors in their
     role: 'admin',
     settingsSection: 'services',
   });
+  const events = await installServerEvents(page);
   let connection = {
     id: 'link',
     source_id: 'support-prowlarr',
@@ -283,7 +284,7 @@ test('connection actions spin locally, survive polling, and show errors in their
   await expect(button).toHaveAttribute('aria-busy', 'true');
   expect(reads.length).toBe(before);
   connection = { ...connection, state: 'disconnected', cleanup_pending: false };
-  await page.clock.runFor(4000);
+  events.send('stack.changed');
   const connect = row.getByRole('button', { name: 'Connect', exact: true });
   await expect(connect).toBeEnabled();
   fail = true;
@@ -298,7 +299,7 @@ test('connection actions spin locally, survive polling, and show errors in their
   finish();
   await expect(row.getByText('Connecting', { exact: true })).toBeVisible();
   connection = { ...connection, state: 'connected' };
-  await page.clock.runFor(4000);
+  events.send('stack.changed');
   await expect(row.getByText('Connected', { exact: true })).toBeVisible();
   await expect(
     row.getByRole('button', { name: 'Disconnect', exact: true }),
