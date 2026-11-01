@@ -72,7 +72,9 @@ export function formatViewers(viewers: number): string {
   return numberFormat({
     notation: viewers >= 1000 ? 'compact' : 'standard',
     maximumFractionDigits: 1,
-  }).format(viewers);
+  })
+    .format(viewers)
+    .replace(/\s/g, '');
 }
 
 export function formatBytes(bytes: number): string {
