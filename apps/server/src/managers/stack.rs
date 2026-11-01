@@ -140,6 +140,9 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     security::require(&state, &headers, Capability::ManageServer).await?;
     Ok(Json(listing(&state).await?))
 }
+pub(super) async fn provisions(state: &AppState) -> anyhow::Result<Value> {
+    storage::list(&state.db).await
+}
 pub(super) async fn listing(state: &AppState) -> Result<Value> {
     let mut value = controller(state, "", None).await?;
     value["provisions"] = storage::list(&state.db).await?;

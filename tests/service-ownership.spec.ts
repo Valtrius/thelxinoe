@@ -1,5 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
+import { serviceView } from '../scripts/mock/service-view.mjs';
 
 // Browser-only coverage of the two service stages and the guided transfer modal.
 const steps = [
@@ -448,33 +449,37 @@ test('a failure after production offers evidence-based recovery choices', async 
   const applied: unknown[] = [];
   await page.route('**/api/v1/admin/services', (route) =>
     route.fulfill({
-      json: {
-        items: [
-          {
-            kind: 'prowlarr',
-            stage: 'owned',
-            hold: 'transfer',
-            agreed: true,
-            draft_review: null,
-            actions: [],
-            connection: null,
-            ownership: {
-              id: 'transfer-prowlarr',
-              state: 'complete',
-              origin: 'transferred',
-              hold: 'transfer',
-              transfer_id: 'transfer-prowlarr',
-            },
-            operation: {
-              type: 'transfer',
-              id: 'transfer-prowlarr',
-              state: 'failed',
-              step: 'checks',
-              error: failed.error,
-            },
+      json: serviceView({
+        stages: {
+          value: {
+            items: [
+              {
+                kind: 'prowlarr',
+                stage: 'owned',
+                hold: 'transfer',
+                agreed: true,
+                draft_review: null,
+                actions: [],
+                connection: null,
+                ownership: {
+                  id: 'transfer-prowlarr',
+                  state: 'complete',
+                  origin: 'transferred',
+                  hold: 'transfer',
+                  transfer_id: 'transfer-prowlarr',
+                },
+                operation: {
+                  type: 'transfer',
+                  id: 'transfer-prowlarr',
+                  state: 'failed',
+                  step: 'checks',
+                  error: failed.error,
+                },
+              },
+            ],
           },
-        ],
-      },
+        },
+      }),
     }),
   );
   await page.route('**/api/v1/admin/transfers/transfer-prowlarr**', (route) => {

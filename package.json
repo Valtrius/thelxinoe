@@ -22,7 +22,7 @@
     "test:web": "pnpm --dir frontend run test",
     "test:rust": "cargo test --locked --workspace --exclude thelxinoe-desktop",
     "test:python": "node scripts/python-tests.mjs",
-    "test:scripts": "node --test scripts/release-checks.test.mjs",
+    "test:scripts": "node --test scripts/release-checks.test.mjs scripts/mock/service-view.test.mjs",
     "test:e2e": "playwright test",
     "test:service-access": "node --import ./scripts/service-access-errors.mjs scripts/test-service-access.mjs",
     "test:recyclarr": "node scripts/test-recyclarr.mjs",

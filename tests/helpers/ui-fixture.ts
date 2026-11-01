@@ -1,5 +1,6 @@
 import type { Page, WebSocketRoute } from '@playwright/test';
 import { current } from './versions';
+import { serviceView } from '../../scripts/mock/service-view.mjs';
 import type { RecyclarrConfiguration } from '../../frontend/src/lib/services/recyclarr-configuration';
 
 // Delivers server events to the page; install it before the page opens.
@@ -136,6 +137,40 @@ export async function installUiFixture(
   const cleared = new Set<string>();
   // Active transfer operations a test reports for a service kind.
   const operations = new Map<string, Record<string, unknown>>();
+  // The server composes its services view from these parts. Reading them
+  // through the page lets a test replace one part as it would that endpoint.
+  const viewParts = {
+    managers: '/admin/managers',
+    support: '/admin/support',
+    containers: '/admin/managers/containers',
+    stack: '/admin/stack',
+    connections: '/admin/service-connections',
+    updates: '/admin/service-updates',
+  };
+  // Undefined once the page has closed or navigated away from the read.
+  const composeView = async (stages: unknown) => {
+    const parts = await page
+      .evaluate(
+        async (paths) =>
+          Object.fromEntries(
+            await Promise.all(
+              Object.entries(paths).map(async ([name, path]) => {
+                const response = await fetch(`/api/v1${path}`);
+                const body = await response.json();
+                return [
+                  name,
+                  response.ok
+                    ? { value: body }
+                    : { error: body.error?.message ?? String(response.status) },
+                ];
+              }),
+            ),
+          ),
+        viewParts,
+      )
+      .catch(() => undefined);
+    return parts && serviceView({ ...parts, stages: { value: stages } });
+  };
   const writes: { path: string; method: string; body: unknown }[] = [];
   const errors: string[] = [];
   const unexpected: string[] = [];
@@ -454,7 +489,7 @@ export async function installUiFixture(
         nzbget: { id: 'support-nzbget', version: '25.0' },
       };
       const provisions = stackProvisions();
-      return json({
+      const stages = {
         items: [
           'seerr',
           'recyclarr',
@@ -509,7 +544,9 @@ export async function installUiFixture(
             operation: operations.get(kind) ?? null,
           };
         }),
-      });
+      };
+      const view = await composeView(stages);
+      return view ? json(view) : route.abort().catch(() => {});
     }
     if (path === '/admin/managers/containers')
       return json({

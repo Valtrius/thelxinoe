@@ -326,29 +326,19 @@ export async function installMockApi(page, currentState, events) {
       if (await handler(s, c)) return;
     return route.fallback();
   });
-  // Like the server, announce each change to what the services page reads.
-  const watched = [
-    '/admin/managers',
-    '/admin/support',
-    '/admin/managers/containers',
-    '/admin/stack',
-    '/admin/services',
-    '/admin/service-connections',
-    '/admin/service-updates',
-  ];
+  // Like the server, announce each change to the services view.
   let seen;
   async function watch() {
-    const observed = [];
-    for (const path of watched)
-      await servicesApi(currentState(), {
-        path,
-        method: 'GET',
-        body: {},
-        query: new URLSearchParams(),
-        emit() {},
-        json: (value) => observed.push(value),
-        fail: (status, message) => observed.push({ status, message }),
-      });
+    let observed;
+    await servicesApi(currentState(), {
+      path: '/admin/services',
+      method: 'GET',
+      body: {},
+      query: new URLSearchParams(),
+      emit() {},
+      json: (value) => (observed = value),
+      fail: (status, message) => (observed = { status, message }),
+    });
     const digest = JSON.stringify(observed);
     if (seen !== undefined && digest !== seen) events.emit('stack.changed', {});
     seen = digest;

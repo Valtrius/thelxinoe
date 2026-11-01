@@ -1,6 +1,6 @@
 //! Services also change outside requests: containers stop, background checks fail and
-//! updates run on schedule. One observer announces each change to what the services
-//! page shows, so the page does not poll for them.
+//! updates run on schedule. One observer announces each change to the services view,
+//! so the page does not poll for them.
 
 #[cfg(test)]
 #[path = "watch_tests.rs"]
@@ -11,31 +11,8 @@ use super::*;
 /// Fields that move on every attempt without changing what the page shows.
 const UNSHOWN: [&str; 2] = ["updated_at", "next_attempt"];
 
-/// The services page's reads, each a value or its error.
 async fn observe(state: &AppState) -> Value {
-    let (managers, support, containers, stack, stages, connections, updates) = tokio::join!(
-        listing(state),
-        support::listing(state),
-        docker(state, "containers"),
-        stack::listing(state),
-        transfers::listing(state),
-        connections::listing(state),
-        updates::listing(state),
-    );
-    let mut observed = Value::Array(
-        [
-            managers,
-            support,
-            containers,
-            stack,
-            stages,
-            connections,
-            updates,
-        ]
-        .into_iter()
-        .map(|part| part.unwrap_or_else(|error| json!({ "error": error.2 })))
-        .collect(),
-    );
+    let mut observed = view::listing(state).await;
     forget_unshown(&mut observed);
     observed
 }
