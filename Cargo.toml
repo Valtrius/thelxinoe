@@ -4,7 +4,7 @@ default-members = ["apps/server", "apps/docker-controller", "crates/core", "crat
 resolver = "2"
 
 [workspace.package]
-version = "0.0.17"
+version = "0.0.18"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
