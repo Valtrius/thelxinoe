@@ -158,7 +158,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             titles,
-            ["The Office · S02E01 · The Dundies", "the office · S02E02", "Film"]
+            [
+                "The Office · S02E01 · The Dundies",
+                "the office · S02E02",
+                "Film"
+            ]
         );
     }
     #[tokio::test]
