@@ -39,6 +39,9 @@ pub struct Capabilities {
     pub hls_audio: Option<Vec<String>>,
     #[serde(default)]
     pub allow_conversion: Option<bool>,
+    /// Copied video loses its Dolby Vision layers, leaving the base picture the client shows.
+    #[serde(default)]
+    pub strip_dolby_vision: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Conversion {
