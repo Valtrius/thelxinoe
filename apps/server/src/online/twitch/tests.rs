@@ -70,6 +70,12 @@ async fn setup() -> (
                 .map(|(_, id)| json!({"id":id,"display_name":format!("User {id}"),"profile_image_url":format!("https://static-cdn.jtvnw.net/{id}.png")})).collect::<Vec<_>>();
             Json(json!({"data":users}))
         }}))
+        .route("/streams",get(|headers:HeaderMap,Query(query):Query<BTreeMap<String,String>>|async move {
+            assert_eq!(headers["client-id"],"fixtureclient");
+            assert_eq!(headers["authorization"],"Bearer access-secret");
+            let data=if query["user_login"]=="otherchannel" {json!([{"user_id":"77","user_login":"otherchannel","user_name":"OtherChannel","title":"Unfollowed live","game_name":"Art","viewer_count":3,"started_at":"2026-09-19T12:00:00Z","thumbnail_url":"https://static-cdn.jtvnw.net/previews-ttv/live_user_otherchannel-{width}x{height}.jpg"}])} else {json!([])};
+            Json(json!({"data":data}))
+        }))
         .route("/streams/followed",get(move|headers:HeaderMap,Query(query):Query<BTreeMap<String,String>>|{let c=page_control.clone();async move {
             assert_eq!(headers["client-id"],"fixtureclient");assert_eq!(query["user_id"],"123");
             c.pages.fetch_add(1,Ordering::SeqCst);
@@ -492,6 +498,145 @@ async fn followed_snapshot_is_private_paginated_and_refreshes_once() {
             .unwrap()
             .len(),
         0
+    );
+    server.abort();
+}
+
+#[test]
+fn channel_logins_come_from_names_and_twitch_urls() {
+    for input in [
+        "OtherChannel",
+        " otherchannel ",
+        "https://www.twitch.tv/otherchannel",
+        "https://twitch.tv/OtherChannel/",
+        "https://m.twitch.tv/otherchannel?sr=a#chat",
+        "twitch.tv/otherchannel",
+    ] {
+        assert_eq!(login(input).unwrap(), "otherchannel", "{input}");
+    }
+    for input in [
+        "",
+        "other channel",
+        "https://kick.com/otherchannel",
+        "http://www.twitch.tv/otherchannel",
+        "https://www.twitch.tv/otherchannel/videos",
+        "https://user@www.twitch.tv/otherchannel",
+        "https://www.twitch.tv:8443/otherchannel",
+        "a_name_much_longer_than_twitch_allows",
+    ] {
+        assert!(login(input).is_err(), "{input}");
+    }
+}
+
+async fn feed_logins(state: &AppState, cookie: &str) -> Vec<String> {
+    call(
+        state,
+        "/api/v1/online/twitch/feed",
+        "GET",
+        Value::Null,
+        cookie,
+    )
+    .await
+    .2["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["login"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+async fn complete_sync(state: &AppState) {
+    for _ in 0..2 {
+        ready_sync(state).await;
+        sync_with_profiles(state).await;
+    }
+}
+
+#[tokio::test]
+async fn unfollowed_channels_play_until_the_followed_snapshot_outlives_them() {
+    let (_temp, state, cookie, control, server) = setup().await;
+    let watch = |channel: &'static str| {
+        let (state, cookie) = (state.clone(), cookie.clone());
+        async move {
+            call(
+                &state,
+                "/api/v1/online/twitch/channels",
+                "POST",
+                json!({ "channel": channel }),
+                &cookie,
+            )
+            .await
+        }
+    };
+    assert_eq!(watch("otherchannel").await.0, StatusCode::BAD_REQUEST);
+    control.mode.store(1, Ordering::SeqCst);
+    let a = start_attempt(&state, &cookie).await;
+    poll(&state, &a).await.unwrap();
+
+    let watched = watch("https://www.twitch.tv/OtherChannel").await;
+    assert_eq!(watched.0, StatusCode::OK, "{}", watched.2);
+    assert_eq!(watched.2["id"], "77");
+    assert_eq!(watched.2["login"], "otherchannel");
+    assert_eq!(
+        watched.2["thumbnail_url"],
+        "https://static-cdn.jtvnw.net/previews-ttv/live_user_otherchannel-640x360.jpg"
+    );
+    assert_eq!(
+        watched.2["profile_image_url"],
+        "https://static-cdn.jtvnw.net/77.png"
+    );
+    assert_eq!(watch("offlinechannel").await.0, StatusCode::CONFLICT);
+    assert_eq!(
+        watch("https://kick.com/otherchannel").await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(feed_logins(&state, &cookie).await, ["otherchannel"]);
+    let bob =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "bob".into())
+            .await
+            .unwrap();
+    let bob = format!("thelxinoe_session={bob}");
+    assert!(feed_logins(&state, &bob).await.is_empty());
+
+    // A fresh watch survives the followed snapshot so its playback can start.
+    complete_sync(&state).await;
+    assert!(
+        feed_logins(&state, &cookie)
+            .await
+            .contains(&"otherchannel".into())
+    );
+
+    // Once started, playback keeps it.
+    state.db.write("test.fixture", |db| {
+        db.execute("UPDATE twitch_streams SET snapshot='watch:0' WHERE channel_id='77'", [])?;
+        db.execute("INSERT INTO live_media VALUES ('twitch:77','Unfollowed live')", [])?;
+        db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,live_media_id,streaming) SELECT 'watching',user_id,id,'g','live','playing','transcode','{}',0,?1,?1,'twitch:77',1 FROM sessions WHERE user_id='alice' LIMIT 1", [now()])?;
+        Ok(())
+    }).await.unwrap();
+    complete_sync(&state).await;
+    assert!(
+        feed_logins(&state, &cookie)
+            .await
+            .contains(&"otherchannel".into())
+    );
+
+    // Without playback, the next followed snapshot drops it.
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute(
+                "UPDATE playback_sessions SET state='stopped' WHERE id='watching'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    complete_sync(&state).await;
+    assert!(
+        !feed_logins(&state, &cookie)
+            .await
+            .contains(&"otherchannel".into())
     );
     server.abort();
 }

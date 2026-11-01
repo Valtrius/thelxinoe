@@ -7,7 +7,7 @@
   import { LatestRequest } from '../../../latest-request';
   import { tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { Copy, ExternalLink, RefreshCw, X } from '@lucide/svelte';
+  import { Copy, ExternalLink, Play, RefreshCw, X } from '@lucide/svelte';
   import { api, normalizeError, rememberStreams } from '../../api';
   import { navigationCache } from '../../../navigation-cache';
   import { createCardGridWheelHandler } from '../../../card-grid-wheel';
@@ -64,6 +64,8 @@
   let loading = $state(true);
   let connecting = $state(false);
   let error = $state<AppError | null>(null);
+  let channelInput = $state('');
+  let launchingChannel = $state(false);
   let lastSyncErrorFingerprint = $state<string | null>(null);
   let observedDataRevision = $state<number | null>(null);
   let feedScroll = $state<HTMLElement | null>(null);
@@ -257,6 +259,30 @@
     }
   }
 
+  async function watchChannel(event: SubmitEvent) {
+    event.preventDefault();
+    const channel = channelInput.trim();
+    if (!channel || launchingChannel) return;
+    launchingChannel = true;
+    dismissToastByKey('twitch-channel-error');
+    try {
+      await api.launchTwitchChannel(channel);
+      channelInput = '';
+    } catch (caught) {
+      const failure = normalizeError(caught);
+      showToast({
+        key: 'twitch-channel-error',
+        tone: 'error',
+        title: `Could not play ${channel}`,
+        message: failure.message,
+        detail: failure.technical,
+        durationMs: 10_000,
+      });
+    } finally {
+      launchingChannel = false;
+    }
+  }
+
   async function copy(stream: TwitchLiveStream) {
     try {
       await navigator.clipboard.writeText(twitchUrl(stream.login));
@@ -286,6 +312,30 @@
     <div
       class="mr-3 flex shrink-0 flex-wrap items-center gap-2 border-b border-line pb-2"
     >
+      <form
+        class="flex w-full min-w-0 items-center gap-2 sm:w-80"
+        onsubmit={watchChannel}
+      >
+        <label class="sr-only" for="twitch-channel-input">Twitch channel</label>
+        <input
+          id="twitch-channel-input"
+          class="h-8 min-w-0 flex-1 border border-line bg-surface px-3 text-xs text-foreground focus:border-line-strong"
+          type="text"
+          placeholder="Channel name or Twitch URL"
+          autocomplete="off"
+          spellcheck="false"
+          disabled={launchingChannel}
+          bind:value={channelInput}
+        />
+        <Button
+          size="sm"
+          class="shrink-0"
+          type="submit"
+          disabled={launchingChannel || !playerReady || !channelInput.trim()}
+        >
+          <Play class="size-3.5" />{launchingChannel ? 'Starting…' : 'Watch'}
+        </Button>
+      </form>
       <span class="ml-auto text-[0.65rem] text-muted">
         {#if syncStatus.isRefreshing}{syncStatus.phase}{:else}Updated {relativeTime(
             syncStatus.lastSuccessAt,

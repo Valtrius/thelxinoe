@@ -90,7 +90,43 @@ pub(super) async fn feed(
     db: &Database,
     p: thelxinoe_core::Principal,
 ) -> anyhow::Result<Vec<Value>> {
-    db.read("online.twitch.feed", move|db|Ok(db.prepare("SELECT channel_id,login,display_name,title,category,viewers,started_at,thumbnail_url,profile_image_url FROM twitch_streams WHERE user_id=?1 AND active=1 ORDER BY viewers DESC,login LIMIT 1000")?.query_map([p.user.id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"login":r.get::<_,String>(1)?,"display_name":r.get::<_,String>(2)?,"title":r.get::<_,String>(3)?,"category":r.get::<_,String>(4)?,"viewers":r.get::<_,i64>(5)?,"started_at":r.get::<_,String>(6)?,"thumbnail_url":r.get::<_,Option<String>>(7)?,"profile_image_url":r.get::<_,Option<String>>(8)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
+    db.read("online.twitch.feed", move|db|Ok(db.prepare("SELECT channel_id,login,display_name,title,category,viewers,started_at,thumbnail_url,profile_image_url FROM twitch_streams WHERE user_id=?1 AND active=1 ORDER BY viewers DESC,login LIMIT 1000")?.query_map([p.user.id],stream)?.collect::<rusqlite::Result<Vec<_>>>()?)).await
+}
+
+pub(super) async fn credential(
+    db: &Database,
+    user: String,
+) -> anyhow::Result<Option<(String, Vec<u8>)>> {
+    db.read("online.twitch.credential", move |db| {
+        Ok(db.query_row("SELECT generation,credential FROM online_accounts WHERE user_id=?1 AND provider='twitch' AND status='connected' AND credential IS NOT NULL",[user],|r|Ok((r.get(0)?,r.get(1)?))).optional()?)
+    }).await
+}
+
+/// How long a watched channel outlives the followed snapshot before its playback starts.
+const WATCH_GRACE: i64 = 300;
+
+/// Saves a channel read outside the followed snapshot, keeping a followed row's snapshot.
+pub(super) async fn save_watched(
+    db: &Database,
+    user: String,
+    generation: String,
+    r: Value,
+    profile: Option<String>,
+) -> anyhow::Result<Option<Value>> {
+    db.write("online.twitch.save_watched", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let valid=tx.query_row("SELECT EXISTS(SELECT 1 FROM online_accounts WHERE user_id=?1 AND provider='twitch' AND generation=?2 AND status='connected')",params![user,generation],|r|r.get::<_,bool>(0))?;
+        if !valid{return Ok(None)}
+        let thumbnail=super::super::public_image(r["thumbnail_url"].as_str()).map(|url|url.replace("{width}","640").replace("{height}","360"));
+        tx.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,active,thumbnail_url,profile_image_url) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10,?11) ON CONFLICT(user_id,channel_id) DO UPDATE SET login=excluded.login,display_name=excluded.display_name,title=excluded.title,category=excluded.category,viewers=excluded.viewers,started_at=excluded.started_at,snapshot=CASE WHEN twitch_streams.snapshot LIKE 'watch:%' THEN excluded.snapshot ELSE twitch_streams.snapshot END,active=1,thumbnail_url=excluded.thumbnail_url,profile_image_url=COALESCE(excluded.profile_image_url,twitch_streams.profile_image_url)",params![user,r["user_id"].as_str(),r["user_login"].as_str(),r["user_name"].as_str(),r["title"].as_str(),r["game_name"].as_str(),r["viewer_count"].as_i64(),r["started_at"].as_str(),format!("watch:{}",now()),thumbnail,profile])?;
+        let stream=tx.query_row("SELECT channel_id,login,display_name,title,category,viewers,started_at,thumbnail_url,profile_image_url FROM twitch_streams WHERE user_id=?1 AND channel_id=?2",params![user,r["user_id"].as_str()],stream)?;
+        tx.commit()?;Ok(Some(stream))
+    }).await
+}
+
+fn stream(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    Ok(
+        json!({"id":r.get::<_,String>(0)?,"login":r.get::<_,String>(1)?,"display_name":r.get::<_,String>(2)?,"title":r.get::<_,String>(3)?,"category":r.get::<_,String>(4)?,"viewers":r.get::<_,i64>(5)?,"started_at":r.get::<_,String>(6)?,"thumbnail_url":r.get::<_,Option<String>>(7)?,"profile_image_url":r.get::<_,Option<String>>(8)?}),
+    )
 }
 
 pub(super) async fn claim_attempt(db: &Database) -> anyhow::Result<Option<Attempt>> {
@@ -251,7 +287,8 @@ pub(super) async fn save_sync_page(db: &Database, input: SyncPage) -> anyhow::Re
         if !valid{return Ok(false)}
         for r in rows {tx.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,thumbnail_url) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(user_id,channel_id) DO UPDATE SET login=excluded.login,display_name=excluded.display_name,title=excluded.title,category=excluded.category,viewers=excluded.viewers,started_at=excluded.started_at,snapshot=excluded.snapshot,thumbnail_url=excluded.thumbnail_url",params![user,r["user_id"].as_str(),r["user_login"].as_str(),r["user_name"].as_str(),r["title"].as_str(),r["game_name"].as_str(),r["viewer_count"].as_i64(),r["started_at"].as_str(),snapshot,super::super::public_image(r["thumbnail_url"].as_str()).map(|url|url.replace("{width}","640").replace("{height}","360"))])?;}
         if next.is_empty(){
-            tx.execute("DELETE FROM twitch_streams WHERE user_id=?1 AND snapshot<>?2",params![user,snapshot])?;
+            // A watched channel stays while it starts or plays.
+            tx.execute("DELETE FROM twitch_streams WHERE user_id=?1 AND snapshot<>?2 AND NOT (snapshot LIKE 'watch:%' AND (CAST(substr(snapshot,7) AS INTEGER)>?3 OR EXISTS(SELECT 1 FROM playback_sessions p WHERE p.user_id=twitch_streams.user_id AND p.live_media_id='twitch:'||twitch_streams.channel_id AND p.state IN ('ready','playing','paused') AND p.updated_at>?3)))",params![user,snapshot,now()-WATCH_GRACE])?;
             tx.execute("UPDATE twitch_streams SET active=1 WHERE user_id=?1",[&user])?;
             tx.execute("UPDATE twitch_sync SET cursor='',snapshot='',pages=0,next_run=?1,last_complete=?2,failures=0,error=NULL WHERE user_id=?3 AND generation=?4",params![if limited{reset.max(now()+60)}else{now()+60},now(),user,generation])?;
         }else{tx.execute("UPDATE twitch_sync SET cursor=?1,snapshot=?2,pages=pages+1,next_run=?3,failures=0,error=NULL WHERE user_id=?4 AND generation=?5",params![next,snapshot,if limited{reset}else{now()+1},user,generation])?;}
