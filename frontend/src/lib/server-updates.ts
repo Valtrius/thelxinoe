@@ -313,15 +313,21 @@ export async function serverUpdateAction(action: Action, operation?: string) {
         );
         return true;
       } catch (error) {
-        // Only retry an explicit idle rejection: a lost response may follow acceptance.
+        // Only retry an explicit rejection: a lost response may follow acceptance.
+        // A rejected command keeps the server fenced until it observes the
+        // controller, and the fence refuses requests before they are handled.
         if (
           action !== 'recover' ||
           !(error instanceof ApiError) ||
-          error.status !== 409 ||
-          ![
-            'Wait for current requests to finish and try again',
-            'Wait for playback, downloads and background work to finish',
-          ].includes(error.message) ||
+          !(
+            (error.status === 409 &&
+              [
+                'Wait for current requests to finish and try again',
+                'Wait for playback, downloads and background work to finish',
+                'Another Docker operation is active',
+              ].includes(error.message)) ||
+            error.code === 'maintenance'
+          ) ||
           Date.now() >= deadline
         )
           throw error;

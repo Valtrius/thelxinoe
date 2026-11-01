@@ -314,7 +314,17 @@ async function waitRun(id, stage = 'complete') {
       ),
     stage,
     `Recyclarr run ${id}`,
-  );
+  ).catch(async (error) => {
+    // The state alone can't tell a slow manager from a guide or configuration error.
+    const run = await api(`/admin/recyclarr/runs/${id}`).catch(() => null);
+    const output = `${run?.evidence?.preview ?? ''}\n${run?.evidence?.apply ?? ''}`;
+    const lines = output
+      .split('\n')
+      .filter((line) => /\[(ERR|WRN|FTL)\]/.test(line));
+    evidence.failed_run = run?.evidence ?? null;
+    error.message += `\nRecyclarr output:\n${(lines.length ? lines : output.split('\n').slice(-40)).join('\n')}`;
+    throw error;
+  });
 }
 async function waitUpdate(id, stage) {
   return waitForJob(

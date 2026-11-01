@@ -724,6 +724,20 @@ export async function fixture({
     } = {},
   ) {
     let view = await api(`/admin/services/${serviceId}/transfer`, 'POST');
+    // A manager's own scheduled or seeding commands make it briefly busy; an
+    // administrator reviews again once it is idle.
+    for (
+      let attempt = 1;
+      approve &&
+      attempt < 60 &&
+      view.state === 'review' &&
+      view.review.blockers.length &&
+      view.review.blockers.every((blocker) => / is busy: /.test(blocker));
+      attempt++
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      view = await api(`/admin/services/${serviceId}/transfer`, 'POST');
+    }
     if (view.state !== 'review') return { view, review: view };
     if (view.review.plan.compose)
       view = await api(`/admin/transfers/${view.id}/choices`, 'PUT', {

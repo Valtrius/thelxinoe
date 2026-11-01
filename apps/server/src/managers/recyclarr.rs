@@ -116,8 +116,12 @@ pub(crate) async fn tick(state: &AppState) -> anyhow::Result<()> {
         .is_ok()
     {
         if let Some(key) = storage::provision(&state.db).await?
-            && let Ok(configuration) =
-                controller_request(state, &format!("/{key}/recyclarr/configuration"), None).await
+            && let Ok(configuration) = controller_request(
+                state,
+                &format!("/{key}/recyclarr/configuration?observe=true"),
+                None,
+            )
+            .await
             && configuration["initialized"] == true
         {
             storage::configuration(&state.db, key, configuration, None).await?;

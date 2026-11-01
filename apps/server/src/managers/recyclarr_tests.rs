@@ -120,10 +120,14 @@ async fn retry_policy_uses_failure_kind_and_preserves_actor_authority() {
 #[tokio::test]
 async fn a_running_sync_shows_the_saved_configuration_without_waiting() {
     let (_temp, state, cookie, _job) = queued(json!({})).await;
-    state.managers.docker.lock().unwrap().insert(
-        "stack/recyclarr/recyclarr/configuration".into(),
-        json!({"initialized":true,"revision":"config-v1","mode":"defaults"}),
-    );
+    let saved_configuration = |path: &str| {
+        state.managers.docker.lock().unwrap().insert(
+            format!("stack/recyclarr/recyclarr/{path}"),
+            json!({"initialized":true,"revision":"config-v1","mode":"defaults"}),
+        );
+    };
+    // While a sync holds Recyclarr, the read observes instead of repairing.
+    saved_configuration("configuration?observe=true");
     let read = || async {
         let (status, _, body) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -151,6 +155,7 @@ async fn a_running_sync_shows_the_saved_configuration_without_waiting() {
         (Some("config-v1"), Some(true))
     );
     drop(sync);
+    saved_configuration("configuration");
     assert_eq!(read().await["busy"], false);
 }
 

@@ -150,7 +150,12 @@ pub(super) async fn configuration_get(
     let saved = match guard {
         Some(_) => None,
         None => Some(
-            controller_request(&state, &format!("/{key}/recyclarr/configuration"), None).await?,
+            controller_request(
+                &state,
+                &format!("/{key}/recyclarr/configuration?observe=true"),
+                None,
+            )
+            .await?,
         ),
     };
     let (mut configuration, busy) = match saved {

@@ -532,21 +532,26 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
     body: await page.screenshot(),
     contentType: 'image/png',
   });
+  // The server waits for requests to drain, then the controller is briefly busy
+  // and the fence that rejection leaves refuses one more request.
+  const rejections = [
+    [409, 'conflict', 'Wait for current requests to finish and try again'],
+    [409, 'conflict', 'Another Docker operation is active'],
+    [
+      503,
+      'maintenance',
+      'The server is preparing an update. Reconnect shortly.',
+    ],
+  ];
   let recoveryRequests = 0;
   await page.route(
     '**/api/v1/admin/product-update/*/recover',
     async (route) => {
-      if (++recoveryRequests === 1)
-        await route.fulfill({
-          status: 409,
-          json: {
-            error: {
-              code: 'conflict',
-              message: 'Wait for current requests to finish and try again',
-            },
-          },
-        });
-      else await route.fallback();
+      const rejection = rejections[recoveryRequests++];
+      if (rejection) {
+        const [status, code, message] = rejection;
+        await route.fulfill({ status, json: { error: { code, message } } });
+      } else await route.fallback();
     },
   );
   const restoreButton = modal.getByRole('button', {
@@ -561,9 +566,12 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
     body: await page.screenshot(),
     contentType: 'image/png',
   });
-  await page.clock.runFor(1500);
+  for (let request = 2; request <= 4; request++) {
+    await page.clock.runFor(1000);
+    await expect.poll(() => recoveryRequests).toBe(request);
+  }
   await expect(modal).toHaveCount(0);
-  expect(recoveryRequests).toBe(2);
+  expect(recoveryRequests).toBe(4);
   expect(flow.commands.at(-1)).toEqual({
     action: 'recover',
     body: { confirm: true },
