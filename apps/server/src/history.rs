@@ -119,6 +119,49 @@ mod tests {
         assert!(response.2.get("top").is_none());
     }
     #[tokio::test]
+    async fn history_prefixes_episodes_with_their_show() {
+        let (_temp, state, alice) = fixture().await;
+        state.db.write("test.fixture", |db| {
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('tv','Shows','shows','/media/tv'),('films','Movies','movies','/media/movies')", [])?;
+            for (id,root,kind,parent,number,title,metadata) in [
+                ("show","tv","show",None,None,"the office","{\"title\":\"The Office\"}"),
+                ("season","tv","season",Some("show"),Some(2),"Season 2","{}"),
+                ("named","tv","episode",Some("season"),Some(1),"the office · S02E01","{\"title\":\"The Dundies\"}"),
+                ("fallback","tv","episode",Some("season"),Some(2),"the office · S02E02","{}"),
+                ("film","films","movie",None,None,"Film","{}"),
+            ] {
+                db.execute("INSERT INTO media(id,root_id,kind,parent_id,sort_number,evidence_key,title,metadata,created_at) VALUES (?1,?2,?3,?4,?5,?1,?6,?7,1)",rusqlite::params![id,root,kind,parent,number,title,metadata])?;
+            }
+            for (media,platform,title,time) in [
+                ("named","shows","The Dundies",3),
+                ("fallback","shows","the office · S02E02",2),
+                ("film","movies","Film",1),
+            ] {
+                db.execute("INSERT INTO playback_history(playback_id,user_id,platform,media_id,media_title,content_type,device_name,started_at,updated_at,position,state) VALUES (?1,'alice',?2,?1,?3,'episode','Browser',?4,?4,1,'stopped')",rusqlite::params![media,platform,title,time])?;
+            }
+            Ok(())
+        }).await.unwrap();
+        let response = call(
+            &state,
+            "/api/v1/me/history?platform=all&range=all",
+            "GET",
+            Value::Null,
+            &alice,
+        )
+        .await;
+        assert_eq!(response.0, axum::http::StatusCode::OK);
+        let titles = response.2["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["title"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            titles,
+            ["The Office · S02E01 · The Dundies", "the office · S02E02", "Film"]
+        );
+    }
+    #[tokio::test]
     async fn combined_history_merges_sources_and_uses_a_stable_cursor() {
         let (_temp, state, alice) = fixture().await;
         state
