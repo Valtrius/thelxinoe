@@ -9,9 +9,8 @@
   import { onMount } from 'svelte';
   import { api } from './api';
   import { RefreshTask } from './refresh-task';
-  import { activity, startActivity } from './activity';
+  import { startActivity } from './activity';
   import { refreshAttention } from './attention';
-  import AttentionDot from './ui/AttentionDot.svelte';
   import { errorMessage, withVerification } from './authentication';
   import { captureSession } from './session';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
@@ -425,15 +424,7 @@
       <tbody>
         {#each items as item (item.id)}
           <tr>
-            <td class="whitespace-nowrap"
-              ><span class="inline-flex items-center gap-2 font-[550]"
-                >{time(item.created_at)}<AttentionDot
-                  activity={$activity.filter(
-                    (entry) =>
-                      entry.target === 'backups' && entry.resource === item.id,
-                  )}
-                /></span
-              ></td
+            <td class="font-[550] whitespace-nowrap">{time(item.created_at)}</td
             >
             <td class="whitespace-nowrap"
               >{item.automatic ? 'Automatic' : 'Manual'}</td

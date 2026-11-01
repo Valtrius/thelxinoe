@@ -15,7 +15,7 @@
     attentionDescription,
     refreshAttention,
   } from './attention';
-  import { activity as runningActivity, startActivity } from './activity';
+  import { startActivity } from './activity';
   import { api, ApiError, desktop } from './api';
   import { RefreshTask } from './refresh-task';
   import { inBackground } from './page-readiness';
@@ -771,18 +771,10 @@
             (item) =>
               item.target === 'services' && item.resource === service.kind,
           )}
-          activity={$runningActivity.filter(
-            (item) =>
-              item.target === 'services' && item.resource === service.kind,
-          )}
         />
         <span id={`service-attention-${service.kind}`} class="sr-only"
           >{attentionDescription(
             $attention.filter(
-              (item) =>
-                item.target === 'services' && item.resource === service.kind,
-            ),
-            $runningActivity.filter(
               (item) =>
                 item.target === 'services' && item.resource === service.kind,
             ),

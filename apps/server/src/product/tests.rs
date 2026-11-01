@@ -814,3 +814,33 @@ async fn release_channel_failures_keep_an_actionable_cause() {
             .starts_with("The release signature or manifest is invalid")
     );
 }
+
+// An available release only asks for attention when updates wait for the administrator.
+#[tokio::test]
+async fn available_release_needs_attention_only_when_updates_notify() {
+    let (_temp, state, cookie) = fixture().await;
+    admin(&state).await;
+    save(&state, "product.release", manifest("99.0.0"))
+        .await
+        .unwrap();
+    let raised = || async {
+        call(&state, "/api/v1/me/attention", "GET", Value::Null, &cookie)
+            .await
+            .2["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == "product-release")
+    };
+    assert!(!raised().await);
+    for (policy, expected) in [("notify", true), ("automatic", false)] {
+        save(
+            &state,
+            "product.policy",
+            json!({"policy":policy,"window_start":2,"window_end":5}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(raised().await, expected, "{policy}");
+    }
+}

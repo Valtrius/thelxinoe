@@ -16,6 +16,7 @@ async fn activity_summary_tracks_real_operations_and_respects_audience() {
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice','private-video','Private video')", [])?;
         db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES ('private-video','g','downloading','{}',1,1)", [])?;
         db.execute("INSERT INTO youtube_download_requests(user_id,video_id,requested_at) VALUES ('alice','private-video',1)", [])?;
+        db.execute("INSERT INTO twitch_attempts(user_id,session_id,generation,client_hash,device,expires_at,next_poll,interval,phase) SELECT user_id,id,'g','hash',x'00',?1,0,5,'connecting' FROM sessions WHERE user_id='alice' LIMIT 1", [thelxinoe_core::now() + 600])?;
         Ok(())
     }).await.unwrap();
     let admin =
@@ -28,7 +29,8 @@ async fn activity_summary_tracks_real_operations_and_respects_audience() {
     let member_activity = member.2["activity"].as_array().unwrap();
     assert_eq!(member_activity.len(), 1);
     assert_eq!(member_activity[0]["target"], "online");
-    assert_eq!(member_activity[0]["resource"], "youtube");
+    assert_eq!(member_activity[0]["resource"], "twitch");
+    assert_eq!(member_activity[0]["state"], "running");
     let result = call(&state, "/api/v1/me/attention", "GET", json!({}), &admin).await;
     assert_eq!(result.0, StatusCode::OK);
     let activity = result.2["activity"].as_array().unwrap();
@@ -55,7 +57,7 @@ async fn activity_summary_tracks_real_operations_and_respects_audience() {
         db.execute("UPDATE jobs SET state='complete'", [])?;
         db.execute("UPDATE settings SET value='{\"items\":[{\"id\":\"complete\",\"stage\":\"committed\"}]}' WHERE key='product.controller'", [])?;
         db.execute("UPDATE settings SET value='{\"items\":[{\"id\":\"complete\",\"stage\":\"complete\"}]}' WHERE key='backups.controller'", [])?;
-        db.execute("UPDATE youtube_downloads SET state='ready'", [])?;
+        db.execute("DELETE FROM twitch_attempts", [])?;
         Ok(())
     }).await.unwrap();
     for cookie in [&alice, &admin] {

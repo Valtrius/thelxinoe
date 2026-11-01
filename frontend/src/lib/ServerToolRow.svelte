@@ -15,9 +15,8 @@
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import OrbitAction from './ui/OrbitAction.svelte';
-  import AttentionDot from './ui/AttentionDot.svelte';
-  import { activity, startActivity } from './activity';
-  import { attention, refreshAttention } from './attention';
+  import { startActivity } from './activity';
+  import { refreshAttention } from './attention';
   import Switch from './ui/Switch.svelte';
   import { formControlClass } from './ui/styles';
   import { toolBusy, toolName, type ServerTool } from './server-tools';
@@ -246,16 +245,7 @@
   <th
     scope="row"
     class="text-left text-[13px] font-[550] tracking-normal text-foreground normal-case"
-    ><span class="inline-flex items-center gap-2"
-      >{name}<AttentionDot
-        items={$attention.filter(
-          (entry) => entry.target === 'server' && entry.resource === item.id,
-        )}
-        activity={$activity.filter(
-          (entry) => entry.target === 'server' && entry.resource === item.id,
-        )}
-      /></span
-    ></th
+    >{name}</th
   >
   <td class="text-xs tabular-nums"
     >{item.installed?.version ?? 'Not installed'}</td

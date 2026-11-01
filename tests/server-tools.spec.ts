@@ -67,8 +67,10 @@ test('first-time tools stay queued or installing until verified installation com
   };
   await page.goto('/');
   await expect.poll(events.connected).toBe(true);
-  const settings = page.getByRole('link', { name: 'Settings', exact: true });
-  const marker = settings.locator('[data-activity-state]');
+  const marker = page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('link', { name: 'Server', exact: true })
+    .locator('[data-activity-state]');
   await expect(marker).toHaveAttribute('data-activity-state', 'queued');
   const tools = page.getByRole('region', { name: 'Server tools', exact: true });
   await expect(tools.getByRole('row')).toHaveCount(5);

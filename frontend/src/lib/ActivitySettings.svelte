@@ -6,8 +6,6 @@
   import { isServerUpdateInterruption } from './server-updates';
   import Notice from './ui/Notice.svelte';
   import { attention, acknowledgeAttention } from './attention';
-  import { activity } from './activity';
-  import AttentionDot from './ui/AttentionDot.svelte';
   import Button from './ui/Button.svelte';
   import SettingsCard from './ui/SettingsCard.svelte';
   import SettingRow from './ui/SettingRow.svelte';
@@ -102,12 +100,6 @@
       <SettingRow label={job.kind} description={job.error ?? undefined}>
         {#snippet badge()}
           <StatusChip tone={tones[job.state]}>{states[job.state]}</StatusChip>
-          <AttentionDot
-            items={entries}
-            activity={$activity.filter(
-              (item) => item.target === 'jobs' && item.resource === job.id,
-            )}
-          />
         {/snippet}
         {#each entries as entry (entry.id)}<Button
             variant="secondary"

@@ -79,7 +79,7 @@ async function desktopFixture(page: Page, signedIn = false) {
   return fixture;
 }
 
-test('desktop update and tool activity reaches navigation independently of server connectivity', async ({
+test('desktop update and tool activity reaches settings navigation independently of server connectivity', async ({
   page,
 }, testInfo) => {
   const fixture = await desktopFixture(page, true);
@@ -105,19 +105,16 @@ test('desktop update and tool activity reaches navigation independently of serve
     total: 2,
     error: null,
   });
-  const marker = settings.locator('[data-activity-state]');
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  const marker = nav
+    .getByRole('link', { name: 'Desktop', exact: true })
+    .locator('[data-activity-state]');
   await expect(marker).toHaveAttribute('data-activity-state', 'running');
   await expect(marker).toHaveAttribute(
     'aria-label',
     /Downloading desktop update/,
   );
-  await settings.click();
-  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
-  await expect(
-    nav
-      .getByRole('link', { name: 'Desktop', exact: true })
-      .locator('[data-activity-state]'),
-  ).toHaveAttribute('data-activity-state', 'running');
+  await expect(settings.locator('[data-activity-state]')).toHaveCount(0);
   await page.route('**/api/v1/me/attention', (route) =>
     route.fulfill({
       status: 503,
@@ -140,17 +137,16 @@ test('desktop update and tool activity reaches navigation independently of serve
     total: 2,
     error: null,
   });
-  await expect(
-    nav
-      .getByRole('link', { name: 'MPV', exact: true })
-      .locator('[data-activity-state]'),
-  ).toHaveAttribute('data-activity-state', 'running');
-  await expect(marker).toHaveAttribute('aria-label', /Verifying FFmpeg/);
+  const tools = nav
+    .getByRole('link', { name: 'MPV', exact: true })
+    .locator('[data-activity-state]');
+  await expect(tools).toHaveAttribute('data-activity-state', 'running');
+  await expect(tools).toHaveAttribute('aria-label', /Verifying FFmpeg/);
   await page.screenshot({
     path: testInfo.outputPath('desktop-tool-activity.png'),
   });
   await emit('tools-progress', { tool: 'ffmpeg', phase: 'complete' });
-  await expect(marker).toHaveCount(0);
+  await expect(tools).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

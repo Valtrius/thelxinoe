@@ -1,7 +1,7 @@
 use super::{
     ActivityItem, ActivityState, AttentionItem, AttentionSummary, AttentionTarget, Severity,
 };
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use thelxinoe_core::{Principal, Role, now};
@@ -22,7 +22,7 @@ fn collect(
           AND NOT EXISTS(SELECT 1 FROM service_updates n WHERE n.service_id=u.service_id AND (n.created_at>u.created_at OR (n.created_at=u.created_at AND n.rowid>u.rowid)))
           UNION ALL SELECT 'transfer:'||id,'error',CASE state WHEN 'suspended' THEN 'An ownership transfer is suspended for manual resolution.' ELSE 'An ownership transfer needs recovery.' END,'services',kind,state||':'||updated_at,0 FROM service_transfers WHERE state IN ('failed','suspended')
           UNION ALL SELECT 'health:'||json_extract(j.value,'$.id'),'warning','An indexer or download service needs attention.','services',json_extract(j.value,'$.kind'),'health',0 FROM settings s,json_each(s.value,'$.items') j WHERE s.key='operations.support' AND json_extract(j.value,'$.problem')=1
-          UNION ALL SELECT 'product-release','info','Server '||json_extract(value,'$.version')||' is available.','server',NULL,json_extract(value,'$.version'),0 FROM settings WHERE key='product.release' AND json_extract(value,'$.version') IS NOT NULL
+          UNION ALL SELECT 'product-release','info','Server '||json_extract(value,'$.version')||' is available.','server',NULL,json_extract(value,'$.version'),0 FROM settings WHERE key='product.release' AND json_extract(value,'$.version') IS NOT NULL AND COALESCE((SELECT json_extract(value,'$.policy') FROM settings WHERE key='product.policy'),'automatic')='notify'
           UNION ALL SELECT 'tools-release:'||t.id,'info',t.id||' '||json_extract(t.candidate,'$.version')||' is available.','server',t.id,json_extract(t.candidate,'$.id'),0 FROM server_tools t LEFT JOIN tool_generations g ON g.id=t.installed WHERE t.candidate IS NOT NULL AND t.check_error IS NULL AND (g.id IS NULL OR json_extract(t.candidate,'$.id')!=json_extract(g.manifest,'$.candidate.id')) AND CASE WHEN t.policy='inherit' THEN COALESCE((SELECT json_extract(value,'$.policy') FROM settings WHERE key='product.policy'),'automatic') ELSE t.policy END='notify'
           UNION ALL SELECT 'product-update:'||json_extract(j.value,'$.id'),CASE WHEN json_extract(j.value,'$.stage')='blocked' THEN 'warning' ELSE 'error' END,'A server update needs attention.','server',NULL,json_extract(j.value,'$.stage'),0 FROM settings s,json_each(s.value,'$.items') j WHERE s.key='product.controller' AND j.key=0 AND json_extract(j.value,'$.stage') IN ('blocked','recovery-required','runtime-failure')
             AND NOT (json_extract(j.value,'$.stage')='blocked' AND ((json_extract(s.value,'$.generation') IS NOT NULL AND json_extract(j.value,'$.source_generation') IS NOT json_extract(s.value,'$.generation')) OR json_extract(j.value,'$.failure') IS 'interrupted' OR json_extract(j.value,'$.id') IS (SELECT json_extract(value,'$') FROM settings WHERE key='product.dismissed')))
@@ -210,37 +210,27 @@ fn collect_activity(
             });
         }
     }
-    let sql = "SELECT 'download:'||d.video_id,CASE WHEN d.state='downloading' THEN 'running' ELSE 'queued' END,CASE WHEN d.retry_at IS NOT NULL THEN 'Video download waiting to retry' WHEN d.state='waiting_for_space' THEN 'Video download waiting for space' WHEN d.state='queued' THEN 'Video download queued' WHEN d.media_kind='processing' THEN 'Processing video download' ELSE 'Downloading video' END
-      FROM youtube_downloads d JOIN youtube_download_requests r ON r.video_id=d.video_id WHERE r.user_id=?1 AND (d.state IN ('queued','waiting_for_space','downloading') OR d.retry_at IS NOT NULL)
-      AND NOT EXISTS(SELECT 1 FROM settings WHERE key='online.youtube.enabled' AND value='false')
-      UNION ALL SELECT 'account:twitch',CASE WHEN phase='connecting' THEN 'running' ELSE 'queued' END,CASE WHEN phase='connecting' THEN 'Connecting Twitch account' ELSE 'Waiting for Twitch authorization' END FROM twitch_attempts WHERE user_id=?1 AND expires_at>?2
-      UNION ALL SELECT 'sync:youtube',CASE WHEN y.failures>0 OR y.last_turn<=json_extract(s.value,'$.last_turn') THEN 'queued' ELSE 'running' END,CASE WHEN y.failures>0 THEN 'YouTube synchronization waiting to retry' ELSE 'Synchronizing YouTube' END
-      FROM youtube_sync y JOIN online_accounts a ON a.user_id=y.user_id AND a.provider='youtube' AND a.status='connected' AND a.generation=y.generation JOIN settings s ON s.key='activity.youtube-sync:'||y.user_id
-      WHERE y.user_id=?1 AND json_extract(s.value,'$.generation')=y.generation AND COALESCE(y.last_complete,0)=json_extract(s.value,'$.last_complete')
-      AND NOT EXISTS(SELECT 1 FROM settings WHERE key='online.youtube.enabled' AND value='false')";
-    for row in db.prepare(sql)?.query_map(params![user, now()], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-        ))
-    })? {
-        let (id, state, message) = row?;
-        let resource = if id == "account:twitch" {
-            "twitch"
-        } else {
-            "youtube"
-        };
+    let twitch = db
+        .prepare("SELECT phase FROM twitch_attempts WHERE user_id=?1 AND expires_at>?2")?
+        .query_row(params![user, now()], |r| r.get::<_, String>(0))
+        .optional()?;
+    if let Some(phase) = twitch {
+        let connecting = phase == "connecting";
         items.push(ActivityItem {
-            id,
+            id: "account:twitch".into(),
             target: AttentionTarget::Online,
-            resource: Some(resource.into()),
-            state: if state == "queued" {
-                ActivityState::Queued
-            } else {
+            resource: Some("twitch".into()),
+            state: if connecting {
                 ActivityState::Running
+            } else {
+                ActivityState::Queued
             },
-            message,
+            message: if connecting {
+                "Connecting Twitch account"
+            } else {
+                "Waiting for Twitch authorization"
+            }
+            .into(),
             media_ids: vec![],
         });
     }
