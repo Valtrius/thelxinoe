@@ -12,9 +12,8 @@
   import TimezoneSelect from './TimezoneSelect.svelte';
   import { cardBlockClass, formControlClass } from './ui/styles';
 
-  let { revision = 0, changed } = $props<{
+  let { revision = 0 } = $props<{
     revision?: number;
-    changed: (timezone: string) => void;
   }>();
   type Defaults = { timezone: string; time_format: '12h' | '24h' };
   const ids = $props.id();
@@ -48,7 +47,6 @@
     try {
       const value = await api<Defaults>('/admin/settings');
       if (!current()) return;
-      changed(value.timezone);
       if (
         confirmed &&
         (saving ||
@@ -68,11 +66,10 @@
   async function save(submitted: Defaults) {
     if (!active || !ownsSession()) return;
     requests.invalidate();
-    const value = await api<Defaults>('/admin/settings', 'PUT', submitted);
+    await api('/admin/settings', 'PUT', submitted);
     if (!active || !ownsSession()) return;
     requests.invalidate();
     confirmed = { ...submitted };
-    changed(value.timezone);
   }
 </script>
 

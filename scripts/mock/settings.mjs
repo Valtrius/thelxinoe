@@ -678,7 +678,7 @@ export async function settingsApi(s, c) {
         automatic: false,
         error: null,
       });
-    return json(s.backups);
+    return json({ ...s.backups, timezone: s.serverSettings.timezone });
   }
   if (path === '/admin/backups/policy') return save(s.backups.policy);
   if (path === '/admin/backups/passphrase') {

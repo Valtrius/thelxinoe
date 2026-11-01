@@ -12,14 +12,13 @@
   import SettingRow from './ui/SettingRow.svelte';
   import ProfilePicture from './ProfilePicture.svelte';
   import AppearanceSettings from './AppearanceSettings.svelte';
+  import { display } from './display.svelte';
   let {
     user,
-    changed,
     avatarChanged,
     revision = 0,
   } = $props<{
     user: User;
-    changed: (zone: string, timeFormat: '12h' | '24h') => void;
     avatarChanged: (id: string, avatar: string | null) => void;
     revision?: number;
   }>();
@@ -86,7 +85,8 @@
       timeFormat = value.time_format_override ?? '';
       serverTimeFormat = value.server_time_format;
       confirmed = { timezone, time_format: timeFormat };
-      changed(value.timezone, value.time_format);
+      display.timezone = value.timezone;
+      display.timeFormat = value.time_format;
     } catch (caught) {
       if (current()) error = String(caught);
     }
@@ -103,8 +103,13 @@
     confirmed = { ...submitted };
     serverTimezone = value.server_timezone;
     serverTimeFormat = value.server_time_format;
-    if (timezone === submitted.timezone && timeFormat === submitted.time_format)
-      changed(value.timezone, value.time_format);
+    if (
+      timezone === submitted.timezone &&
+      timeFormat === submitted.time_format
+    ) {
+      display.timezone = value.timezone;
+      display.timeFormat = value.time_format;
+    }
   }
 </script>
 

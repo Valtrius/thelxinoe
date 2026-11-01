@@ -189,6 +189,41 @@ test('authenticator enrollment shows a theme-independent QR code, copies the key
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('desktop approval shows the request time in the user zone and clock', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page);
+  await page.route('**/api/v1/me/preferences', (route) =>
+    route.fulfill({
+      json: {
+        timezone: 'Asia/Tokyo',
+        timezone_override: 'Asia/Tokyo',
+        server_timezone: 'UTC',
+        time_format: '12h',
+        time_format_override: '12h',
+        server_time_format: '24h',
+      },
+    }),
+  );
+  await page.route('**/api/v1/auth/desktop/info?**', (route) =>
+    route.fulfill({
+      json: {
+        name: 'Windows desktop',
+        verifying: null,
+        requested_from: '203.0.113.9',
+        // 13:05 UTC
+        requested_at: 1768482309,
+        same_network: true,
+        server_id: 'ui-fixture',
+      },
+    }),
+  );
+  await page.goto('/?desktop=fixture-request');
+  await expect(page.getByText(/Requested at 10:05 PM from/)).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('desktop approval requires the desktop code and flags requests from another network', async ({
   page,
 }, testInfo) => {

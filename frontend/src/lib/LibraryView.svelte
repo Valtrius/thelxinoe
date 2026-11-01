@@ -4,6 +4,7 @@
   import { Folder, RefreshCw, ArrowLeft, Ellipsis } from '@lucide/svelte';
   import { DropdownMenu } from 'bits-ui';
   import { api } from './api';
+  import { display } from './display.svelte';
   import { navigationCache } from './navigation-cache';
   import { activity, byMedia } from './activity';
   import { LatestRequest } from './latest-request';
@@ -48,7 +49,6 @@
     revision = 0,
     play,
     userId,
-    timezone,
     focusId,
     ancestors,
     selectedChanged,
@@ -61,7 +61,6 @@
     revision?: number;
     play: (choice: MediaChoice) => void;
     userId: string;
-    timezone: string;
     focusId?: string;
     ancestors?: string[];
     selectedChanged?: (id?: string, ancestors?: string[]) => void;
@@ -479,9 +478,9 @@
         }}
         open={() => void open(item)}
         details={titles ? undefined : () => void select(item)}
-        timezone={titles ? timezone : undefined}
+        timezone={titles ? display.timezone : undefined}
         detail={view && !breadcrumbs.length
-          ? sortDetail(view.sort, item, timezone)
+          ? sortDetail(view.sort, item, display.timezone)
           : undefined}
         >{#snippet menu(
           card,

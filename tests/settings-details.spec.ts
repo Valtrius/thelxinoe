@@ -947,6 +947,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
       passphrase_saved: false,
       automatic: null,
       window: { start: 3, end: 5 },
+      timezone: 'UTC',
     },
     '/admin/retention': {
       policies: ['movies', 'shows'].map((domain) => ({
@@ -1305,6 +1306,7 @@ test('backup restore selects every Owned service and explains held services', as
           passphrase_saved: false,
           automatic: null,
           window: { start: 3, end: 5 },
+          timezone: 'UTC',
         },
       });
     restores.push(route.request().postDataJSON());

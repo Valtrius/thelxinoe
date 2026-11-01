@@ -72,6 +72,7 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     value["passphrase_saved"] = json!(storage::passphrase_saved(&state.db).await?);
     value["automatic"] = json!(storage::run(&state.db).await?);
     value["window"] = json!({"start":window.window_start,"end":window.window_end});
+    value["timezone"] = json!(crate::timezones::server_zone_name(&state.db).await?);
     Ok(Json(value))
 }
 async fn policy(

@@ -126,6 +126,7 @@
   import { musicQueue } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
+  import { display, resetDisplay } from './lib/display.svelte';
   import {
     connectNativePlayback,
     launchingMedia,
@@ -197,7 +198,6 @@
   );
   let preferencesRevision = $state(0);
   let unsavedChanges = $state(false);
-  let timeFormat = $state<'12h' | '24h'>('24h');
   let events: Events | undefined;
   let navigationReady = $state(false);
   let settingsRevision = $state(0);
@@ -309,6 +309,7 @@
         // Everything the session shows is read after the event cursor, so the
         // first connection replays any change those reads missed.
         if (current) await startEvents();
+        if (current) display.timezone = current.timezone;
         user = current;
         if (user) {
           await Promise.all([
@@ -353,8 +354,8 @@
       time_format: '12h' | '24h';
     }>('/me/preferences');
     if (!ownsSession()) return;
-    timeFormat = value.time_format;
-    if (user) user = { ...user, timezone: value.timezone };
+    display.timezone = value.timezone;
+    display.timeFormat = value.time_format;
   }
   function startEvents() {
     const ownsSession = captureSession();
@@ -436,8 +437,8 @@
               timezone: string;
               time_format: '12h' | '24h';
             };
-            timeFormat = preference.time_format;
-            if (user) user = { ...user, timezone: preference.timezone };
+            display.timezone = preference.timezone;
+            display.timeFormat = preference.time_format;
           }
           if (event.kind === 'server.settings.changed') {
             settingsRevision++;
@@ -513,6 +514,7 @@
     // The shell, and its first page, render and read their data as soon as
     // `user` is set: capture the event cursor before that.
     await startEvents();
+    display.timezone = current.timezone;
     user = current;
     await Promise.all([
       loadAppearance(user.id),
@@ -561,7 +563,7 @@
     unsavedChanges = false;
     mobileNavOpen = false;
     route = { ...homeRoute };
-    timeFormat = '24h';
+    resetDisplay();
   }
   function writeLocation(
     destination: AppRoute,
@@ -1197,7 +1199,6 @@
           <FeatureOutlet
             {route}
             {user}
-            {timeFormat}
             {mediaRevision}
             {catalogRevision}
             {accountRevision}
@@ -1223,10 +1224,6 @@
             }}
             sessionEnded={teardownSession}
             {switchServer}
-            displayChanged={(zone, format) => {
-              timeFormat = format;
-              if (user) user = { ...user, timezone: zone };
-            }}
             profileChanged={(id, avatar) => {
               if (user?.id === id) user = { ...user, avatar };
             }}

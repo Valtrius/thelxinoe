@@ -4,6 +4,7 @@ import { startActivity } from './activity';
 import { refreshAttention } from './attention';
 import { inBackground } from './page-readiness';
 import { RefreshTask } from './refresh-task';
+import { formatTime } from './display.svelte';
 
 export type ServerUpdate = {
   id: string;
@@ -371,15 +372,6 @@ export type ServerUpdateCard = {
   /** The failed attempt an administrator may dismiss. */
   dismissible: string | null;
 };
-function clock(seconds: number, timeZone?: string) {
-  const options = { hour: '2-digit', minute: '2-digit' } as const;
-  const date = new Date(seconds * 1000);
-  try {
-    return date.toLocaleTimeString(undefined, { ...options, timeZone });
-  } catch {
-    return date.toLocaleTimeString(undefined, options);
-  }
-}
 /** What the Product version card shows for the current update state. */
 export function serverUpdateCard(
   model: ServerUpdateModel,
@@ -573,7 +565,7 @@ export function serverUpdateCard(
     const retry = automatic
       ? automatic.held
         ? `Automatic updates stopped trying ${candidate}.`
-        : `Automatic updates retry after ${clock(automatic.retry_at, status?.timezone)}, within the maintenance window.`
+        : `Automatic updates retry after ${formatTime(automatic.retry_at, status?.timezone)}, within the maintenance window.`
       : '';
     const error = model.error || failedRequest?.error || '';
     if (error || failedOperation) {

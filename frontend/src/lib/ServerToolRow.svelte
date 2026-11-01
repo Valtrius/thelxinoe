@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { formatTimestamp } from './display.svelte';
   import {
     ArrowUp,
     ArrowDownToLine,
@@ -87,9 +88,7 @@
           : 'Up to date',
       description:
         (stale && item.checked_at
-          ? 'Last checked ' +
-            new Date(item.checked_at * 1000).toLocaleString() +
-            '\n'
+          ? 'Last checked ' + formatTimestamp(item.checked_at) + '\n'
           : '') + 'Click to check for updates.',
       icon: !stale && item.installed ? Check : RefreshCw,
       tone: !stale && item.installed ? 'success' : 'muted',

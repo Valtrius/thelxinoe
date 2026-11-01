@@ -10,6 +10,7 @@
     Server,
   } from '@lucide/svelte';
   import { api, ApiError } from '../api';
+  import { formatTimestamp } from '../display.svelte';
   import Modal from '../ui/Modal.svelte';
   import Button from '../ui/Button.svelte';
   import Notice from '../ui/Notice.svelte';
@@ -996,7 +997,7 @@
         <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
           <dt class="text-muted">Production since</dt>
           <dd>
-            {new Date(recovery.evidence.boundary_at * 1000).toLocaleString()}
+            {formatTimestamp(recovery.evidence.boundary_at)}
           </dd>
           <dt class="text-muted">Replacement</dt>
           <dd>

@@ -13,6 +13,7 @@
     type AuditCategory,
   } from './audit-events';
   import { dateFormat } from './intl';
+  import { display } from './display.svelte';
   import { LatestRequest } from './latest-request';
   import { time } from './playback';
   import type { StatisticsPlatform, StatisticsRange } from './statistics/types';
@@ -29,14 +30,12 @@
     scope = 'mine',
     range = '30d',
     platform = 'all',
-    timeFormat = '24h',
   } = $props<{
     user: User;
     audit?: boolean;
     scope?: string;
     range?: StatisticsRange;
     platform?: StatisticsPlatform;
-    timeFormat?: '12h' | '24h';
   }>();
   type Row = {
     id: number | string;
@@ -72,7 +71,7 @@
     busy = $state(false);
   const groups = $derived(auditActionGroups(actions));
   const days = $derived(
-    audit ? auditDays(result?.items ?? [], user.timezone) : [],
+    audit ? auditDays(result?.items ?? [], display.timezone) : [],
   );
   const requests = new LatestRequest();
   onDestroy(() => requests.invalidate());
@@ -165,24 +164,24 @@
       : dateFormat('en', {
           dateStyle: 'medium',
           timeStyle: 'short',
-          timeZone: user.timezone,
-          hour12: timeFormat === '12h',
+          timeZone: display.timezone,
+          hour12: display.timeFormat === '12h',
         }).format(value * 1000);
   }
   const clockFormat = $derived(
     new Intl.DateTimeFormat('en', {
-      hour: timeFormat === '12h' ? 'numeric' : '2-digit',
+      hour: display.timeFormat === '12h' ? 'numeric' : '2-digit',
       minute: '2-digit',
-      hourCycle: timeFormat === '12h' ? 'h12' : 'h23',
-      timeZone: user.timezone,
+      hourCycle: display.timeFormat === '12h' ? 'h12' : 'h23',
+      timeZone: display.timezone,
     }),
   );
   const stampFormat = $derived(
     new Intl.DateTimeFormat('en', {
       dateStyle: 'full',
       timeStyle: 'long',
-      timeZone: user.timezone,
-      hour12: timeFormat === '12h',
+      timeZone: display.timezone,
+      hour12: display.timeFormat === '12h',
     }),
   );
   function kind(value?: string) {
@@ -372,7 +371,7 @@
 {#if audit}
   <SettingsCard
     title="Administrative activity"
-    description={`Who changed what, grouped by day. Times shown in ${user.timezone}.`}
+    description={`Who changed what, grouped by day. Times shown in ${display.timezone}.`}
   >
     {#snippet actions()}
       <Button

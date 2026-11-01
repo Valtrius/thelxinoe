@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api, ApiError, type User } from './api';
   import { errorMessage, withVerification } from './authentication';
+  import { formatTime } from './display.svelte';
   import Button from './ui/Button.svelte';
   import FormField from './ui/FormField.svelte';
   import Notice from './ui/Notice.svelte';
@@ -34,14 +35,7 @@
         ended = true;
       });
   });
-  const requestedAt = $derived(
-    info
-      ? new Date(info.requested_at * 1000).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        })
-      : '',
-  );
+  const requestedAt = $derived(info ? formatTime(info.requested_at) : '');
   async function approve() {
     error = '';
     if (code.replace(/[^0-9a-z]/gi, '').length !== 8) {

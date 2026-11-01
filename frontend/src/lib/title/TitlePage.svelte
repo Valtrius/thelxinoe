@@ -10,6 +10,7 @@
     Star,
   } from '@lucide/svelte';
   import { api, type User } from '../api';
+  import { display } from '../display.svelte';
   import { inBackground } from '../page-readiness';
   import type { MediaChoice } from '../playback';
   import Button from '../ui/Button.svelte';
@@ -465,7 +466,7 @@
               >{/each}
           </div>
           {#if hasStatus(status)}<p class="mt-5">
-              <StatusBadge {status} timezone={user.timezone} />
+              <StatusBadge {status} timezone={display.timezone} />
             </p>{:else if requestState && kind === 'show'}<p
               class="mt-5 text-xs font-semibold text-accent"
             >
@@ -597,7 +598,7 @@
         {series}
         next={nextEpisode?.id}
         {admin}
-        timezone={user.timezone}
+        timezone={display.timezone}
         {focusSeason}
         {focusEpisode}
         play={playEpisode}

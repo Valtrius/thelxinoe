@@ -23,15 +23,10 @@
   import WatchTimeChart from './WatchTimeChart.svelte';
   import History from '../History.svelte';
   import { providers, providerEnabled } from '../providers/availability';
+  import { display } from '../display.svelte';
 
-  let {
-    user,
-    filters,
-    filtersChanged,
-    timeFormat = '24h',
-  } = $props<{
+  let { user, filters, filtersChanged } = $props<{
     user: User;
-    timeFormat?: '12h' | '24h';
     filters: { range?: string; platform?: string; scope?: string };
     filtersChanged: (filters: {
       range: string;
@@ -57,7 +52,6 @@
     ),
   ]);
   const panelClass = 'panel min-w-0 border border-line bg-surface p-4';
-  const timezone = $derived(user.timezone);
 
   let range = $state<StatisticsRange>('30d');
   let platform = $state<StatisticsPlatform>('all');
@@ -138,7 +132,7 @@
       scope,
       user.id,
       user.role,
-      timezone,
+      display.timezone,
       enabledProviders,
     ];
     void selection;
@@ -610,5 +604,5 @@
       </section>
     {/if}
   {/if}
-  <History {user} {scope} {range} {platform} {timeFormat} />
+  <History {user} {scope} {range} {platform} />
 </div>
