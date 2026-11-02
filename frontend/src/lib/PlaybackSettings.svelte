@@ -3,6 +3,7 @@
   import Notice from './ui/Notice.svelte';
   import SettingsCard from './ui/SettingsCard.svelte';
   import SettingRow from './ui/SettingRow.svelte';
+  import Switch from './ui/Switch.svelte';
   import { formControlClass } from './ui/styles';
   import { onMount } from 'svelte';
   import { api } from './api';
@@ -19,6 +20,9 @@
           (value = {
             ...v,
             quality: v.quality.endsWith('mbps') ? 'auto' : v.quality,
+            // The desktop app also signs in to servers from before autoplay
+            // was a preference; a switch cannot bind to a missing value.
+            autoplay: v.autoplay ?? true,
           }),
       )
       .catch((e) => (error = String(e)));
@@ -82,6 +86,9 @@
               >Album</option
             ><option value="off">Off</option></select
           >
+        </SettingRow>
+        <SettingRow label="Autoplay next episode" for={`${ids}-autoplay`}>
+          <Switch id={`${ids}-autoplay`} bind:checked={value.autoplay} />
         </SettingRow>
       </SettingsCard>
       <SettingsCard title="Subtitles" autoSave {saving}>

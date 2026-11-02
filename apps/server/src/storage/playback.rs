@@ -162,6 +162,12 @@ pub(super) async fn report(
         } else if !crate::online::live::domain(&media) {
             tx.execute("INSERT INTO edition_progress VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id,media_id,edition) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at",params![user,media,edition,position,duration,now()])?;
             tx.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=MAX(watched,excluded.watched),updated_at=excluded.updated_at",params![user,media,position>=duration*0.9,now()])?;
+            // Finishing a file that holds several episodes finishes each of them.
+            if position>=duration*0.9 {
+                let others="SELECT o.media_id FROM playback_sessions p JOIN media_sources o ON o.file_id=p.file_id JOIN media m ON m.id=o.media_id WHERE p.id=?3 AND o.media_id!=p.media_id AND m.kind='episode'";
+                tx.execute(&format!("INSERT INTO media_state(user_id,media_id,watched,updated_at) SELECT ?1,media_id,1,?2 FROM ({others}) WHERE true ON CONFLICT(user_id,media_id) DO UPDATE SET watched=1,updated_at=excluded.updated_at"),params![user,now(),key])?;
+                tx.execute(&format!("UPDATE edition_progress SET position=duration,updated_at=?2 WHERE user_id=?1 AND media_id IN ({others})"),params![user,now(),key])?;
+            }
         }
         crate::history::record(&tx,&key,position,&input.state,seconds)?;
         let resource=format!("playback:{key}");

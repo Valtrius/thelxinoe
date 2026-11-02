@@ -232,6 +232,12 @@ pub struct Preferences {
     pub subtitle_language: String,
     pub subtitles: bool,
     pub replay_gain: String,
+    /// Whether the next episode starts by itself when one finishes.
+    #[serde(default = "enabled")]
+    pub autoplay: bool,
+}
+fn enabled() -> bool {
+    true
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -241,6 +247,7 @@ impl Default for Preferences {
             subtitle_language: String::new(),
             subtitles: false,
             replay_gain: "track".into(),
+            autoplay: enabled(),
         }
     }
 }

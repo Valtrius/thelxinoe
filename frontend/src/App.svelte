@@ -1122,6 +1122,7 @@
               </p>{:then { default: Player }}<Player
                 choice={playing}
                 closed={() => (playing = null)}
+                advance={(next) => (playing = next)}
                 resizable
               />{:catch error}<Notice role="alert" variant="error"
                 >{String(error)}</Notice

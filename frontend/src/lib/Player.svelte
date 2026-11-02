@@ -45,12 +45,15 @@
     choice,
     closed,
     ended,
+    advance,
     resizable = false,
     music = false,
   } = $props<{
     choice: MediaChoice;
     closed: () => void;
     ended?: () => void;
+    /** Plays the next episode when this one finishes. */
+    advance?: (next: MediaChoice) => void;
     resizable?: boolean;
     /** Streamed music keeps the music volume and ignores device rotation. */
     music?: boolean;
@@ -870,11 +873,19 @@
   async function end() {
     activity.setActive(false);
     if (active) {
+      const revision = generation;
       if (!active.live) position = active.duration;
       await report('stopped');
+      // The next episode may already be opening.
+      if (revision !== generation) return;
       paused = true;
       ended?.();
     }
+  }
+  // Moving on to the next episode finishes this one, as reaching its end does.
+  function playNext(next: MediaChoice) {
+    if (active && !active.live) position = active.duration;
+    advance?.(next);
   }
   onDestroy(() => {
     preparation.abort();
@@ -1150,6 +1161,9 @@
         {paused}
         busy={busy || buffering}
         {seek}
+        duration={active.duration}
+        advance={advance && choice.kind === 'episode' ? playNext : undefined}
+        autoplay={info?.preferences.autoplay !== false}
       />
     </div>
   {/if}

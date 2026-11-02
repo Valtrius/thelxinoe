@@ -602,17 +602,25 @@ test('mock settings, service controls and playback retain changes', async ({
   await page
     .getByRole('combobox', { name: /Default quality/ })
     .selectOption('720p');
+  const autoplay = page.getByRole('switch', { name: 'Autoplay next episode' });
+  await expect(autoplay).toBeChecked();
+  await autoplay.click();
   await expect
     .poll(
       async () =>
         (await (await page.request.get('/api/v1/playback/preferences')).json())
-          .quality,
+          .autoplay,
     )
-    .toBe('720p');
+    .toBe(false);
+  expect(
+    (await (await page.request.get('/api/v1/playback/preferences')).json())
+      .quality,
+  ).toBe('720p');
   await page.reload();
   await expect(
     page.getByRole('combobox', { name: /Default quality/ }),
   ).toHaveValue('720p');
+  await expect(autoplay).not.toBeChecked();
   await page.goto('/#admin/services/nzbget');
   await page.getByRole('button', { name: 'Pause all', exact: true }).click();
   await expect(
