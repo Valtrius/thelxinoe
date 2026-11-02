@@ -730,6 +730,27 @@ async fn episodes_follow_series_order_and_the_files_they_share() {
     let (alice, viewer) = login(&state, "alice").await;
     let (bob, _) = login(&state, "bob").await;
 
+    // Preferences saved before autoplay was a choice keep it on, and the rest of them.
+    state.db.write("test.fixture", |db| {
+        db.execute(r#"INSERT INTO playback_preferences VALUES ('alice','{"quality":"auto","audio_language":"","subtitle_language":"","subtitles":false,"replay_gain":"album"}')"#, [])?;
+        Ok(())
+    }).await.unwrap();
+    let preferences = ok(&state, &alice, "/playback/preferences", "GET", Value::Null).await;
+    assert_eq!(
+        (
+            preferences["replay_gain"].as_str(),
+            preferences["autoplay"].as_bool()
+        ),
+        (Some("album"), Some(true))
+    );
+    let mut changed = preferences.clone();
+    changed["autoplay"] = json!(false);
+    ok(&state, &alice, "/playback/preferences", "PUT", changed).await;
+    assert_eq!(
+        ok(&state, &alice, "/playback/preferences", "GET", Value::Null).await["autoplay"],
+        false
+    );
+
     // The next episode crosses seasons; Specials and the last episode have none.
     let next = |path: &str| {
         let (state, alice, path) = (state.clone(), alice.clone(), format!("/catalog/{path}"));

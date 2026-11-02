@@ -14,6 +14,7 @@
     busy = false,
     seek,
     advance,
+    autoplay = true,
   } = $props<{
     mediaId: string;
     fileId: string;
@@ -25,6 +26,8 @@
     seek: (at: number) => Promise<unknown>;
     /** Plays the next episode; its credits then lead there instead of a skip. */
     advance?: (next: MediaChoice) => void;
+    /** Whether the next episode starts by itself. */
+    autoplay?: boolean;
   }>();
   type Segment = { id: string; kind: string; start: number; end: number };
   let items = $state<Segment[]>([]),
@@ -68,14 +71,13 @@
       auto: preferences.Credits === 'Auto',
     },
   );
-  const current = $derived(
-    items.find(
-      (s) =>
-        s !== handedOver &&
-        position >= s.start &&
-        position < s.end &&
-        preferences[s.kind] !== 'Ignore',
-    ),
+  const playing = (s: Segment) =>
+    position >= s.start && position < s.end && preferences[s.kind] !== 'Ignore';
+  const current = $derived(items.find((s) => s !== handedOver && playing(s)));
+  // Without autoplay, automatic credits skips still skip, up to the prompt.
+  const skipped = $derived(
+    current ??
+      (!autoplay && handedOver && playing(handedOver) ? handedOver : undefined),
   );
   async function skip(segment: Segment) {
     handled = [...handled, segment.id];
@@ -86,7 +88,7 @@
     }
   }
   $effect(() => {
-    const segment = current;
+    const segment = skipped;
     if (
       segment &&
       preferences[segment.kind] === 'Auto' &&
@@ -107,6 +109,7 @@
     {paused}
     {busy}
     {credits}
+    {autoplay}
     play={advance}
   />{/if}
 {#if current && !busy}<Button size="form" onclick={() => void skip(current!)}

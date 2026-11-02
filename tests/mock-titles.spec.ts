@@ -964,7 +964,7 @@ test('a finishing episode offers the next one from its credits, across seasons, 
   expect(errors).toEqual([]);
 });
 
-test('the last episode keeps its credits skip, and automatic credits skips go to the next episode', async ({
+test('the last episode keeps its credits skip, and automatic credits skips go to the next episode or, without autoplay, its prompt', async ({
   page,
 }) => {
   const errors = track(page);
@@ -1009,5 +1009,38 @@ test('the last episode keeps its credits skip, and automatic credits skips go to
     .toEqual(['episode-7', 'episode-6', 'episode-7']);
   // Moving on at the credits, before 90%, still finishes the episode.
   await expect.poll(() => stops.at(-1)).toBe(90);
+
+  // Without autoplay the credits still skip, and the prompt waits to be chosen.
+  expect(
+    (
+      await page.request.put('/api/v1/playback/preferences', {
+        data: { autoplay: false },
+      })
+    ).ok(),
+  ).toBe(true);
+  const manual = await playEpisode(
+    page,
+    'Play episode 2: The Crossing',
+    'Beyond the Horizon · The Crossing',
+  );
+  await manual.at(78);
+  await expect(
+    manual.player.getByRole('button', { name: 'Play', exact: true }),
+  ).toBeVisible();
+  const next = manual.upNext.getByRole('button', {
+    name: 'Play S02E03 · The Signal',
+    exact: true,
+  });
+  await expect(next).toHaveText('S02E03 · The Signal');
+  await expect(
+    manual.player.getByRole('heading', {
+      name: 'Beyond the Horizon · The Crossing',
+    }),
+  ).toBeVisible();
+  expect(starts).toEqual(['episode-7', 'episode-6', 'episode-7', 'episode-5']);
+  await next.click();
+  await expect
+    .poll(() => starts)
+    .toEqual(['episode-7', 'episode-6', 'episode-7', 'episode-5', 'episode-6']);
   expect(errors).toEqual([]);
 });

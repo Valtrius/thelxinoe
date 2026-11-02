@@ -25,6 +25,7 @@
     paused,
     busy = false,
     credits,
+    autoplay = true,
     play,
   } = $props<{
     mediaId: string;
@@ -37,6 +38,8 @@
     busy?: boolean;
     /** Where the credits start, and whether they skip by themselves. */
     credits?: { start: number; auto: boolean };
+    /** Whether the countdown starts the next episode by itself. */
+    autoplay?: boolean;
     play: (choice: MediaChoice) => void;
   }>();
   let revision = 0;
@@ -59,7 +62,7 @@
 
   // Credits lead to the next episode after a short countdown. Without them it is
   // offered when Jellyfin offers it, 30 to 40 seconds before the end, and plays
-  // when this one ends.
+  // when this one ends. Without autoplay it waits to be chosen.
   const countdown = 10;
   const lead = $derived(duration >= 3000 ? 40 : duration >= 2400 ? 35 : 30);
   const offerAt = $derived(credits ? credits.start : duration - lead);
@@ -88,17 +91,17 @@
     }
   });
   $effect(() => {
-    if (!shown || !credits || paused || busy) return;
+    if (!autoplay || !shown || !credits || paused || busy) return;
     const tick = setInterval(() => (timer = Math.max(0, timer - 1)), 1000);
     return () => clearInterval(tick);
   });
   $effect(() => {
-    if (shown && !busy && (left <= 0 || (credits?.auto && !paused)))
+    if (autoplay && shown && !busy && (left <= 0 || (credits?.auto && !paused)))
       untrack(start);
   });
 </script>
 
-{#if shown && left > 0 && !credits?.auto}<div
+{#if shown && (!autoplay || (left > 0 && !credits?.auto))}<div
     class="mb-2 flex max-w-[calc(100cqw-2rem)] justify-end gap-1"
     role="group"
     aria-label="Up next"
@@ -111,12 +114,13 @@
       onclick={start}
       ><Play size={14} fill="currentColor" class="shrink-0" /><span
         class="truncate">{name}</span
-      ><span class="tabular-nums opacity-70">{left}</span></Button
+      >{#if autoplay}<span class="tabular-nums opacity-70">{left}</span
+        >{/if}</Button
     >
     <Button
       size="form"
-      aria-label="Cancel autoplay"
-      title="Cancel autoplay"
+      aria-label={autoplay ? 'Cancel autoplay' : 'Dismiss'}
+      title={autoplay ? 'Cancel autoplay' : 'Dismiss'}
       onclick={() => (dismissed = true)}><X size={14} /></Button
     >
   </div>{/if}

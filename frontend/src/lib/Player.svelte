@@ -1163,6 +1163,7 @@
         {seek}
         duration={active.duration}
         advance={advance && choice.kind === 'episode' ? playNext : undefined}
+        autoplay={info?.preferences.autoplay !== false}
       />
     </div>
   {/if}

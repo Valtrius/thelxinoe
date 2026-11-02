@@ -24,6 +24,7 @@ export type Preferences = {
   subtitle_language: string;
   subtitles: boolean;
   replay_gain: string;
+  autoplay: boolean;
 };
 export type Track = {
   id: string;
