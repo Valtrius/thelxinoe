@@ -133,7 +133,7 @@ pub(super) async fn info_source(
     let sub = field("SubtitleStreamIndex").and_then(|v| v.as_i64());
     let subtitle = match sub {
         Some(-3) => Some(
-            thelxinoe_playback::forced_subtitle(&tracks, audio, |t| t.supported)
+            thelxinoe_playback::forced_subtitle(&tracks, audio)
                 .map(|t| t.id.clone())
                 .unwrap_or_else(|| "off".into()),
         ),

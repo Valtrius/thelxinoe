@@ -175,8 +175,9 @@ ffmpeg([
   resolve(root, 'movies', 'Styled (2020).mkv'),
 ]);
 // FFmpeg encodes picture subtitles only from pictures, so a PGS stream draws a
-// white box on a black picture until 14 s, which FFmpeg also converts to
-// a forced DVD track.
+// white box on a black picture from 4 s to 14 s, which FFmpeg also converts to
+// a forced DVD track. Keyframes every 2 s put the box's start before the
+// keyframe that a seek to 8 s reads from.
 writeFileSync(
   `${root}/picture.sup`,
   pictureSubtitle({ width: 320, height: 180, box: [40, 120, 240, 40] }),
@@ -192,6 +193,8 @@ ffmpeg([
   'sine=frequency=440:sample_rate=48000',
   // The DVD track then ends where the next PGS display set clears the box.
   '-fix_sub_duration',
+  '-itsoffset',
+  '4',
   '-i',
   `${root}/picture.sup`,
   '-map',
@@ -207,7 +210,7 @@ ffmpeg([
   '-c:v',
   'libx264',
   '-g',
-  '240',
+  '48',
   '-pix_fmt',
   'yuv420p',
   '-c:a',
@@ -230,7 +233,7 @@ console.log(
   'Generated direct, remux, transcode, edition, subtitle, styled, picture subtitle and gapless music fixtures.',
 );
 
-/** A PGS stream that shows one opaque white `box` and clears it at 14 s. */
+/** A PGS stream that shows one opaque white `box` and clears it after 10 s. */
 function pictureSubtitle({ width, height, box: [x, y, w, h] }) {
   const u16 = (value) => [value >> 8, value & 255];
   const segment = (seconds, type, data) => {
@@ -271,8 +274,8 @@ function pictureSubtitle({ width, height, box: [x, y, w, h] }) {
     segment(0, 0x14, [0, 0, 1, 235, 128, 128, 255]),
     segment(0, 0x15, object),
     segment(0, 0x80, []),
-    segment(14, 0x16, composition(0, [])),
-    segment(14, 0x17, window),
-    segment(14, 0x80, []),
+    segment(10, 0x16, composition(0, [])),
+    segment(10, 0x17, window),
+    segment(10, 0x80, []),
   ]);
 }

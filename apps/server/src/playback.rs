@@ -181,15 +181,19 @@ pub(crate) async fn create_with_delivery(
             })
             .and_then(|t| t.index);
     }
+    // Only text subtitles show by default: a picture one needs a conversion, which the viewer
+    // asks for by choosing it.
     if input.options.subtitle.is_none() {
-        let preferred = tracks
-            .iter()
-            .filter(|t| prefs.subtitles && shown(t) && t.language == prefs.subtitle_language)
-            .min_by_key(|t| !t.supported);
+        let preferred = tracks.iter().find(|t| {
+            prefs.subtitles
+                && t.kind == "subtitle"
+                && t.supported
+                && t.language == prefs.subtitle_language
+        });
         // A client that selects embedded tracks itself also selects their forced subtitles.
         let forced = || {
             (!input.options.capabilities.native_tracks)
-                .then(|| thelxinoe_playback::forced_subtitle(&tracks, input.options.audio, shown))
+                .then(|| thelxinoe_playback::forced_subtitle(&tracks, input.options.audio))
                 .flatten()
         };
         input.options.subtitle = preferred.or_else(forced).map(|t| t.id.clone());

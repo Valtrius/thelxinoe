@@ -420,7 +420,10 @@
     const selected = [lastSubtitle, active?.selected_subtitle]
       .filter((id): id is string => !!id && id !== 'off')
       .find((id) => subtitles.some((track) => track.id === id));
-    setSubtitle(selected ?? subtitles[0].id);
+    // A picture subtitle would start a conversion; a text one shows at once.
+    setSubtitle(
+      selected ?? (subtitles.find((track) => track.url) ?? subtitles[0]).id,
+    );
   }
   function changeSpeed(delta: number) {
     speed = Math.max(0.25, Math.min(2, Math.round((speed + delta) * 4) / 4));

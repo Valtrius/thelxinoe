@@ -274,26 +274,19 @@ impl Track {
             && PICTURE_SUBTITLES.contains(&self.codec.as_str())
     }
 }
-/// The first forced subtitle, text before picture, in the language of audio track `audio`, or
-/// of the first audio track when `None`, among the subtitles a client can show.
-pub fn forced_subtitle(
-    tracks: &[Track],
-    audio: Option<i64>,
-    shown: impl Fn(&Track) -> bool,
-) -> Option<&Track> {
+/// The first forced text subtitle in the language of audio track `audio`, or of the first audio
+/// track when `None`. A picture subtitle needs a conversion, so it never shows by default.
+pub fn forced_subtitle(tracks: &[Track], audio: Option<i64>) -> Option<&Track> {
     let language = tracks
         .iter()
         .find(|t| t.kind == "audio" && audio.is_none_or(|index| t.index == Some(index)))
         .map_or("und", |t| t.language.as_str());
-    tracks
-        .iter()
-        .filter(|t| {
-            t.kind == "subtitle"
-                && t.forced
-                && shown(t)
-                && (t.language == language || t.language == "und")
-        })
-        .min_by_key(|t| !t.supported)
+    tracks.iter().find(|t| {
+        t.kind == "subtitle"
+            && t.forced
+            && t.supported
+            && (t.language == language || t.language == "und")
+    })
 }
 /// The attachment streams of a file that hold fonts, which styled subtitles use.
 pub fn font_attachments(probe: &Value) -> Vec<i64> {
@@ -317,12 +310,13 @@ pub fn font_attachments(probe: &Value) -> Vec<i64> {
         .collect()
 }
 /// The filter graph that draws embedded picture subtitle `subtitle` of input 0 over its video
-/// once `filter` has converted it. The graph drops the first `preroll` seconds, which only
-/// decode a subtitle already showing when the output starts, and paces itself to real time:
-/// under `-readrate`, the overlay would wait for each next subtitle.
+/// once `filter` has converted it, its canvas fitted to the picture. The input starts
+/// `preroll` seconds early so that the demuxer reads a subtitle already showing at the start;
+/// the video drops them before any filtering. The graph paces itself to real time: under
+/// `-readrate`, the overlay would wait for each next subtitle.
 pub(crate) fn burn_graph(filter: &str, subtitle: i64, preroll: f64) -> String {
     format!(
-        "[0:v:0]{filter},split[main][reference];[0:{subtitle}][reference]scale=rw:rh[subtitle];[main][subtitle]overlay,trim=start={preroll},setpts=PTS-{preroll}/TB,realtime[video]"
+        "[0:v:0]trim=start={preroll},{filter},split[main][reference];[0:{subtitle}][reference]scale=rw:rh:force_original_aspect_ratio=decrease[subtitle];[main][subtitle]overlay=(W-w)/2:(H-h)/2,setpts=PTS-{preroll}/TB,realtime[video]"
     )
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

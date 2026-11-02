@@ -595,6 +595,19 @@ async function fixture(
           video: true,
           tracks: [],
           subtitles: [
+            // Embedded picture tracks come before sidecar text ones.
+            ...(options.styled
+              ? [
+                  {
+                    id: 'embedded-3',
+                    language: 'en',
+                    title: 'DVD',
+                    codec: 'dvd_subtitle',
+                    forced: true,
+                    url: null,
+                  },
+                ]
+              : []),
             ...(options.subtitles || options.styled
               ? [
                   {
@@ -613,14 +626,6 @@ async function fixture(
                     title: 'Signs',
                     codec: 'ass',
                     url: '/fixture/styled?grant=fixture',
-                  },
-                  {
-                    id: 'embedded-3',
-                    language: 'en',
-                    title: 'DVD',
-                    codec: 'dvd_subtitle',
-                    forced: true,
-                    url: null,
                   },
                 ]
               : []),
@@ -1841,6 +1846,18 @@ test('styled subtitles load their renderer when shown, both renderers follow the
   const styledRenderer = () =>
     requests.filter((url) => /jassub|styled-subtitles/.test(url));
   expect(styledRenderer()).toEqual([]);
+  // Turning subtitles on prefers a text track to one that needs a conversion.
+  await player.focus();
+  await page.keyboard.press('c');
+  await expect
+    .poll(() =>
+      video.evaluate(
+        (element: HTMLVideoElement) =>
+          [...element.textTracks].find((track) => track.id === 'english')?.mode,
+      ),
+    )
+    .toBe('showing');
+  expect(state.starts).toHaveLength(1);
 
   await choose('en Signs');
   await expect(page.locator('canvas.styled-subtitles')).toHaveCount(1);

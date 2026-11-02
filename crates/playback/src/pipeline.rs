@@ -189,9 +189,9 @@ impl Pipelines {
         } else if let Input::Local(source) = &input {
             command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
             let audio = if encoding.subtitle.is_some() {
-                // The burn graph paces itself. Its input starts earlier to decode a subtitle
-                // that already shows at the start; the audio comes from an exact seek, which
-                // copied audio keeps only from the seek on, not from the keyframe before it.
+                // The burn graph paces itself. Its input starts earlier to read a subtitle that
+                // already shows at the start; the audio comes from an exact seek, which copied
+                // audio keeps only from the seek on, not from the keyframe before it.
                 command
                     .args(["-ss"])
                     .arg((timeline_start - burn_preroll(timeline_start)).to_string())
@@ -533,8 +533,9 @@ impl Pipelines {
     }
 }
 
-/// The seconds a conversion that burns in a subtitle decodes before `start`: FFmpeg drops a
-/// subtitle that begins before its input does.
+/// The seconds a conversion that burns in a subtitle reads before `start`. A seek starts the
+/// demuxer at the keyframe before its position, so a subtitle whose packet comes earlier, though
+/// still showing, is never read.
 fn burn_preroll(start: f64) -> f64 {
     start.min(10.0)
 }

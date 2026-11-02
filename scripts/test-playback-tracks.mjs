@@ -160,7 +160,7 @@ try {
   await call(`/playback/${session.id}`, 'DELETE');
 
   // The white box of the picture tracks covers the bottom of the black
-  // picture until 14 s.
+  // picture from 4 s to 14 s.
   const burned = async (url, at = 0) => {
     const playlist = await (await api.get(url)).text();
     const name = playlist.split('\n').find((s) => s.startsWith('segment-'));
@@ -185,9 +185,16 @@ try {
     assert.ok(gray[40 * 320 + 160] < 40, 'The picture above the box is black');
     return gray[140 * 320 + 160] > 200;
   };
-  // A forced DVD track is burned in, and keeps its timeline across seeks:
-  // the box still shows after a seek into it, and is gone after it ends.
-  session = await play(picture, web);
+  // A forced picture track never shows by default: it needs a conversion, so
+  // a file that plays directly still does.
+  session = await play(picture, { ...web, containers: ['mkv'] });
+  assert.equal(session.selected_subtitle, null);
+  assert.equal(session.mode, 'direct');
+  await call(`/playback/${session.id}`, 'DELETE');
+  // Chosen, the DVD track is burned in and keeps its timeline across seeks.
+  // A seek to 8 s reads from the keyframe at 8 s, after the box's packet, so
+  // only the preroll shows the box there; it is gone after it ends.
+  session = await play(picture, web, 'embedded-3');
   assert.equal(session.selected_subtitle, 'embedded-3');
   assert.equal(session.mode, 'transcode');
   assert.equal(session.encoding.subtitle, 3);
@@ -196,7 +203,7 @@ try {
     /Picture subtitles are burned into the video/,
   );
   assert.equal(session.subtitles.find((s) => s.id === 'embedded-3').url, null);
-  assert.ok(await burned(session.url, 1), 'The DVD subtitle is burned in');
+  assert.ok(await burned(session.url, 5), 'The DVD subtitle is burned in');
   for (const [position, shown] of [
     [8, true],
     [15, false],
@@ -213,7 +220,7 @@ try {
   }
   await call(`/playback/${session.id}`, 'DELETE');
   session = await play(picture, web, 'embedded-2');
-  assert.ok(await burned(session.url, 1), 'The PGS subtitle is burned in');
+  assert.ok(await burned(session.url, 5), 'The PGS subtitle is burned in');
   await call(`/playback/${session.id}`, 'DELETE');
   // A client that can't burn them in is never given picture subtitles.
   session = await play(picture, options.capabilities);
@@ -229,7 +236,7 @@ try {
   });
   assert.equal(refused.status(), 400);
   console.log(
-    'Saved audio/subtitle languages, embedded WebVTT, actual selected audio (880 Hz), styled tracks with their fonts, forced and burned-in picture subtitles passed.',
+    'Saved audio/subtitle languages, embedded WebVTT, actual selected audio (880 Hz), forced and styled text tracks with their fonts, and chosen picture subtitles burned in passed.',
   );
 } finally {
   if (session) await call(`/playback/${session.id}`, 'DELETE').catch(() => {});

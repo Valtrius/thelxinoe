@@ -200,3 +200,33 @@ async fn cleanup_removes_gone_versions_and_partial_extractions_after_a_day() {
     sweep(temp.path(), &keep, Duration::ZERO).await.unwrap();
     assert_eq!(names(), ["current"]);
 }
+
+#[tokio::test]
+async fn fonts_are_removed_a_day_after_their_last_use() {
+    let temp = tempfile::tempdir().unwrap();
+    let day_ago = std::time::SystemTime::now() - DAY - Duration::from_secs(60);
+    for name in ["used", "unused"] {
+        let dir = temp.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("3"), "font").unwrap();
+        std::fs::write(dir.join(COMPLETE), []).unwrap();
+        // Extracted a day ago; only "used" was requested since.
+        let marker = std::fs::File::options()
+            .write(true)
+            .open(dir.join(COMPLETE))
+            .unwrap();
+        marker
+            .set_modified(if name == "used" {
+                std::time::SystemTime::now()
+            } else {
+                day_ago
+            })
+            .unwrap();
+    }
+    expire_fonts(temp.path(), DAY).await.unwrap();
+    let names = std::fs::read_dir(temp.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["used"]);
+}

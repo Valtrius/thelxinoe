@@ -33,7 +33,6 @@ export type Track = {
   codec: string;
   language: string;
   title: string;
-  forced?: boolean;
   supported: boolean;
 };
 export type Options = {

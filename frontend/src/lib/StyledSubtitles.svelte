@@ -58,19 +58,22 @@
     });
     return () => {
       closed = true;
-      void instance?.destroy();
+      // A renderer that failed to start rejects its teardown too.
+      instance?.destroy().catch(() => {});
     };
   });
   $effect(() => {
     if (!renderer) return;
     renderer.timeOffset = offset;
-    void renderer.resize();
+    renderer.resize().catch(() => {});
   });
   $effect(() => {
     if (!renderer || size === shownSize) return;
     shownSize = size;
-    void renderer.renderer.setTrack(scaled(script, size));
-    void renderer.resize();
+    renderer.renderer
+      .setTrack(scaled(script, size))
+      .then(() => renderer?.resize())
+      .catch(() => {});
   });
 </script>
 
