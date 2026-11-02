@@ -137,6 +137,12 @@ ffmpeg([
 ]);
 for (let number = 2; number <= 120; number++)
   copyFileSync(longEpisode(1), longEpisode(number));
+// Specials, two seasons and a file holding two episodes, for series order and Next up.
+for (const episode of ['S00E01', 'S01E01', 'S01E02', 'S02E01E02', 'S02E03'])
+  copyFileSync(
+    longEpisode(1),
+    resolve(root, 'shows', `Order Show.${episode}.mp4`),
+  );
 console.log(
-  'Generated direct, remux, transcode, edition, subtitle, gapless music and long-season fixtures.',
+  'Generated direct, remux, transcode, edition, subtitle, gapless music, long-season and series-order fixtures.',
 );

@@ -92,6 +92,45 @@ pub(super) async fn set_watched(
 /// Every series' episodes in viewing order. Specials stand outside it.
 const SERIES_ORDER: &str = "SELECT e.id,s.parent_id AS show_id,ROW_NUMBER() OVER(PARTITION BY s.parent_id ORDER BY s.sort_number,e.sort_number,e.id) AS ord FROM media e JOIN media s ON s.id=e.parent_id WHERE e.kind='episode' AND s.kind='season' AND s.sort_number>0";
 
+/// Each series' next episode is its `candidates` row with `rn=1`: the first available,
+/// unwatched one after the last watched (`anchor`), or from the start. Follows `ordered`.
+const NEXT_UP: &str = "anchor AS (SELECT o.show_id,MAX(o.ord) AS ord FROM ordered o JOIN media_state u ON u.media_id=o.id WHERE u.user_id=?1 AND u.watched=1 GROUP BY o.show_id), candidates AS (SELECT o.id,o.show_id,a.ord AS anchor,ROW_NUMBER() OVER(PARTITION BY o.show_id ORDER BY o.ord) AS rn FROM ordered o LEFT JOIN anchor a ON a.show_id=o.show_id LEFT JOIN media_state u ON u.media_id=o.id AND u.user_id=?1 JOIN media_cards c ON c.id=o.id WHERE c.available=1 AND COALESCE(u.watched,0)=0 AND o.ord>COALESCE(a.ord,0))";
+
+/// When each episode was last played: its last progress report or watched mark. Unmarking
+/// rewinds the progress to 0, which clears it as Jellyfin clears LastPlayedDate.
+const PLAYED: &str = "played AS (SELECT media_id,MAX(at) AS at FROM (SELECT media_id,updated_at AS at FROM edition_progress WHERE user_id=?1 AND position>0 UNION ALL SELECT media_id,updated_at FROM media_state WHERE user_id=?1 AND watched=1) GROUP BY media_id)";
+
+/// With rewatching, Jellyfin also offers the watched episode that follows the one played last.
+const REWATCH: &str = "UNION ALL SELECT id,show_id,1,at FROM (SELECT o.id,o.show_id,r.at,ROW_NUMBER() OVER(PARTITION BY o.show_id ORDER BY o.ord) AS rn FROM (SELECT o.show_id,o.ord,p.at,ROW_NUMBER() OVER(PARTITION BY o.show_id ORDER BY p.at DESC,o.ord DESC) AS rn FROM ordered o JOIN played p ON p.media_id=o.id JOIN media_state u ON u.media_id=o.id AND u.user_id=?1 WHERE u.watched=1) r JOIN ordered o ON o.show_id=r.show_id AND o.ord>r.ord JOIN media_state u ON u.media_id=o.id AND u.user_id=?1 JOIN media_cards c ON c.id=o.id WHERE r.rn=1 AND u.watched=1 AND c.available=1) WHERE rn=1";
+
+/// Jellyfin's Next up (`TVSeriesManager`). Without a series, it lists the series played
+/// since the cutoff, ordered by when their last watched episode was played. An entry with
+/// a resume position is dropped unless resumable ones are wanted; a rewatch always is.
+pub(super) async fn next_up(
+    user: String,
+    query: NextUp,
+    db: &Database,
+) -> anyhow::Result<Vec<String>> {
+    db.read("user_media.next_up", move |db| {
+        let rewatch = if query.rewatching { REWATCH } else { "" };
+        let sql = format!("WITH ordered AS ({SERIES_ORDER}), {NEXT_UP}, {PLAYED},
+            shows AS (SELECT s.parent_id AS id,MAX(p.at) AS at FROM played p JOIN media e ON e.id=p.media_id JOIN media s ON s.id=e.parent_id WHERE e.kind='episode' AND s.kind='season' GROUP BY s.parent_id),
+            entries AS (SELECT n.id,n.show_id,0 AS again,p.at FROM candidates n LEFT JOIN ordered o ON o.show_id=n.show_id AND o.ord=n.anchor LEFT JOIN played p ON p.media_id=o.id WHERE n.rn=1 {rewatch})
+            SELECT x.id FROM entries x JOIN media sh ON sh.id=x.show_id LEFT JOIN shows a ON a.id=x.show_id
+            WHERE CASE WHEN ?2 IS NULL THEN a.at>=COALESCE(?3,0) AND (?4 IS NULL OR sh.root_id=?4) ELSE x.show_id=?2 END
+                AND NOT ((x.again OR NOT ?5) AND EXISTS(SELECT 1 FROM edition_progress r WHERE r.user_id=?1 AND r.media_id=x.id AND r.position>0 AND r.position<r.duration*0.9))
+            ORDER BY x.at IS NULL,x.at DESC,a.at DESC,x.show_id");
+        Ok(db
+            .prepare(&sql)?
+            .query_map(
+                params![user, query.show, query.since, query.root, query.resumable],
+                |r| r.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+    .await
+}
+
 /// The available episode that follows `media` in its series, past every episode its
 /// played file also holds (any of its files when none is named).
 pub(super) async fn next_episode(
@@ -120,7 +159,7 @@ pub(super) async fn home_for(p: Principal, db: &Database) -> anyhow::Result<Valu
         let favorites = db.prepare("SELECT c.id,c.kind,c.title,c.available,sh.title FROM media_cards c JOIN media_state s ON s.media_id=c.id LEFT JOIN media pm ON pm.id=c.parent_id LEFT JOIN media_cards sh ON sh.id=CASE c.kind WHEN 'season' THEN c.parent_id WHEN 'episode' THEN pm.parent_id END WHERE s.user_id=?1 AND s.favorite=1 ORDER BY s.updated_at DESC,c.title LIMIT 100")?.query_map([&p.user.id],shelf_card)?.collect::<std::result::Result<Vec<_>,_>>()?;
         let later = db.prepare("SELECT c.id,c.kind,c.title,c.available,sh.title FROM media_cards c JOIN media_state s ON s.media_id=c.id LEFT JOIN media pm ON pm.id=c.parent_id LEFT JOIN media_cards sh ON sh.id=CASE c.kind WHEN 'season' THEN c.parent_id WHEN 'episode' THEN pm.parent_id END WHERE s.user_id=?1 AND s.watch_later=1 ORDER BY s.updated_at DESC,c.title LIMIT 100")?.query_map([&p.user.id],shelf_card)?.collect::<std::result::Result<Vec<_>,_>>()?;
         let resume = db.prepare("WITH latest AS (SELECT e.*,ROW_NUMBER() OVER(PARTITION BY media_id ORDER BY updated_at DESC,edition) AS rn FROM edition_progress e WHERE user_id=?1) SELECT c.id,c.kind,c.title,c.available,e.position,e.duration,e.edition,(SELECT f.id FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=c.id AND f.edition=e.edition AND f.present=1 ORDER BY f.id LIMIT 1),e.updated_at FROM latest e JOIN media_cards c ON c.id=e.media_id WHERE e.rn=1 AND EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=c.id AND f.edition=e.edition AND f.present=1) AND c.kind IN ('movie','episode') AND c.available=1 AND e.position>0 AND e.position<e.duration*0.9 ORDER BY e.updated_at DESC LIMIT 50")?.query_map([&p.user.id],|r|{let mut c=card(r)?;c["position"]=json!(r.get::<_,f64>(4)?);c["duration"]=json!(r.get::<_,f64>(5)?);c["edition"]=json!(r.get::<_,String>(6)?);c["fileId"]=json!(r.get::<_,String>(7)?);c["last_played"]=json!(r.get::<_,i64>(8)?);Ok(c)})?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let next = db.prepare(&format!("WITH ordered AS ({SERIES_ORDER}), anchor AS (SELECT o.show_id,MAX(o.ord) AS ord FROM ordered o JOIN media_state u ON u.media_id=o.id WHERE u.user_id=?1 AND u.watched=1 GROUP BY o.show_id), candidates AS (SELECT o.id,o.show_id,ROW_NUMBER() OVER(PARTITION BY o.show_id ORDER BY o.ord) AS rn FROM ordered o LEFT JOIN anchor a ON a.show_id=o.show_id LEFT JOIN media_state u ON u.media_id=o.id AND u.user_id=?1 LEFT JOIN media_state show_state ON show_state.media_id=o.show_id AND show_state.user_id=?1 JOIN media_cards c ON c.id=o.id WHERE c.available=1 AND COALESCE(u.watched,0)=0 AND o.ord>COALESCE(a.ord,0) AND (a.ord IS NOT NULL OR COALESCE(show_state.favorite,0)=1 OR COALESCE(show_state.watch_later,0)=1)) SELECT c.id,c.kind,c.title,c.available,sh.title FROM candidates n JOIN media_cards c ON c.id=n.id JOIN media_cards sh ON sh.id=n.show_id WHERE n.rn=1 ORDER BY sh.title LIMIT 50"))?.query_map([&p.user.id],|r|{let mut c=card(r)?;c["show_title"]=json!(r.get::<_,String>(4)?);Ok(c)})?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let next = db.prepare(&format!("WITH ordered AS ({SERIES_ORDER}), {NEXT_UP} SELECT c.id,c.kind,c.title,c.available,sh.title FROM candidates n JOIN media_cards c ON c.id=n.id JOIN media_cards sh ON sh.id=n.show_id LEFT JOIN media_state show_state ON show_state.media_id=n.show_id AND show_state.user_id=?1 WHERE n.rn=1 AND (n.anchor IS NOT NULL OR COALESCE(show_state.favorite,0)=1 OR COALESCE(show_state.watch_later,0)=1) ORDER BY sh.title LIMIT 50"))?.query_map([&p.user.id],|r|{let mut c=card(r)?;c["show_title"]=json!(r.get::<_,String>(4)?);Ok(c)})?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok(json!({"favorites":favorites,"watch_later":later,"continue_watching":resume,"next_up":next}))
     }).await
 }

@@ -230,6 +230,104 @@ async fn browse_media(
     }
 }
 
+/// `Shows/{id}/Episodes`. As in Jellyfin, `StartItemId` starts the list at an episode and
+/// `AdjacentTo` keeps an episode and its neighbours, before paging and the total.
+pub async fn episodes(state: &AppState, p: &Principal, query: &Query) -> Result<Value> {
+    let start = query.get("startitemid").map(|id| canonical(id));
+    let adjacent = query.get("adjacentto").map(|id| canonical(id));
+    if start.is_none() && adjacent.is_none() {
+        return browse(state, p, query, None).await;
+    }
+    let mut ids = storage::media_ids(&state.db, p.user.id.clone(), query.clone()).await?;
+    if let Some(start) = start {
+        let at = ids.iter().position(|id| *id == start).unwrap_or(ids.len());
+        ids.drain(..at);
+    }
+    if let Some(adjacent) = adjacent {
+        ids = match ids.iter().position(|id| *id == adjacent) {
+            Some(at) => ids[at.saturating_sub(1)..(at + 2).min(ids.len())].to_vec(),
+            None => Vec::new(),
+        };
+    }
+    let mut query = query.clone();
+    query.insert("ids".into(), ids.join(","));
+    browse(state, p, &query, None).await
+}
+
+/// `Shows/NextUp`, with the parameters of Jellyfin's `TvShowsController.GetNextUp`.
+pub async fn next_up(state: &AppState, p: &Principal, query: &Query) -> Result<Value> {
+    let flag = |key: &str, default: bool| {
+        query
+            .get(key)
+            .map_or(default, |v| v.eq_ignore_ascii_case("true"))
+    };
+    let since = query
+        .get("nextupdatecutoff")
+        .map(|v| timestamp(v).ok_or_else(|| ApiError::bad("Invalid NextUpDateCutoff")))
+        .transpose()?;
+    let (start, limit) = page(query)?;
+    let ids = crate::user_media::next_up(
+        state,
+        p,
+        crate::user_media::NextUp {
+            show: query.get("seriesid").map(|id| canonical(id)),
+            root: query.get("parentid").map(|id| canonical(id)),
+            since,
+            resumable: flag("enableresumable", true),
+            rewatching: flag("enablerewatching", false),
+        },
+    )
+    .await?;
+    // Next up reads a zero Limit as none.
+    let entries = ids
+        .iter()
+        .skip(start)
+        .take(limit.filter(|limit| *limit > 0).unwrap_or(usize::MAX))
+        .collect::<Vec<_>>();
+    let mut q = Query::from([(
+        "ids".into(),
+        entries
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+    )]);
+    if let Some(fields) = query.get("fields") {
+        q.insert("fields".into(), fields.clone());
+    }
+    let catalog = browse_media(state, p, &q, None).await?;
+    let items = entries
+        .into_iter()
+        .filter_map(|id| {
+            catalog["Items"]
+                .as_array()?
+                .iter()
+                .find(|i| i["Id"] == *id)
+                .cloned()
+        })
+        .collect();
+    Ok(result(items, ids.len(), start))
+}
+
+/// Unix seconds of a Jellyfin date parameter. Like Jellyfin, a time without an offset
+/// compares as UTC.
+fn timestamp(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|at| at.timestamp())
+        .ok()
+        .or_else(|| {
+            ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M"]
+                .into_iter()
+                .find_map(|format| chrono::NaiveDateTime::parse_from_str(value, format).ok())
+                .map(|at| at.and_utc().timestamp())
+        })
+        .or_else(|| {
+            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .ok()
+                .map(|day| day.and_time(chrono::NaiveTime::MIN).and_utc().timestamp())
+        })
+}
+
 pub async fn is_playlist(state: &AppState, id: &str) -> Result<bool> {
     let id = canonical(id);
     Ok(storage::is_playlist(id, &state.db).await?)

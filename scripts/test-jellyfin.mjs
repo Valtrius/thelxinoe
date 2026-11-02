@@ -230,7 +230,13 @@ for (const [path, start, count] of [
     100,
     10,
   ],
+  // "Long Show · S01E100" sorts before "Long Show · S01E11" by title.
   [`/Items?ParentId=${longSeason.Id}&StartIndex=100`, 100, 20],
+  [
+    `/Items?ParentId=${longSeason.Id}&SortBy=SortName&StartIndex=95&Limit=10`,
+    95,
+    10,
+  ],
 ]) {
   r = await compat.get(path, { headers });
   assert.equal(r.status(), 200, path);
@@ -238,13 +244,87 @@ for (const [path, start, count] of [
   assert.equal(page.TotalRecordCount, 120, path);
   assert.equal(page.StartIndex, start, path);
   assert.equal(page.Items.length, count, path);
-  if (path.startsWith('/Shows/'))
-    assert.deepEqual(
-      page.Items.map((i) => i.IndexNumber),
-      Array.from({ length: count }, (_, i) => start + i + 1),
-      path,
-    );
+  assert.deepEqual(
+    page.Items.map((i) => i.IndexNumber),
+    Array.from({ length: count }, (_, i) => start + i + 1),
+    path,
+  );
 }
+async function jellyfinList(path) {
+  const response = await compat.get(path, { headers });
+  assert.equal(response.status(), 200, path);
+  return response.json();
+}
+const ids = (page) => page.Items.map((i) => i.Id);
+// A series lists season by season, Specials first. Jellyfin Android TV's Previous
+// button reads AdjacentTo, and both TV clients queue episodes from StartItemId.
+const orderShow = (
+  await jellyfinList(
+    '/Items?IncludeItemTypes=Series&Recursive=true&SearchTerm=Order%20Show',
+  )
+).Items.find((i) => i.Name === 'Order Show');
+assert.ok(orderShow, 'Generate playback fixtures first');
+const orderEpisodes = (await jellyfinList(`/Shows/${orderShow.Id}/Episodes`))
+  .Items;
+assert.deepEqual(
+  orderEpisodes.map((i) => `S${i.ParentIndexNumber}E${i.IndexNumber}`),
+  ['S0E1', 'S1E1', 'S1E2', 'S2E1', 'S2E2', 'S2E3'],
+);
+const [, s1e1, s1e2, s2e1, s2e2, s2e3] = orderEpisodes;
+for (const [path, expected] of [
+  [`/Items?ParentId=${s2e1.SeasonId}`, [s2e1, s2e2, s2e3]],
+  [`/Shows/${orderShow.Id}/Episodes?AdjacentTo=${s2e1.Id}`, [s1e2, s2e1, s2e2]],
+  [
+    `/Shows/${orderShow.Id}/Episodes?StartItemId=${s1e2.Id}&Limit=100`,
+    [s1e2, s2e1, s2e2, s2e3],
+  ],
+  [
+    `/Shows/${orderShow.Id}/Episodes?SeasonId=${s2e1.SeasonId}&StartItemId=${s2e2.Id}`,
+    [s2e2, s2e3],
+  ],
+]) {
+  const page = await jellyfinList(path);
+  assert.deepEqual(ids(page), ids({ Items: expected }), path);
+  assert.equal(page.TotalRecordCount, expected.length, path);
+}
+const longEpisodes = (await jellyfinList(`/Shows/${longShow.Id}/Episodes`))
+  .Items;
+assert.deepEqual(
+  (
+    await jellyfinList(
+      `/Shows/${longShow.Id}/Episodes?StartItemId=${longEpisodes[100].Id}`,
+    )
+  ).Items.map((i) => i.IndexNumber),
+  Array.from({ length: 20 }, (_, i) => 101 + i),
+);
+// Next up for a series offers its own next episode, the first before any is watched.
+// Each episode of a shared file is watched on its own.
+const nextUp = async (query) =>
+  ids(await jellyfinList(`/Shows/NextUp?${query}`));
+const marked = [];
+async function setPlayed(item, played) {
+  const response = played
+    ? await compat.post(`/UserPlayedItems/${item.Id}`, { headers })
+    : await compat.delete(`/UserPlayedItems/${item.Id}`, { headers });
+  assert.equal(response.status(), 200, item.Name);
+  if (played) marked.push(item);
+}
+assert.deepEqual(await nextUp(`SeriesId=${orderShow.Id}`), [s1e1.Id]);
+assert.deepEqual(await nextUp(`SeriesId=${longShow.Id}`), [longEpisodes[0].Id]);
+await setPlayed(s1e1, true);
+await setPlayed(longEpisodes[0], true);
+assert.deepEqual(await nextUp(`SeriesId=${orderShow.Id}`), [s1e2.Id]);
+assert.deepEqual(await nextUp(`SeriesId=${longShow.Id}`), [longEpisodes[1].Id]);
+const everyNext = await nextUp('');
+for (const item of [s1e2, longEpisodes[1]])
+  assert.ok(everyNext.includes(item.Id), `Next up offers ${item.Name}`);
+await setPlayed(s1e2, true);
+await setPlayed(s2e1, true);
+assert.deepEqual(await nextUp(`SeriesId=${orderShow.Id}`), [s2e2.Id]);
+await setPlayed(s2e2, true);
+assert.deepEqual(await nextUp(`SeriesId=${orderShow.Id}`), [s2e3.Id]);
+for (const item of marked) await setPlayed(item, false);
+assert.deepEqual(await nextUp(`SeriesId=${orderShow.Id}`), [s1e1.Id]);
 const playlists = (await call('/playlists')).items;
 if (!playlists.some((p) => p.name === 'TV validation mix')) {
   await call('/playlists', 'POST', {

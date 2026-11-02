@@ -174,6 +174,19 @@ pub(crate) async fn home_for(state: &AppState, principal: &Principal) -> Result<
     Ok(result)
 }
 
+pub(crate) struct NextUp {
+    /// This series alone, whether or not it was played.
+    pub show: Option<String>,
+    pub root: Option<String>,
+    pub since: Option<i64>,
+    pub resumable: bool,
+    pub rewatching: bool,
+}
+/// Episode IDs of Jellyfin's Next up.
+pub(crate) async fn next_up(state: &AppState, p: &Principal, query: NextUp) -> Result<Vec<String>> {
+    Ok(storage::next_up(p.user.id.clone(), query, &state.db).await?)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::test_support::{call, fixture};

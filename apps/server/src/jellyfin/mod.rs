@@ -526,16 +526,7 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
             return Ok(axum::Json(catalog::result(Vec::new(), 0, 0)).into_response());
         }
         if lower == "/shows/nextup" {
-            let home = crate::user_media::home_for(&state, &p).await?;
-            let ids = home["next_up"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|i| i["id"].as_str())
-                .collect::<Vec<_>>()
-                .join(",");
-            query.insert("ids".into(), ids);
-            return Ok(axum::Json(catalog::browse(&state, &p, &query, None).await?).into_response());
+            return Ok(axum::Json(catalog::next_up(&state, &p, &query).await?).into_response());
         }
         let item_at = if parts.first() == Some(&"Items") {
             Some(0)
@@ -602,11 +593,16 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
                 .into(),
             );
             query.insert("sortby".into(), "IndexNumber".into());
-            if parts[2] == "Episodes" {
-                query.insert("recursive".into(), "true".into());
-            }
             if let Some(season) = query.get("seasonid").cloned() {
                 query.insert("parentid".into(), season);
+            }
+            if parts[2] == "Episodes" {
+                query.insert("recursive".into(), "true".into());
+                // Jellyfin lists a series season by season, so Specials come first; only
+                // airs-before metadata, which the catalog lacks, would move them.
+                query.insert("sortby".into(), "ParentIndexNumber,IndexNumber".into());
+                query.remove("sortorder");
+                return Ok(axum::Json(catalog::episodes(&state, &p, &query).await?).into_response());
             }
             return Ok(axum::Json(catalog::browse(&state, &p, &query, None).await?).into_response());
         }
