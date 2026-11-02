@@ -213,7 +213,6 @@ export function settingsSeed() {
         hevc: true,
         hevc_10bit: true,
         tone_map: false,
-        download: true,
         deinterlace: true,
       },
     },

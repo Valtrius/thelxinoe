@@ -2,7 +2,7 @@
 //! Segments are generated on demand and may be evicted and regenerated.
 use crate::{
     Accelerator, CleanupReason, Decision, Encoding, Options, RemoteSource, RunHandle, Source,
-    StoppedRun,
+    StoppedRun, hardware::FirstError,
 };
 use anyhow::{Context, Result, bail};
 use std::{
@@ -16,7 +16,7 @@ use thelxinoe_tools::{MediaTools, Runtime};
 use tokio::{
     io::AsyncBufReadExt,
     process::Command,
-    sync::{Mutex, OnceCell, Semaphore, watch},
+    sync::{Mutex, OnceCell, OwnedSemaphorePermit, Semaphore, watch},
 };
 
 struct Run {
@@ -27,8 +27,6 @@ struct Run {
     remote: Option<RemoteSource>,
     options: Options,
     encoding: Encoding,
-    /// The GPU this run's video conversions use, until one fails.
-    hardware: Arc<std::sync::Mutex<Option<Accelerator>>>,
     boundaries: Vec<f64>,
     video_start: f64,
     gate: Mutex<Option<RemoteWork>>,
@@ -37,7 +35,9 @@ struct Run {
 struct RemoteWork {
     first: usize,
     end: usize,
-    task: tokio::task::JoinHandle<Result<()>>,
+    hardware: bool,
+    /// Hands its conversion slot back, for the software conversion replacing a failed GPU.
+    task: tokio::task::JoinHandle<(Result<()>, OwnedSemaphorePermit)>,
 }
 impl Drop for RemoteWork {
     fn drop(&mut self) {
@@ -256,9 +256,6 @@ impl VodCache {
                 remote,
                 options: options.clone(),
                 encoding,
-                hardware: Arc::new(std::sync::Mutex::new(
-                    self.hardware.accelerator().filter(|_| encoding.video),
-                )),
                 boundaries,
                 video_start,
                 gate: Mutex::new(None),
@@ -268,6 +265,15 @@ impl VodCache {
         Ok(revision)
     }
     pub async fn file(&self, id: &str, revision: &str, name: &str) -> Result<Option<PathBuf>> {
+        self.prepare(id, revision, name, None).await
+    }
+    async fn prepare(
+        &self,
+        id: &str,
+        revision: &str,
+        name: &str,
+        slot: Option<OwnedSemaphorePermit>,
+    ) -> Result<Option<PathBuf>> {
         let run = self
             .runs
             .lock()
@@ -321,7 +327,7 @@ impl VodCache {
             return Ok(Some(if init { run.directory.join(name) } else { path }));
         }
         if run.remote.is_some() && run.encoding.video {
-            let path = self.remote_file(&run, index, path, &mut gate).await?;
+            let path = self.remote_file(id, &run, index, path, &mut gate).await?;
             return Ok(Some(if init { run.directory.join(name) } else { path }));
         }
         if run.remote.is_none() {
@@ -330,11 +336,14 @@ impl VodCache {
         if fs2::available_space(&run.directory)? < 512 * 1024 * 1024 {
             bail!("Insufficient conversion cache space");
         }
-        let _slot = self
-            .slots
-            .clone()
-            .try_acquire_owned()
-            .context("All conversion slots are busy")?;
+        let _slot = match slot {
+            Some(slot) => slot,
+            None => self
+                .slots
+                .clone()
+                .try_acquire_owned()
+                .context("All conversion slots are busy")?,
+        };
         // The gate makes this the directory's only conversion. Dropped after the children
         // below, so a killed conversion's output goes too.
         let _partials = Partials {
@@ -345,7 +354,7 @@ impl VodCache {
         let start = run.boundaries[index];
         let duration = run.boundaries[index + 1] - start;
         let remux_video = !run.encoding.video && run.source.video_codec().is_some();
-        let hardware = run.hardware.lock().unwrap().clone();
+        let hardware = self.hardware.accelerator(id).filter(|_| run.encoding.video);
         let args = run
             .encoding
             .args(&run.options, &run.source.probe, hardware.as_ref())?;
@@ -353,7 +362,7 @@ impl VodCache {
         command.args([
             "-hide_banner",
             "-loglevel",
-            "error",
+            "level+error",
             "-nostdin",
             "-y",
             "-fflags",
@@ -461,7 +470,7 @@ impl VodCache {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
@@ -470,6 +479,7 @@ impl VodCache {
             bail!("Playback was stopped");
         }
         let mut child = command.spawn()?;
+        let errors = FirstError::watch(&mut child);
         let status = tokio::select! {
             result=tokio::time::timeout(Duration::from_secs(40),child.wait()) =>
                 result.context("Segment conversion timed out").and_then(|r|r.map_err(Into::into)),
@@ -480,12 +490,15 @@ impl VodCache {
             let _ = child.kill().await;
         }
         if hardware.is_some() && !matches!(&status, Ok(s) if s.success()) && !*canceled.borrow() {
-            // Later segments skip the GPU too.
-            *run.hardware.lock().unwrap() = None;
+            // The session's later segments skip the GPU too.
+            let cause = match &status {
+                Ok(_) => errors.cause().await,
+                Err(error) => format!("{error:#}"),
+            };
+            self.hardware.failed(id, &cause);
             if status.is_ok() {
-                tracing::warn!(revision = %run.revision, index, "Hardware conversion failed; converting in software");
-                drop((_partials, _slot, gate));
-                return Box::pin(self.file(id, revision, name)).await;
+                drop((_partials, gate));
+                return Box::pin(self.prepare(id, revision, name, Some(_slot))).await;
             }
         }
         let status = status?;
@@ -627,6 +640,7 @@ impl VodCache {
     }
     async fn remote_file(
         &self,
+        id: &str,
         run: &Run,
         index: usize,
         path: PathBuf,
@@ -642,68 +656,7 @@ impl VodCache {
             publish_initializations(run, &old).await?;
         }
         if work.is_none() {
-            let remote = run.remote.as_ref().unwrap();
-            remote.validate()?;
-            if fs2::available_space(&run.directory)? < 512 * 1024 * 1024 {
-                bail!("Insufficient conversion cache space");
-            }
-            let slot = self
-                .slots
-                .clone()
-                .try_acquire_owned()
-                .context("All conversion slots are busy")?;
-            // At most 48 seconds of media per connection. Publish each segment
-            // atomically as soon as it is ready, while preparing the next ones.
-            let end = (index + 8).min(run.boundaries.len() - 1);
-            let start = run.boundaries[index];
-            let duration = run.boundaries[end] - start;
-            let hardware = run.hardware.lock().unwrap().clone();
-            let command = |hardware: Option<&Accelerator>| {
-                window_command(run, remote, index, start, duration, hardware)
-            };
-            let child = command(hardware.as_ref())?
-                .spawn()
-                .context("Start public video conversion")?;
-            let mut fallback = hardware.is_some().then(|| command(None)).transpose()?;
-            let shared = run.hardware.clone();
-            let mut canceled = run.canceled.subscribe();
-            let directory = run.directory.clone();
-            let task = tokio::spawn(async move {
-                // Another window replaces this one by aborting it, which leaves the muxer's
-                // unfinished segment behind; its work files stay for the published segments.
-                // Dropped last, after the child is killed.
-                let _partials = Partials {
-                    directory: directory.clone(),
-                    work: false,
-                };
-                let _slot = slot;
-                let mut child = child;
-                loop {
-                    let result = tokio::select! {
-                        result = tokio::time::timeout(Duration::from_secs(60), child.wait()) =>
-                            result.context("Public video conversion timed out").and_then(|r| r.map_err(Into::into)),
-                        _ = canceled.changed() => Err(anyhow::anyhow!("Playback was stopped")),
-                        result = monitor_work(&directory) => Err(result),
-                    };
-                    if result.is_err() {
-                        let _ = child.kill().await;
-                    }
-                    if result?.success() {
-                        return Ok(());
-                    }
-                    let Some(mut command) = fallback.take() else {
-                        bail!("Unable to prepare public video segments");
-                    };
-                    tracing::warn!("Hardware conversion failed; converting in software");
-                    *shared.lock().unwrap() = None;
-                    child = command.spawn().context("Start public video conversion")?;
-                }
-            });
-            *work = Some(RemoteWork {
-                first: index,
-                end,
-                task,
-            });
+            *work = Some(self.window(id, run, index, None)?);
         }
         tokio::time::timeout(Duration::from_secs(40), async {
             loop {
@@ -717,19 +670,93 @@ impl VodCache {
                 }
                 if work.as_ref().unwrap().task.is_finished() {
                     let mut finished = work.take().unwrap();
-                    (&mut finished.task).await??;
+                    let (result, slot) = (&mut finished.task).await?;
                     publish_initializations(run, &finished).await?;
                     // A successful muxer must have published the requested segment.
                     if tokio::fs::try_exists(&path).await? {
                         return Ok(path);
                     }
-                    bail!("Public video segment is unavailable");
+                    match result {
+                        // Software converts from the requested segment on, leaving what the
+                        // GPU published with its own initialization.
+                        Err(error) if finished.hardware && !*run.canceled.borrow() => {
+                            self.hardware.failed(id, &format!("{error:#}"));
+                            *work = Some(self.window(id, run, index, Some(slot))?);
+                        }
+                        Err(error) => return Err(error),
+                        Ok(()) => bail!("Public video segment is unavailable"),
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await
         .context("Public video segment timed out")?
+    }
+    /// Converts at most 48 seconds of a public video from segment `index` over one
+    /// connection, publishing each segment as soon as it is ready.
+    fn window(
+        &self,
+        id: &str,
+        run: &Run,
+        index: usize,
+        slot: Option<OwnedSemaphorePermit>,
+    ) -> Result<RemoteWork> {
+        let remote = run.remote.as_ref().unwrap();
+        remote.validate()?;
+        if fs2::available_space(&run.directory)? < 512 * 1024 * 1024 {
+            bail!("Insufficient conversion cache space");
+        }
+        let slot = match slot {
+            Some(slot) => slot,
+            None => self
+                .slots
+                .clone()
+                .try_acquire_owned()
+                .context("All conversion slots are busy")?,
+        };
+        let end = (index + 8).min(run.boundaries.len() - 1);
+        let start = run.boundaries[index];
+        let duration = run.boundaries[end] - start;
+        let hardware = self.hardware.accelerator(id);
+        let mut child = window_command(run, remote, index, start, duration, hardware.as_ref())?
+            .spawn()
+            .context("Start public video conversion")?;
+        let errors = FirstError::watch(&mut child);
+        let mut canceled = run.canceled.subscribe();
+        let directory = run.directory.clone();
+        let task = tokio::spawn(async move {
+            // Another window replaces this one by aborting it, which leaves the muxer's
+            // unfinished segment behind; its work files stay for the published segments.
+            // Dropped last, after the child is killed.
+            let _partials = Partials {
+                directory: directory.clone(),
+                work: false,
+            };
+            let result = tokio::select! {
+                result = tokio::time::timeout(Duration::from_secs(60), child.wait()) =>
+                    result.context("Public video conversion timed out").and_then(|r| r.map_err(Into::into)),
+                _ = canceled.changed() => Err(anyhow::anyhow!("Playback was stopped")),
+                result = monitor_work(&directory) => Err(result),
+            };
+            if result.is_err() {
+                let _ = child.kill().await;
+            }
+            let result = match result {
+                Ok(status) if !status.success() => Err(anyhow::anyhow!(
+                    "Unable to prepare public video segments: {}",
+                    errors.cause().await
+                )),
+                result => result.map(|_| ()),
+            };
+            (result, slot)
+        });
+        Ok(RemoteWork {
+            first: index,
+            end,
+            hardware: hardware.is_some(),
+            task,
+        })
     }
     pub async fn maintain(
         &self,
@@ -805,7 +832,7 @@ fn window_command(
             command.env(name, value);
         }
     }
-    command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
+    command.args(["-hide_banner", "-loglevel", "level+error", "-nostdin", "-y"]);
     command.args(&args.input);
     for address in std::iter::once(&remote.video).chain(remote.audio.iter()) {
         command
@@ -868,7 +895,7 @@ fn window_command(
         .arg(run.directory.join("work.m3u8"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x08000000);

@@ -1,6 +1,6 @@
 use super::*;
 use crate::maintenance_tests::tool_runtime;
-use crate::{Pipelines, Source};
+use crate::{CleanupReason, Pipelines, RunHandle, Source, StoppedRun};
 use std::time::UNIX_EPOCH;
 
 fn run(program: &str, args: &[&str]) -> std::process::Output {
@@ -50,7 +50,6 @@ fn gpu() -> Accelerator {
         hevc: true,
         hevc_10bit: true,
         tone_map: true,
-        download: true,
         deinterlace: true,
     }
 }
@@ -76,6 +75,18 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
         filter,
         "scale_vaapi=w=-2:h='min(1080,ih)':format=p010,tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
     );
+    // Untagged primaries and matrix are BT.2020's, as in the software graph.
+    let mut untagged = hdr10.clone();
+    untagged["color_primaries"] = json!("unknown");
+    untagged.as_object_mut().unwrap().remove("color_space");
+    let (decoded, filter, _) = convert(Some(&gpu()), &untagged, &hd);
+    assert!(decoded);
+    assert!(
+        filter.contains(
+            ":format=p010,setparams=color_primaries=bt2020:colorspace=bt2020nc,tonemap_vaapi="
+        ),
+        "{filter}"
+    );
     // The software conversion's rate limits and SDR tags.
     for pair in [
         ["-c:v", "h264_vaapi"],
@@ -87,46 +98,32 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
     ] {
         assert!(output.windows(2).any(|w| w == pair), "{pair:?} {output:?}");
     }
-    // tonemap_vaapi needs PQ with mastering display metadata; otherwise the CPU tone-maps the
-    // scaled frames, as it does for any HDR without GPU tone mapping.
+    // Software decodes and filters what the GPU can't, and the GPU still encodes: HDR it can't
+    // tone-map (tonemap_vaapi needs PQ with mastering display metadata), other codecs and
+    // rotated pictures.
+    let (_, software, _) = convert(None, &hdr10, &hd);
     let mut pq = hdr10.clone();
     pq["side_data_list"] = json!([]);
     let mut hlg = hdr10.clone();
     hlg["color_transfer"] = json!("arib-std-b67");
-    let cpu = Accelerator {
-        tone_map: false,
-        ..gpu()
-    };
-    for (accelerator, stream) in [(gpu(), &pq), (gpu(), &hlg), (cpu.clone(), &hdr10)] {
-        let (decoded, filter, _) = convert(Some(&accelerator), stream, &hd);
-        assert!(decoded);
-        assert_eq!(
-            filter,
-            format!(
-                "scale_vaapi=w=-2:h='min(1080,ih)':format=p010,hwdownload,format=p010le{TONE_MAP},format=nv12,hwupload"
-            )
-        );
-    }
-    // Software decodes and filters what the GPU can't; the GPU still encodes.
-    let (_, software, _) = convert(None, &hdr10, &hd);
     let mut av1 = hdr10.clone();
     av1["codec_name"] = json!("av1");
     let mut rotated = json!({"codec_type":"video","codec_name":"h264","pix_fmt":"yuv420p","width":1920,"height":1080,"side_data_list":[{"side_data_type":"Display Matrix","rotation":-90}]});
+    let sdr_only = Accelerator {
+        tone_map: false,
+        ..gpu()
+    };
     for (accelerator, stream) in [
-        (
-            Accelerator {
-                download: false,
-                ..cpu
-            },
-            &hdr10,
-        ),
-        (gpu(), &av1),
-        (gpu(), &rotated),
+        (&sdr_only, &hdr10),
+        (&gpu(), &pq),
+        (&gpu(), &hlg),
+        (&gpu(), &av1),
+        (&gpu(), &rotated),
     ] {
-        let (decoded, filter, output) = convert(Some(&accelerator), stream, &hd);
+        let (decoded, filter, output) = convert(Some(accelerator), stream, &hd);
         assert!(!decoded, "{stream}");
         assert!(output.windows(2).any(|w| w == ["-c:v", "h264_vaapi"]));
-        if stream == &hdr10 || stream == &av1 {
+        if stream != &rotated {
             assert_eq!(filter, format!("{software},format=nv12,hwupload"));
         }
     }
@@ -148,17 +145,23 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
         filter,
         "deinterlace_vaapi,scale_vaapi=w=1280:h=720:format=nv12,setsar=1,fps=23.976000"
     );
+    // Frames a lower rate drops are neither scaled nor tone mapped, as in the software graph.
+    let mut fast = rotated.clone();
+    fast["avg_frame_rate"] = json!("50/1");
+    assert_eq!(
+        convert(Some(&gpu()), &fast, &tv).1,
+        "deinterlace_vaapi,fps=23.976000,scale_vaapi=w=1280:h=720:format=nv12,setsar=1"
+    );
+    // One reference frame, which h264_vaapi only keeps without B-frames.
     assert!(
         output.ends_with(
             &[
-                "-bf",
-                "0",
                 "-profile:v",
                 "constrained_baseline",
                 "-level:v",
                 "31",
-                "-refs",
-                "1"
+                "-bf",
+                "0"
             ]
             .map(str::to_owned)
         ),
@@ -188,10 +191,9 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
     );
 }
 
-#[tokio::test]
-async fn a_failing_gpu_leaves_conversions_to_software() {
-    let temp = tempfile::tempdir().unwrap();
-    let media = temp.path().join("clip.mkv");
+/// Pipelines and a 12 s H.264 clip, for a browser without H.264 so the video converts.
+async fn clip(root: &Path) -> (Pipelines, Source, Options) {
+    let media = root.join("clip.mkv");
     run(
         "ffmpeg",
         &[
@@ -223,7 +225,7 @@ async fn a_failing_gpu_leaves_conversions_to_software() {
         generation: "one".into(),
         edition: String::new(),
         path: media.clone(),
-        root: temp.path().into(),
+        root: root.into(),
         size: meta.len(),
         modified: meta
             .modified()
@@ -234,12 +236,9 @@ async fn a_failing_gpu_leaves_conversions_to_software() {
             .to_string(),
         probe: probe(&media),
     };
-    let tools = thelxinoe_tools::Runtime::new(temp.path().join("tools"));
-    tool_runtime::install(&tools, &temp.path().join("tools"));
-    let pipelines = Pipelines::open(&temp.path().join("cache"), tools)
-        .await
-        .unwrap();
-    // A browser without H.264, so the video converts.
+    let tools = thelxinoe_tools::Runtime::new(root.join("tools"));
+    tool_runtime::install(&tools, &root.join("tools"));
+    let pipelines = Pipelines::open(&root.join("cache"), tools).await.unwrap();
     let options = Options {
         capabilities: Capabilities {
             containers: vec!["mp4".into()],
@@ -249,6 +248,13 @@ async fn a_failing_gpu_leaves_conversions_to_software() {
         },
         ..quality("auto")
     };
+    (pipelines, source, options)
+}
+
+#[tokio::test]
+async fn a_failing_gpu_leaves_conversions_to_software() {
+    let temp = tempfile::tempdir().unwrap();
+    let (pipelines, source, options) = clip(temp.path()).await;
     // A node the probe once verified, now gone.
     *pipelines.hardware.status.lock().unwrap() = HardwareStatus::Ready(Accelerator {
         device: "/dev/dri/renderD200".into(),
@@ -271,7 +277,10 @@ async fn a_failing_gpu_leaves_conversions_to_software() {
             "{segment}"
         );
     }
+    // The session's later conversions skip the GPU, until it ends.
+    assert!(pipelines.hardware.accelerator("vod").is_none());
     pipelines.stop("vod").await;
+    assert!(pipelines.hardware.accelerator("vod").is_some());
     let (revision, _) = pipelines
         .start("live", &source, &options, "transcode", 0.0)
         .await
@@ -284,6 +293,51 @@ async fn a_failing_gpu_leaves_conversions_to_software() {
             .is_some_and(|path| path.is_file())
     );
     pipelines.stop("live").await;
+}
+
+#[tokio::test]
+async fn a_gpu_failing_mid_playback_leaves_the_session_to_software() {
+    let temp = tempfile::tempdir().unwrap();
+    let (pipelines, source, options) = clip(temp.path()).await;
+    let (revision, _) = pipelines
+        .start("live", &source, &options, "transcode", 0.0)
+        .await
+        .unwrap();
+    // Its first segments are out when the GPU fails.
+    pipelines.fail_gpu("live").await;
+    let handle = RunHandle {
+        session: "live".into(),
+        revision,
+    };
+    let stopped = pipelines
+        .maintain(&[handle], &["live".to_owned()])
+        .await
+        .unwrap();
+    assert!(matches!(
+        stopped[..],
+        [StoppedRun {
+            reason: CleanupReason::HardwareFailed,
+            ..
+        }]
+    ));
+    // A verified GPU is enabled, yet the session's next start converts in software.
+    *pipelines.hardware.status.lock().unwrap() = HardwareStatus::Ready(gpu());
+    pipelines.use_hardware(true);
+    assert!(pipelines.hardware.accelerator("other").is_some());
+    let (revision, _) = pipelines
+        .start("live", &source, &options, "transcode", 6.0)
+        .await
+        .unwrap();
+    assert_eq!(pipelines.uses_gpu("live").await, Some(false));
+    assert!(
+        pipelines
+            .file("live", &revision, "index.m3u8")
+            .await
+            .unwrap()
+            .is_some_and(|path| path.is_file())
+    );
+    pipelines.stop("live").await;
+    assert!(pipelines.hardware.accelerator("live").is_some());
 }
 
 #[tokio::test]

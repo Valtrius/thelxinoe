@@ -42,7 +42,7 @@ To transcode video on an Intel GPU, give the server its render node and the node
 services:
   server:
     devices:
-      - /dev/dri:/dev/dri
+      - /dev/dri/renderD128:/dev/dri/renderD128
     group_add:
       - '<RENDER_GID>'
 ```

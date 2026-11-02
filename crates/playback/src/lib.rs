@@ -100,10 +100,32 @@ pub fn tone_map_filter(video: &Value) -> String {
 
 /// Maps PQ or HLG to SDR BT.709 in linear light, without the HDR metadata FFmpeg would
 /// otherwise pass on to the SDR output.
-pub(crate) const TONE_MAP: &str = ",zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL";
+const TONE_MAP: &str = ",zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL";
 /// FFmpeg output options converting the audio to stereo AAC.
 pub(crate) const AUDIO_CONVERSION_ARGS: [&str; 8] =
     ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000"];
+/// The `fps` filter of a conversion's limits, before scaling or after it. Frames dropped
+/// first are neither scaled nor tone mapped.
+pub(crate) fn frame_rate_filters(c: &Conversion, video: Option<&Value>) -> (String, String) {
+    let source_rate = video
+        .and_then(|v| v["avg_frame_rate"].as_str()?.split_once('/'))
+        .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
+        .filter(|rate| rate.is_finite());
+    let fps = format!("fps={:.6}", c.frame_rate);
+    if source_rate.is_some_and(|rate| c.frame_rate < rate) {
+        (format!("{fps},"), String::new())
+    } else {
+        (String::new(), format!(",{fps}"))
+    }
+}
+/// The `scale` size the quality asks for: at most its height, else the source's.
+pub(crate) fn picture_size(options: &Options) -> String {
+    match resolution(&options.quality) {
+        Some(height) => format!("w=-2:h='min({height},ih)'"),
+        // The picture keeps its size; H.264 only needs it even.
+        None => "w='trunc(iw/2)*2':h='trunc(ih/2)*2'".into(),
+    }
+}
 /// FFmpeg options converting the video to 8-bit SDR H.264, on the GPU when `hardware` can.
 pub(crate) fn video_conversion_args(
     options: &Options,
@@ -121,12 +143,7 @@ pub(crate) fn video_conversion_args(
         Some(video) if tone_map => tone_map_filter(video),
         _ => String::new(),
     };
-    let mut filter = if let Some(height) = resolution(&options.quality) {
-        format!("scale=w=-2:h='min({height},ih)'{tone_filter}")
-    } else {
-        // The picture keeps its size; H.264 only needs it even.
-        format!("scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'{tone_filter}")
-    };
+    let mut filter = format!("scale={}{tone_filter}", picture_size(options));
     if let Some(c) = &options.capabilities.conversion {
         if !(2..=7680).contains(&c.width)
             || c.width % 2 != 0
@@ -139,17 +156,7 @@ pub(crate) fn video_conversion_args(
         {
             bail!("Invalid conversion limits");
         }
-        let source_rate = video
-            .and_then(|v| v["avg_frame_rate"].as_str()?.split_once('/'))
-            .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
-            .filter(|rate| rate.is_finite());
-        // Frames dropped first are neither scaled nor tone mapped.
-        let fps = format!("fps={:.6}", c.frame_rate);
-        let (before, after) = if source_rate.is_some_and(|rate| c.frame_rate < rate) {
-            (format!("{fps},"), String::new())
-        } else {
-            (String::new(), format!(",{fps}"))
-        };
+        let (before, after) = frame_rate_filters(c, video);
         filter = format!(
             "{}{before}scale={}:{}{tone_filter},setsar=1{after}",
             if c.deinterlace {
@@ -198,19 +205,26 @@ pub(crate) fn video_conversion_args(
         .map(str::to_owned),
     );
     if let Some(c) = &options.capabilities.conversion {
-        let (profile, level) = match &plan {
+        let (profile, level, references) = match &plan {
             None => (
                 c.profile.as_str(),
                 format!("{}.{}", c.level / 10, c.level % 10),
+                ["-refs", "1"],
             ),
-            // VAAPI encodes Baseline's constrained subset, which has no B-frames.
-            Some(_) if c.profile == "baseline" => {
-                output.extend(["-bf".into(), "0".into()]);
-                ("constrained_baseline", c.level.to_string())
-            }
-            Some(_) => (c.profile.as_str(), c.level.to_string()),
+            // One reference frame: h264_vaapi ignores -refs and references one more frame per
+            // B-frame level. VAAPI encodes Baseline's constrained subset.
+            Some(_) => (
+                if c.profile == "baseline" {
+                    "constrained_baseline"
+                } else {
+                    c.profile.as_str()
+                },
+                c.level.to_string(),
+                ["-bf", "0"],
+            ),
         };
-        output.extend(["-profile:v", profile, "-level:v", &level, "-refs", "1"].map(str::to_owned));
+        output.extend(["-profile:v", profile, "-level:v", &level].map(str::to_owned));
+        output.extend(references.map(str::to_owned));
     }
     if tone_map {
         output.extend(

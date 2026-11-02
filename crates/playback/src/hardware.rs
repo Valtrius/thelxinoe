@@ -1,27 +1,29 @@
 //! Opt-in VAAPI conversion. A probe runs the production filter graphs on each render node
 //! and records what one verifiably does; conversions use only that, and software otherwise.
-use crate::{Capabilities, Conversion, Options, TONE_MAP};
+use crate::{Capabilities, Conversion, Options};
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     ffi::OsStr,
     path::Path,
     process::Stdio,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 use thelxinoe_tools::MediaTools;
+use tokio::io::AsyncBufReadExt;
 
 #[cfg(test)]
 #[path = "hardware_tests.rs"]
 mod tests;
 
 /// A render node, the libva driver conversions load for it, and what a probe verified.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Accelerator {
     pub device: String,
     pub driver: String,
@@ -34,8 +36,6 @@ pub struct Accelerator {
     pub hevc_10bit: bool,
     /// PQ to SDR on the GPU.
     pub tone_map: bool,
-    /// GPU frames through software filters and back, to tone-map on the CPU.
-    pub download: bool,
     pub deinterlace: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -55,23 +55,39 @@ pub(crate) struct Hardware {
     enabled: AtomicBool,
     status: Mutex<HardwareStatus>,
     probe: tokio::sync::Mutex<()>,
+    /// Playback sessions whose GPU conversion failed; they convert in software until they end.
+    failed: Mutex<HashSet<String>>,
 }
 impl Hardware {
     pub(crate) fn enable(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Relaxed);
     }
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
     pub(crate) fn status(&self) -> HardwareStatus {
         self.status.lock().unwrap().clone()
     }
-    /// What new conversions use.
-    pub(crate) fn accelerator(&self) -> Option<Accelerator> {
-        if !self.enabled.load(Ordering::Relaxed) {
+    /// What a session's next conversion uses.
+    pub(crate) fn accelerator(&self, session: &str) -> Option<Accelerator> {
+        if !self.enabled() || self.failed.lock().unwrap().contains(session) {
             return None;
         }
         match &*self.status.lock().unwrap() {
             HardwareStatus::Ready(accelerator) => Some(accelerator.clone()),
             _ => None,
         }
+    }
+    pub(crate) fn failed(&self, session: &str, cause: &str) {
+        tracing::warn!(
+            session,
+            cause,
+            "Hardware conversion failed; converting in software"
+        );
+        self.failed.lock().unwrap().insert(session.to_owned());
+    }
+    pub(crate) fn forget(&self, session: &str) {
+        self.failed.lock().unwrap().remove(session);
     }
     pub(crate) async fn probe(&self, tools: Result<MediaTools>, work: &Path) -> HardwareStatus {
         let _probe = self.probe.lock().await;
@@ -116,7 +132,7 @@ impl Accelerator {
                 && !video.is_some_and(rotated)
                 && !conversion.is_some_and(|c| c.fit)
                 && (self.deinterlace || !conversion.is_some_and(|c| c.deinterlace))
-                && (!tone_map || self.download || (self.tone_map && video.is_some_and(hdr10))),
+                && (!tone_map || (self.tone_map && video.is_some_and(hdr10))),
         }
     }
     /// The FFmpeg device, `va`, on this node and driver only.
@@ -170,7 +186,8 @@ impl Plan<'_> {
         }
         args
     }
-    /// The filter graph, given the `software` one that runs when the GPU doesn't decode.
+    /// The filter graph, given the `software` one that runs when the GPU doesn't decode. It
+    /// orders its filters as the software graph does.
     pub(crate) fn filter(
         &self,
         options: &Options,
@@ -182,34 +199,83 @@ impl Plan<'_> {
             return format!("{software},format=nv12,hwupload");
         }
         let conversion = options.capabilities.conversion.as_ref();
-        let scale = match (conversion, crate::resolution(&options.quality)) {
-            (Some(c), _) => format!("w={}:h={}", c.width, c.height),
-            (None, Some(height)) => format!("w=-2:h='min({height},ih)'"),
-            (None, None) => "w='trunc(iw/2)*2':h='trunc(ih/2)*2'".into(),
-        };
-        // Scaled first, so tone mapping processes the output's pixels only.
-        let tone = if !tone_map {
-            String::new()
-        } else if self.accelerator.tone_map && video.is_some_and(hdr10) {
-            // tonemap_vaapi drops the HDR metadata and tags its frames BT.709, yet tells the
-            // filter graph they keep the input's matrix; FFmpeg then can't meet -colorspace.
-            ",tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709".into()
-        } else {
-            format!(",hwdownload,format=p010le{TONE_MAP},format=nv12,hwupload")
+        let size = conversion.map_or_else(
+            || crate::picture_size(options),
+            |c| format!("w={}:h={}", c.width, c.height),
+        );
+        let (before, after) =
+            conversion.map_or_else(Default::default, |c| crate::frame_rate_filters(c, video));
+        // tonemap_vaapi drops the HDR metadata and tags its frames BT.709, yet tells the filter
+        // graph they keep the input's matrix; FFmpeg then can't meet -colorspace. Untagged
+        // primaries or matrix would leave the driver to guess the input.
+        let tone = match video {
+            Some(video) if tone_map => format!(
+                "{},tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709",
+                crate::dynamic_range::missing_hdr_tags(video)
+            ),
+            _ => String::new(),
         };
         format!(
-            "{}scale_vaapi={scale}:format={}{tone}{}",
+            "{}{before}scale_vaapi={size}:format={}{tone}{}{after}",
             if conversion.is_some_and(|c| c.deinterlace) {
                 "deinterlace_vaapi,"
             } else {
                 ""
             },
             if tone_map { "p010" } else { "nv12" },
-            conversion.map_or(String::new(), |c| format!(
-                ",setsar=1,fps={:.6}",
-                c.frame_rate
-            )),
+            if conversion.is_some() {
+                ",setsar=1"
+            } else {
+                ""
+            },
         )
+    }
+}
+
+/// The message of a line FFmpeg logs at error level or above (`-loglevel level+…`).
+fn error_line(line: &str) -> Option<&str> {
+    ["[error] ", "[fatal] "]
+        .into_iter()
+        .find_map(|level| line.split_once(level))
+        .map(|(_, message)| message.trim())
+}
+/// The first error a running FFmpeg logs, usually the cause of its failure. Its log is read
+/// as it runs, so the pipe never fills.
+#[derive(Clone)]
+pub(crate) struct FirstError {
+    first: Arc<Mutex<Option<String>>>,
+    /// Closes when the log ends.
+    ended: tokio::sync::watch::Receiver<()>,
+}
+impl FirstError {
+    pub(crate) fn watch(child: &mut tokio::process::Child) -> Self {
+        let (reading, ended) = tokio::sync::watch::channel(());
+        let first = Arc::new(Mutex::new(None));
+        if let Some(stderr) = child.stderr.take() {
+            let slot = first.clone();
+            tokio::spawn(async move {
+                let _reading = reading;
+                let mut lines = tokio::io::BufReader::new(stderr).split(b'\n');
+                while let Ok(Some(line)) = lines.next_segment().await {
+                    if let Some(message) = error_line(&String::from_utf8_lossy(&line)) {
+                        slot.lock()
+                            .unwrap()
+                            .get_or_insert_with(|| message.chars().take(200).collect::<String>());
+                    }
+                }
+            });
+        }
+        Self { first, ended }
+    }
+    /// The error, once the log of an FFmpeg that ended has been read.
+    pub(crate) async fn cause(&self) -> String {
+        let mut ended = self.ended.clone();
+        let _ = tokio::time::timeout(Duration::from_secs(1), ended.changed()).await;
+        self.first
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| "FFmpeg logged no error".into())
     }
 }
 
@@ -237,12 +303,12 @@ async fn probe(tools: &MediaTools, work: &Path) -> HardwareStatus {
         Ok(name) if !name.is_empty() => vec![name],
         _ => vec!["iHD".to_owned(), "i965".to_owned()],
     };
-    let samples = samples(tools, work).await;
+    let mut samples = None;
     let mut reasons = Vec::new();
     for device in &devices {
         let device = device.to_string_lossy();
         for driver in &drivers {
-            match probe_driver(tools, &samples, &device, driver).await {
+            match probe_driver(tools, work, &mut samples, &device, driver).await {
                 Ok(accelerator) => return HardwareStatus::Ready(accelerator),
                 Err(error) => reasons.push(
                     format!("{device} {driver}: {error:#}")
@@ -330,7 +396,8 @@ async fn samples(tools: &MediaTools, work: &Path) -> Samples {
 type Capability = fn(&mut Accelerator) -> &mut bool;
 async fn probe_driver(
     tools: &MediaTools,
-    samples: &Samples,
+    work: &Path,
+    samples: &mut Option<Samples>,
     device: &str,
     driver: &str,
 ) -> Result<Accelerator> {
@@ -400,6 +467,11 @@ async fn probe_driver(
     if !accelerator.scale {
         return Ok(accelerator);
     }
+    // Encoded once a device answers: a node the server can't open costs nothing more.
+    if samples.is_none() {
+        *samples = Some(self::samples(tools, work).await);
+    }
+    let samples = samples.as_ref().unwrap();
     let stream = |codec: &str, format: &str| json!({"codec_type":"video","codec_name":codec,"pix_fmt":format,"width":320,"height":240});
     let decoders: [(Capability, _, _, _); 3] = [
         (
@@ -450,19 +522,6 @@ async fn probe_driver(
             "Tone mapping",
         )
         .await;
-        // The CPU tone-maps when the GPU doesn't.
-        let gpu = std::mem::take(&mut accelerator.tone_map);
-        accelerator.download = verified(
-            tools,
-            &accelerator,
-            |a| &mut a.download,
-            sample,
-            &pq,
-            &quality("auto"),
-            "Frame download",
-        )
-        .await;
-        accelerator.tone_map = gpu;
     }
     let interlaced = [
         (&samples.h264, stream("h264", "yuv420p"), accelerator.h264),
@@ -580,12 +639,7 @@ async fn ffmpeg(
     let mut lines = log.lines().map(str::trim).filter(|l| !l.is_empty());
     let error = lines
         .clone()
-        .find_map(|line| {
-            ["[error] ", "[fatal] "]
-                .into_iter()
-                .find_map(|level| line.split_once(level))
-                .map(|(_, message)| message)
-        })
+        .find_map(error_line)
         .or_else(|| lines.next_back())
         .unwrap_or("FFmpeg failed");
     bail!("{}", error.chars().take(200).collect::<String>())

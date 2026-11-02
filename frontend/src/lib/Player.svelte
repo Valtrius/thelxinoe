@@ -102,6 +102,10 @@
   }
   let player = $state<HTMLVideoElement>() as HTMLVideoElement;
   let container = $state<HTMLElement>() as HTMLElement;
+  const interrupted =
+    'Playback interrupted. Try seeking or reopening this item.';
+  // The session whose stream already restarted after it died.
+  let restarted: string | undefined;
   let active = $state<Playback | null>(null),
     info = $state<MediaInfo | null>(null),
     error = $state(''),
@@ -808,10 +812,22 @@
         release();
       });
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal && active === session) {
-          error = 'Playback interrupted. Try seeking or reopening this item.';
-          player.pause();
+        if (!data.fatal || active !== session) return;
+        // A conversion that died, such as on a failed GPU, restarts once where it stopped.
+        if (
+          restarted !== session.id &&
+          session.mode !== 'direct' &&
+          !session.live &&
+          !busy
+        ) {
+          restarted = session.id;
+          void seek(position).then(() => {
+            if (error && active?.id === session.id) error = interrupted;
+          });
+          return;
         }
+        error = interrupted;
+        player.pause();
       });
     }
   }

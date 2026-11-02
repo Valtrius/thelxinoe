@@ -43,16 +43,20 @@
   let hardware = $state<Hardware | null>(null);
   const detected = $derived(
     hardware?.state === 'ready'
-      ? [
+      ? `${hardware.description} on ${hardware.device}: ${[
           'H.264 encoding',
           hardware.h264 && 'H.264 decoding',
           hardware.hevc && 'HEVC decoding',
           hardware.hevc_10bit && 'HEVC 10-bit decoding',
-          hardware.scale && 'Scaling',
-          hardware.tone_map && 'Tone mapping',
-          hardware.deinterlace && 'Deinterlacing',
-        ].filter(Boolean)
-      : [],
+          hardware.scale && 'scaling',
+          hardware.tone_map && 'tone mapping',
+          hardware.deinterlace && 'deinterlacing',
+        ]
+          .filter(Boolean)
+          .join(', ')}`
+      : hardware?.state === 'unavailable'
+        ? hardware.reason
+        : undefined,
   );
   let saving = $state(false),
     refreshPending = $state(false),
@@ -141,7 +145,8 @@
       <SettingRow
         label="Hardware video transcoding"
         for={`${ids}-hardware`}
-        description={hardware ? gpu : undefined}
+        description={detected}
+        dimmed={!draft.video_transcoding}
       >
         {#snippet badge()}
           {#if hardware?.state === 'ready'}
@@ -154,6 +159,7 @@
         {/snippet}
         <Switch
           id={`${ids}-hardware`}
+          disabled={!draft.video_transcoding}
           bind:checked={draft.hardware_conversion}
         />
       </SettingRow>
@@ -176,18 +182,3 @@
     </div>
   {/if}
 </SettingsCard>
-
-{#snippet gpu()}
-  {#if hardware?.state === 'ready'}
-    <p class="mt-0.75 mb-0 text-xs leading-relaxed text-muted">
-      {hardware.description} · {hardware.device}
-    </p>
-    <p class="mt-0.75 mb-0 text-xs leading-relaxed text-muted">
-      {detected.join(' · ')}
-    </p>
-  {:else if hardware?.state === 'unavailable'}
-    <p class="mt-0.75 mb-0 text-xs leading-relaxed break-words text-muted">
-      {hardware.reason}
-    </p>
-  {/if}
-{/snippet}

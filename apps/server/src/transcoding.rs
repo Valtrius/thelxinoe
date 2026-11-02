@@ -41,7 +41,6 @@ pub async fn probe_hardware(state: AppState) {
             decode_hevc = gpu.hevc,
             decode_hevc_10bit = gpu.hevc_10bit,
             tone_map = gpu.tone_map,
-            download = gpu.download,
             deinterlace = gpu.deinterlace,
             "Hardware video conversion is available"
         ),
