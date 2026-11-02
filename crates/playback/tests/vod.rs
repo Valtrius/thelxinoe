@@ -10,7 +10,7 @@ use std::{
     process::{Command, Output},
     time::UNIX_EPOCH,
 };
-use thelxinoe_playback::{Capabilities, Options, Pipelines, Source};
+use thelxinoe_playback::{Capabilities, Options, Pipelines, Source, decision};
 
 fn run(program: &str, args: &[&str]) -> Output {
     let mut command = Command::new(program);
@@ -500,4 +500,183 @@ async fn vod_remux_strips_dolby_vision_units_when_the_client_takes_the_base_laye
         }
         pipelines.stop(&id).await;
     }
+}
+
+/// The average RGB of a picture's columns `x0..x1`, as a browser shows it.
+fn colour(path: &Path, x0: usize, x1: usize) -> [f64; 3] {
+    let output = run(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-i",
+            path.to_str().unwrap(),
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "rgb24",
+            "-f",
+            "rawvideo",
+            "-",
+        ],
+    );
+    let mut sum = [0.0; 3];
+    for row in output.stdout.chunks(64 * 3).take(64) {
+        for pixel in row[x0 * 3..x1 * 3].chunks(3) {
+            for (total, value) in sum.iter_mut().zip(pixel) {
+                *total += f64::from(*value);
+            }
+        }
+    }
+    sum.map(|total| total / (64 * (x1 - x0)) as f64)
+}
+#[tokio::test]
+async fn vod_conversion_tone_maps_pq_and_hlg_and_refuses_dolby_vision_without_a_base_layer() {
+    let temp = tempfile::tempdir().unwrap();
+    let pipelines = Pipelines::open(
+        &temp.path().join("cache"),
+        runtime(&temp.path().join("tools")),
+    )
+    .await
+    .unwrap();
+    // A browser without HEVC or AC-3.
+    let browser = Options {
+        quality: "auto".into(),
+        audio: None,
+        subtitle: None,
+        capabilities: Capabilities {
+            containers: vec!["mp4".into()],
+            video: vec!["h264".into()],
+            audio: vec!["aac".into()],
+            hls: true,
+            ..Capabilities::default()
+        },
+    };
+    let mut sources = Vec::new();
+    for (transfer, hdr10) in [
+        (
+            "smpte2084",
+            ":hdr10=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400",
+        ),
+        ("arib-std-b67", ""),
+    ] {
+        let media = temp.path().join(format!("{transfer}.mkv"));
+        // Red and white bars graded into BT.2020, white at the 203 nits of HDR reference white.
+        run(
+            "ffmpeg",
+            &[
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=32x64:r=10:d=3[red];color=c=white:s=32x64:r=10:d=3[white];[red][white]hstack[out0]",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:d=3",
+                "-vf",
+                &format!(
+                    "zscale=tin=bt709:pin=bt709:min=bt709:rin=limited:t={transfer}:p=bt2020:m=bt2020nc:r=limited:npl=203,format=yuv420p10le"
+                ),
+                "-c:v",
+                "libx265",
+                "-x265-params",
+                &format!("log-level=none:repeat-headers=1{hdr10}"),
+                "-color_primaries",
+                "bt2020",
+                "-color_trc",
+                transfer,
+                "-colorspace",
+                "bt2020nc",
+                "-c:a",
+                "ac3",
+                media.to_str().unwrap(),
+            ],
+        );
+        let source = source(temp.path(), &media);
+        let (revision, _) = pipelines
+            .start_vod(transfer, &source, &browser, "transcode")
+            .await
+            .unwrap();
+        let segment = pipelines
+            .file(transfer, &revision, "segment-000000.ts")
+            .await
+            .unwrap()
+            .unwrap();
+        let probe = run(
+            "ffprobe",
+            &[
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_streams",
+                "-show_frames",
+                "-read_intervals",
+                "%+#1",
+                "-of",
+                "json",
+                segment.to_str().unwrap(),
+            ],
+        );
+        let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        let stream = &probe["streams"][0];
+        for key in ["color_primaries", "color_transfer", "color_space"] {
+            assert_eq!(stream[key], "bt709", "{transfer} {key}");
+        }
+        // The SDR picture carries none of the source's HDR metadata.
+        assert!(
+            probe["frames"][0]["side_data_list"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .all(
+                    |data| !["Mastering display metadata", "Content light level metadata"]
+                        .contains(&data["side_data_type"].as_str().unwrap_or(""))
+                ),
+            "{transfer} {probe}"
+        );
+        // Without tone mapping, the red shows as brown.
+        let red = colour(&segment, 4, 28);
+        assert!(
+            red[0] > 150.0 && red[1] < red[0] / 4.0 && red[2] < red[0] / 4.0,
+            "{transfer} red {red:?}"
+        );
+        let white = colour(&segment, 36, 60);
+        assert!(
+            white
+                .iter()
+                .all(|v| *v > 160.0 && (v - white[1]).abs() < 12.0),
+            "{transfer} white {white:?}"
+        );
+        pipelines.stop(transfer).await;
+        sources.push(source);
+    }
+    // Dolby Vision profile 5 has no base layer FFmpeg reproduces: its video is refused, while
+    // its audio still converts.
+    let mut source = sources.remove(0);
+    source.probe["streams"][0]["side_data_list"] = serde_json::json!([{"side_data_type":"DOVI configuration record","dv_profile":5,"dv_bl_signal_compatibility_id":0,"rpu_present_flag":1,"bl_present_flag":1,"el_present_flag":0}]);
+    assert_eq!(
+        decision(&source, &browser).unwrap_err().to_string(),
+        "This Dolby Vision video cannot be converted"
+    );
+    let mut dolby_vision = browser.clone();
+    dolby_vision.capabilities.video.push("hevc".into());
+    dolby_vision.capabilities.hls_video = Some(vec!["hevc".into()]);
+    let planned = decision(&source, &dolby_vision).unwrap();
+    assert!(!planned.encoding.video && planned.encoding.audio);
+    let (revision, _) = pipelines
+        .start_vod("dovi", &source, &dolby_vision, "transcode")
+        .await
+        .unwrap();
+    assert!(
+        pipelines
+            .file("dovi", &revision, "segment-000000.ts")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    pipelines.stop("dovi").await;
 }
