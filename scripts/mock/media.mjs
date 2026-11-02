@@ -74,7 +74,11 @@ export async function mediaApi(s, c) {
         : {}),
     };
   };
-  // Top-level movies and shows, filtered and sorted before the list is cut.
+  // One page of a list, as the server cuts it.
+  const offset = Number(query.get('offset') ?? 0);
+  const page = (list) =>
+    list.slice(offset, offset + Number(query.get('limit') ?? 500));
+  // Top-level movies and shows, filtered and sorted before the page is cut.
   const titleList = (kind) => {
     const started = (item) =>
       item.kind === 'movie'
@@ -202,7 +206,7 @@ export async function mediaApi(s, c) {
       return (x == null ? 0 : desc ? y - x : x - y) || title;
     });
     return {
-      items: shelf.slice(0, 500).map((e) => e.card),
+      items: page(shelf).map((e) => e.card),
       total: shelf.length,
       counts,
       genres,
@@ -224,7 +228,7 @@ export async function mediaApi(s, c) {
       items = items.filter((item) =>
         item.title.toLowerCase().includes(query.get('q').toLowerCase()),
       );
-    return json({ items: items.map(card) });
+    return json({ items: page(items).map(card), total: items.length });
   }
   if (path === '/catalog/collections')
     return json({

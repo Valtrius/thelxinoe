@@ -141,6 +141,10 @@ pub struct Browse {
     availability: Option<String>,
     series: Option<Series>,
     genre: Option<String>,
+    /// A page of the list: how many items it skips and holds.
+    #[serde(default)]
+    offset: u32,
+    limit: Option<u32>,
 }
 #[derive(Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -172,8 +176,8 @@ enum Series {
 }
 const WATCH: [&str; 3] = ["unwatched", "in_progress", "watched"];
 const AVAILABILITY: [&str; 4] = ["downloaded", "downloading", "upcoming", "not_downloaded"];
-/// Lists show at most this many cards.
-const PAGE: usize = 500;
+/// A page holds this many items unless the request asks for another size.
+const PAGE: u32 = 500;
 
 pub async fn browse(
     State(state): State<AppState>,
@@ -188,7 +192,8 @@ pub async fn browse(
     {
         return Ok(Json(titles(&state, &p, &kind, input).await?));
     }
-    let mut items = storage::browse(&state.db, input).await?;
+    let limit = input.limit.unwrap_or(PAGE);
+    let (mut items, total) = storage::browse(&state.db, input, limit).await?;
     let grant = crate::grants::artwork(&state, &p).await?;
     decorate_cards_with(
         &state,
@@ -205,7 +210,7 @@ pub async fn browse(
     )
     .await?;
     items.retain(visible_in_library);
-    Ok(Json(json!({"items":items})))
+    Ok(Json(json!({"items":items,"total":total})))
 }
 
 fn visible_in_library(item: &Value) -> bool {
@@ -323,7 +328,7 @@ fn by<T: PartialOrd>(a: Option<T>, b: Option<T>, order: Order) -> std::cmp::Orde
 }
 
 /// Every top-level movie or show, the library's own and the Radarr or Sonarr titles it
-/// has no files for, filtered and sorted before the list is cut. Counts cover what the
+/// has no files for, filtered and sorted before the page is cut. Counts cover what the
 /// search and collection match, so each filter shows how much it would keep.
 async fn titles(
     state: &AppState,
@@ -457,7 +462,8 @@ async fn titles(
     let total = shelf.len();
     let items = shelf
         .into_iter()
-        .take(PAGE)
+        .skip(input.offset as usize)
+        .take(input.limit.unwrap_or(PAGE) as usize)
         .map(Shelved::into_card)
         .collect::<Vec<_>>();
     Ok(json!({"items":items,"total":total,"counts":counts,"genres":genres}))
