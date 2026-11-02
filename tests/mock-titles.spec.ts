@@ -888,7 +888,28 @@ async function playEpisode(page: Page, name: string, title: string) {
       video.evaluate((element: HTMLVideoElement, to) => {
         element.currentTime = to;
       }, seconds),
+    pause: () => video.evaluate((element: HTMLVideoElement) => element.pause()),
   };
+}
+/** Replaces an episode's segments, or clears them with `undefined`. */
+async function setCredits(page: Page, id: string, credits?: [number, number]) {
+  const response = await page.request.put(`/api/v1/catalog/${id}/segments`, {
+    data: credits
+      ? {
+          file_id: `file-${id}`,
+          generation: 'preview',
+          items: [
+            {
+              id: 'credits',
+              kind: 'Credits',
+              start: credits[0],
+              end: credits[1],
+            },
+          ],
+        }
+      : { file_id: `file-${id}`, generation: 'preview', reset: true },
+  });
+  expect(response.ok()).toBe(true);
 }
 // Playback starts, and the position each stopped session reported.
 function playbackRequests(page: Page) {
@@ -961,6 +982,50 @@ test('a finishing episode offers the next one from its credits, across seasons, 
     player.getByRole('heading', { name: 'Beyond the Horizon · First Contact' }),
   ).toBeVisible();
   expect(starts).toEqual(['episode-3', 'episode-4']);
+
+  // Credits a scene follows keep their skip, and the next episode waits for them.
+  await setCredits(page, 'episode-5', [60, 80]);
+  await setCredits(page, 'episode-6');
+  await page.getByRole('tab', { name: 'Season 2' }).click();
+  const scene = await playEpisode(
+    page,
+    'Play episode 2: The Crossing',
+    'Beyond the Horizon · The Crossing',
+  );
+  await scene.at(61);
+  const skip = player.getByRole('button', { name: 'Skip credits' });
+  await expect(skip).toBeVisible();
+  await expect(upNext).toHaveCount(0);
+  await skip.click();
+  await expect(
+    upNext.getByRole('button', {
+      name: 'Play S02E03 · The Signal',
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    player.getByRole('heading', { name: 'Beyond the Horizon · The Signal' }),
+  ).toBeVisible({ timeout: 20_000 });
+  // Without segments, the next episode is offered for the last 30 seconds.
+  await expect(
+    player.getByRole('slider', { name: 'Playback position' }),
+  ).toHaveAttribute('aria-valuetext', /^0:0\d of 1:30/);
+  await scene.at(55);
+  await expect(
+    player.getByRole('slider', { name: 'Playback position' }),
+  ).toHaveAttribute('aria-valuetext', /^0:5\d of 1:30/);
+  await expect(upNext).toHaveCount(0);
+  await scene.at(61);
+  await expect(
+    upNext.getByRole('button', { name: 'Play S02E04 · Homeward', exact: true }),
+  ).toHaveText(/^S02E04 · Homeward\s*2\d$/);
+  await scene.at(86);
+  await expect(
+    player.getByRole('heading', { name: 'Beyond the Horizon · Homeward' }),
+  ).toBeVisible({ timeout: 20_000 });
+  await expect
+    .poll(() => starts)
+    .toEqual(['episode-3', 'episode-4', 'episode-5', 'episode-6', 'episode-7']);
   expect(errors).toEqual([]);
 });
 
@@ -1010,6 +1075,23 @@ test('the last episode keeps its credits skip, and automatic credits skips go to
   // Moving on at the credits, before 90%, still finishes the episode.
   await expect.poll(() => stops.at(-1)).toBe(90);
 
+  // Credits a scene follows still skip to the scene, which plays.
+  await setCredits(page, 'episode-4', [60, 80]);
+  const scene = await playEpisode(
+    page,
+    'Play episode 1: First Contact',
+    'Beyond the Horizon · First Contact',
+  );
+  await scene.at(58);
+  await expect(
+    player.getByRole('slider', { name: 'Playback position' }),
+  ).toHaveAttribute('aria-valuetext', /^1:2\d of 1:30/);
+  await scene.pause();
+  await expect(
+    player.getByRole('heading', { name: 'Beyond the Horizon · First Contact' }),
+  ).toBeVisible();
+  expect(starts).toEqual(['episode-7', 'episode-6', 'episode-7', 'episode-4']);
+
   // Without autoplay the credits still skip, and the prompt waits to be chosen.
   expect(
     (
@@ -1037,10 +1119,23 @@ test('the last episode keeps its credits skip, and automatic credits skips go to
       name: 'Beyond the Horizon · The Crossing',
     }),
   ).toBeVisible();
-  expect(starts).toEqual(['episode-7', 'episode-6', 'episode-7', 'episode-5']);
+  expect(starts).toEqual([
+    'episode-7',
+    'episode-6',
+    'episode-7',
+    'episode-4',
+    'episode-5',
+  ]);
   await next.click();
   await expect
     .poll(() => starts)
-    .toEqual(['episode-7', 'episode-6', 'episode-7', 'episode-5', 'episode-6']);
+    .toEqual([
+      'episode-7',
+      'episode-6',
+      'episode-7',
+      'episode-4',
+      'episode-5',
+      'episode-6',
+    ]);
   expect(errors).toEqual([]);
 });

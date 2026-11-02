@@ -59,25 +59,37 @@
       /* Segments never prevent playback. */
     }
   }
-  // With a next episode, the credits lead there instead of to a skip.
+  // The last credits, with a preview straight after them, and where they end.
+  const closing = $derived.by(() => {
+    const credits = items.filter((s) => s.kind === 'Credits').at(-1);
+    if (!credits || preferences.Credits === 'Ignore') return undefined;
+    const preview = items.find(
+      (s) => s.kind === 'Preview' && Math.abs(s.start - credits.end) <= 2,
+    );
+    return { credits, preview, end: preview?.end ?? credits.end };
+  });
+  // Credits that run to the end lead to the next episode instead of to a skip.
+  // Credits followed by a scene keep their skip; the next episode waits for them.
+  const finale = $derived(
+    next && closing && closing.end >= duration - 2 ? closing : undefined,
+  );
   const handedOver = $derived(
-    next && preferences.Credits !== 'Ignore'
-      ? items.filter((s) => s.kind === 'Credits').at(-1)
-      : undefined,
+    finale ? [finale.credits, finale.preview].filter((s) => !!s) : [],
   );
   const credits = $derived(
-    handedOver && {
-      start: handedOver.start,
+    finale && {
+      start: finale.credits.start,
       auto: preferences.Credits === 'Auto',
     },
   );
   const playing = (s: Segment) =>
     position >= s.start && position < s.end && preferences[s.kind] !== 'Ignore';
-  const current = $derived(items.find((s) => s !== handedOver && playing(s)));
-  // Without autoplay, automatic credits skips still skip, up to the prompt.
+  const current = $derived(
+    items.find((s) => !handedOver.includes(s) && playing(s)),
+  );
+  // Without autoplay, automatic skips still skip, up to the prompt.
   const skipped = $derived(
-    current ??
-      (!autoplay && handedOver && playing(handedOver) ? handedOver : undefined),
+    current ?? (autoplay ? undefined : handedOver.find(playing)),
   );
   async function skip(segment: Segment) {
     handled = [...handled, segment.id];
@@ -109,6 +121,7 @@
     {paused}
     {busy}
     {credits}
+    after={finale ? undefined : closing?.end}
     {autoplay}
     play={advance}
   />{/if}

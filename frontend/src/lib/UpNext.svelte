@@ -25,6 +25,7 @@
     paused,
     busy = false,
     credits,
+    after = 0,
     autoplay = true,
     play,
   } = $props<{
@@ -38,6 +39,8 @@
     busy?: boolean;
     /** Where the credits start, and whether they skip by themselves. */
     credits?: { start: number; auto: boolean };
+    /** Where credits that a scene follows end; the offer waits for them. */
+    after?: number;
     /** Whether the countdown starts the next episode by itself. */
     autoplay?: boolean;
     play: (choice: MediaChoice) => void;
@@ -65,7 +68,9 @@
   // when this one ends. Without autoplay it waits to be chosen.
   const countdown = 10;
   const lead = $derived(duration >= 3000 ? 40 : duration >= 2400 ? 35 : 30);
-  const offerAt = $derived(credits ? credits.start : duration - lead);
+  const offerAt = $derived(
+    credits ? credits.start : Math.max(duration - lead, after),
+  );
   let dismissed = $state(false),
     timer = $state(countdown),
     started = false;
