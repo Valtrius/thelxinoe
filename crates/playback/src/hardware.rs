@@ -295,7 +295,7 @@ async fn samples(tools: &MediaTools, work: &Path) -> Samples {
         let x265 = format!("log-level=none{}", hdr10.unwrap_or(""));
         let mut args = vec![
             "-v",
-            "error",
+            "level+error",
             "-f",
             "lavfi",
             "-i",
@@ -342,7 +342,7 @@ async fn probe_driver(
         tools,
         [
             "-v",
-            "verbose",
+            "level+verbose",
             "-init_hw_device",
             &device_arg,
             "-f",
@@ -374,7 +374,7 @@ async fn probe_driver(
         tools,
         [
             "-v",
-            "error",
+            "level+error",
             "-init_hw_device",
             &device_arg,
             "-filter_hw_device",
@@ -539,7 +539,7 @@ async fn conversion(
 ) -> Result<()> {
     let args =
         crate::video_conversion_args(options, &json!({ "streams": [stream] }), Some(accelerator))?;
-    let mut command = vec!["-v".to_owned(), "error".into()];
+    let mut command = vec!["-v".to_owned(), "level+error".into()];
     command.extend(args.input);
     if stream["codec_name"] == "rawvideo" {
         command.extend(["-f".into(), "lavfi".into()]);
@@ -550,7 +550,8 @@ async fn conversion(
     ffmpeg(tools, command).await?;
     Ok(())
 }
-/// FFmpeg's log, or its first error, usually the cause, as the error.
+/// FFmpeg's log, or its first error, usually the cause, as the error. Callers log with
+/// `level+…`, which tags each line with its level.
 async fn ffmpeg(
     tools: &MediaTools,
     args: impl IntoIterator<Item = impl AsRef<OsStr>>,
@@ -577,9 +578,11 @@ async fn ffmpeg(
     let mut lines = log.lines().map(str::trim).filter(|l| !l.is_empty());
     let error = lines
         .clone()
-        .find(|line| {
-            let line = line.to_ascii_lowercase();
-            line.contains("error") || line.contains("fail")
+        .find_map(|line| {
+            ["[error] ", "[fatal] "]
+                .into_iter()
+                .find_map(|level| line.split_once(level))
+                .map(|(_, message)| message)
         })
         .or_else(|| lines.next_back())
         .unwrap_or("FFmpeg failed");
