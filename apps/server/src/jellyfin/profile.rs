@@ -3,7 +3,8 @@ use crate::error::ApiError;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use thelxinoe_playback::{
-    Capabilities, Conversion, Options, Source, conversion_rate, level_rate, picture_rate,
+    Capabilities, Conversion, Options, Source, conversion_rate, level_rate, needs_tone_mapping,
+    picture_rate, video_range,
 };
 
 type Properties = BTreeMap<String, String>;
@@ -30,63 +31,6 @@ fn stream<'a>(source: &'a Source, kind: &str, index: Option<i64>) -> Option<&'a 
             && s["disposition"]["attached_pic"] != 1
             && index.is_none_or(|i| s["index"].as_i64() == Some(i))
     })
-}
-/// Jellyfin's `VideoRange` and `VideoRangeType` of a video stream. A Dolby Vision stream
-/// is named by the base layer that players without Dolby Vision show instead.
-pub fn video_range(video: &Value) -> (&'static str, &'static str) {
-    let transfer = video["color_transfer"].as_str().unwrap_or("");
-    let pq = transfer == "smpte2084";
-    let hlg = transfer == "arib-std-b67";
-    let base = if pq || hlg { "HDR" } else { "SDR" };
-    let dovi = video["side_data_list"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|s| {
-            s["side_data_type"]
-                .as_str()
-                .is_some_and(|v| v.contains("DOVI"))
-        })
-        .filter(|s| {
-            s["rpu_present_flag"] == 1
-                && s["bl_present_flag"] == 1
-                && s["dv_profile"]
-                    .as_i64()
-                    .is_some_and(|p| [5, 7, 8, 10].contains(&p))
-                && s["dv_bl_signal_compatibility_id"]
-                    .as_i64()
-                    .is_some_and(|id| [0, 1, 2, 4, 6].contains(&id))
-        });
-    let Some(dovi) = dovi else {
-        return if pq {
-            ("HDR", "HDR10")
-        } else if hlg {
-            ("HDR", "HLG")
-        } else {
-            ("SDR", "SDR")
-        };
-    };
-    let range = match (
-        dovi["dv_profile"].as_i64(),
-        dovi["dv_bl_signal_compatibility_id"].as_i64(),
-    ) {
-        (Some(5), _) | (Some(10), Some(0)) => ("HDR", "DOVI"),
-        (Some(7), _) => ("HDR", "DOVIWithEL"),
-        (Some(8 | 10), Some(1)) => ("HDR", "DOVIWithHDR10"),
-        (Some(8 | 10), Some(2)) => ("SDR", "DOVIWithSDR"),
-        (Some(8 | 10), Some(4)) => ("HDR", "DOVIWithHLG"),
-        _ => (base, "DOVIInvalid"),
-    };
-    let tagged = |transfer: &str| {
-        video["color_space"] == "bt2020nc"
-            && video["color_transfer"] == transfer
-            && video["color_primaries"] == "bt2020"
-    };
-    match range.1 {
-        "DOVIWithHDR10" | "DOVIWithEL" if !tagged("smpte2084") => (base, "DOVIInvalid"),
-        "DOVIWithHLG" if !tagged("arib-std-b67") => (base, "DOVIInvalid"),
-        _ => range,
-    }
 }
 fn properties(source: &Source, audio: Option<i64>) -> Properties {
     let mut result = Properties::new();
@@ -507,8 +451,7 @@ fn negotiate_for_container(
         converted.insert(key.into(), value.into());
     }
     let range = values.get("VideoRangeType").map_or("", String::as_str);
-    // Without a standard base layer, FFmpeg can't reproduce the picture.
-    if !video.is_empty() && !["DOVI", "DOVIInvalid"].contains(&range) {
+    if stream(source, "video", None).is_some_and(|v| needs_tone_mapping(v).is_ok()) {
         let upper = |name: &str, fallback: f64| {
             profile["CodecProfiles"]
                 .as_array()
@@ -592,8 +535,6 @@ fn negotiate_for_container(
                         frame_rate,
                         profile: encoded.into(),
                         level,
-                        tone_map: ["HDR10", "HLG", "DOVIWithHDR10", "DOVIWithHLG", "DOVIWithEL"]
-                            .contains(&range),
                         deinterlace: values.get("IsInterlaced").is_some_and(|v| v == "true"),
                         fit: false,
                     });
@@ -854,36 +795,6 @@ mod tests {
         json!({"index":0,"codec_type":"video","codec_name":"hevc","profile":"Main 10","level":150,"width":3840,"height":2160,"avg_frame_rate":"24000/1001","pix_fmt":"yuv420p10le","color_space":"bt2020nc","color_transfer":transfer,"color_primaries":"bt2020","side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":profile,"dv_bl_signal_compatibility_id":compatibility,"rpu_present_flag":1,"bl_present_flag":1,"el_present_flag":0}]})
     }
     #[test]
-    fn dolby_vision_is_named_by_its_base_layer() {
-        let pq = "smpte2084";
-        let hlg = "arib-std-b67";
-        for (stream, expected) in [
-            (dolby_vision(8, 1, pq), ("HDR", "DOVIWithHDR10")),
-            (dolby_vision(10, 1, pq), ("HDR", "DOVIWithHDR10")),
-            (dolby_vision(8, 4, hlg), ("HDR", "DOVIWithHLG")),
-            (dolby_vision(8, 2, "bt709"), ("SDR", "DOVIWithSDR")),
-            (dolby_vision(7, 6, pq), ("HDR", "DOVIWithEL")),
-            (dolby_vision(5, 0, "bt709"), ("HDR", "DOVI")),
-            (dolby_vision(10, 0, pq), ("HDR", "DOVI")),
-            // A base layer whose tags contradict its record, or a compatibility outside the spec.
-            (dolby_vision(8, 1, "bt709"), ("SDR", "DOVIInvalid")),
-            (dolby_vision(8, 6, pq), ("HDR", "DOVIInvalid")),
-            // A record without a playable layer leaves the base picture.
-            (
-                {
-                    let mut s = dolby_vision(8, 1, pq);
-                    s["side_data_list"][0]["rpu_present_flag"] = json!(0);
-                    s
-                },
-                ("HDR", "HDR10"),
-            ),
-            (json!({"color_transfer":hlg}), ("HDR", "HLG")),
-            (json!({"color_transfer":"bt709"}), ("SDR", "SDR")),
-        ] {
-            assert_eq!(video_range(&stream), expected, "{stream}");
-        }
-    }
-    #[test]
     fn hdr10_clients_play_dolby_vision_with_an_hdr10_base_layer() {
         let (mut source, _) = fixture();
         source.probe["streams"][0] = dolby_vision(8, 1, "smpte2084");
@@ -893,7 +804,7 @@ mod tests {
         let profile = json!({"DirectPlayProfiles":[{"Type":"Video","Container":"mkv","VideoCodec":"hevc,h264","AudioCodec":"eac3,aac"}],"TranscodingProfiles":[{"Type":"Video","Container":"ts","Protocol":"hls","VideoCodec":"h264","AudioCodec":"aac"}],"CodecProfiles":[{"Type":"Video","Codec":"hevc","Conditions":[{"Property":"VideoRangeType","Condition":"NotEquals","Value":"DOVI|DOVIInvalid|DOVIWithEL","IsRequired":false}],"ApplyConditions":[{"Property":"VideoRangeType","Condition":"EqualsAny","Value":"DOVI|DOVIInvalid|DOVIWithEL","IsRequired":false}]}]});
         let caps = negotiate(&source, Some(1), &profile, true, true, None);
         assert_eq!(caps.containers, vec!["mkv"]);
-        assert!(caps.conversion.unwrap().tone_map);
+        assert!(caps.conversion.is_some());
         // Without a base layer it shows, the client gets neither the original nor a conversion.
         source.probe["streams"][0] = dolby_vision(5, 0, "bt709");
         let caps = negotiate(&source, Some(1), &profile, true, true, None);
