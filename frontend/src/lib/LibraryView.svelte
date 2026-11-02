@@ -224,6 +224,25 @@
       if (request === generation) extending = false;
     }
   }
+  // A track plays on through the whole album, not only the pages shown.
+  async function trackQueue() {
+    const path = listed,
+      shown = items;
+    const rest =
+      shown.length < total
+        ? await api<Page>(
+            `${path}&offset=${shown.length}&limit=${total - shown.length}`,
+          ).then(
+            (page) => page.items,
+            // Playback still starts with the tracks already shown.
+            () => [],
+          )
+        : [];
+    const known = new Set(shown.map((item) => item.id));
+    return [...shown, ...rest.filter((item) => !known.has(item.id))].filter(
+      (item) => item.kind === 'track' && item.available,
+    );
+  }
   function nearEnd(node: HTMLElement) {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -246,6 +265,7 @@
       const crumb = id ? known.get(id) : undefined;
       generation++;
       busy = true;
+      extending = false;
       closeDetails();
       breadcrumbs = [];
       search = query;
@@ -490,17 +510,16 @@
         >
         {#if file.present}<Button
             size="form"
-            onclick={() =>
+            onclick={async () => {
+              const item = selected!;
               play({
-                id: selected!.id,
-                title: selected!.title,
+                id: item.id,
+                title: item.title,
                 fileId: file.id,
-                kind: selected!.kind,
-                queue:
-                  selected!.kind === 'track'
-                    ? items.filter((i) => i.kind === 'track' && i.available)
-                    : undefined,
-              })}>Play {file.edition || 'media'}</Button
+                kind: item.kind,
+                queue: item.kind === 'track' ? await trackQueue() : undefined,
+              });
+            }}>Play {file.edition || 'media'}</Button
           >{/if}
       </div>
     {/each}
@@ -555,7 +574,7 @@
             void more();
           }}>Try again</Button
         ></Notice
-      >{:else}<MediaSkeleton
+      >{:else if extending}<MediaSkeleton
         label={`Loading more ${domain.toLowerCase()}`}
         shape={domain === 'Music' ? 'square' : 'poster'}
       />{/if}
