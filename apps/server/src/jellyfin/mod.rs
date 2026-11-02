@@ -553,11 +553,15 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
             }
             if tail.len() == 1 {
                 if tail[0].eq_ignore_ascii_case("Latest") {
+                    // Jellyfin's own default for this list.
+                    if query.get("limit").is_none_or(String::is_empty) {
+                        query.insert("limit".into(), "20".into());
+                    }
                     query.insert("sortby".into(), "DateCreated".into());
                     query.insert("sortorder".into(), "Descending".into());
                     query.insert("recursive".into(), "true".into());
-                    let value = catalog::browse(&state, &p, &query, None).await?;
-                    return Ok(axum::Json(value["Items"].clone()).into_response());
+                    let mut value = catalog::browse(&state, &p, &query, None).await?;
+                    return Ok(axum::Json(value["Items"].take()).into_response());
                 }
                 if tail[0].eq_ignore_ascii_case("Resume") {
                     query.insert("filters".into(), "IsResumable".into());

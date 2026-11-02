@@ -115,6 +115,28 @@ for (const episode of ['S01E01', 'S01E02', 'S00E01'])
     resolve(root, 'movies', 'Direct (2020).mp4'),
     resolve(root, 'shows', `Fixture Show.${episode}.mp4`),
   );
+// A season longer than the page some Jellyfin clients assume when they omit Limit.
+const longEpisode = (number) =>
+  resolve(
+    root,
+    'shows',
+    `Long Show.S01E${String(number).padStart(3, '0')}.mp4`,
+  );
+ffmpeg([
+  '-f',
+  'lavfi',
+  '-i',
+  'testsrc2=size=64x36:rate=1',
+  '-t',
+  '1',
+  '-c:v',
+  'libx264',
+  '-pix_fmt',
+  'yuv420p',
+  longEpisode(1),
+]);
+for (let number = 2; number <= 120; number++)
+  copyFileSync(longEpisode(1), longEpisode(number));
 console.log(
-  'Generated direct, remux, transcode, edition, subtitle and gapless music fixtures.',
+  'Generated direct, remux, transcode, edition, subtitle, gapless music and long-season fixtures.',
 );

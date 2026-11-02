@@ -208,6 +208,43 @@ r = await compat.get('/Items?IncludeItemTypes=Audio', { headers });
 const tracks = (await r.json()).Items;
 assert.ok(tracks.length >= 2);
 assert.ok(tracks.every((t) => t.IndexNumber < 10000));
+// Like Jellyfin, a list without Limit holds every item. Jellyfin Android TV reads
+// the rest of a season that way, from an episode's index.
+r = await compat.get(
+  '/Items?IncludeItemTypes=Series&Recursive=true&SearchTerm=Long%20Show',
+  { headers },
+);
+const longShow = (await r.json()).Items.find((i) => i.Name === 'Long Show');
+assert.ok(longShow, 'Generate playback fixtures first');
+r = await compat.get(`/Shows/${longShow.Id}/Seasons`, { headers });
+const longSeason = (await r.json()).Items.find((i) => i.IndexNumber === 1);
+for (const [path, start, count] of [
+  [`/Shows/${longShow.Id}/Episodes`, 0, 120],
+  [
+    `/Shows/${longShow.Id}/Episodes?SeasonId=${longSeason.Id}&Limit=1000`,
+    0,
+    120,
+  ],
+  [
+    `/Shows/${longShow.Id}/Episodes?SeasonId=${longSeason.Id}&StartIndex=100&Limit=10`,
+    100,
+    10,
+  ],
+  [`/Items?ParentId=${longSeason.Id}&StartIndex=100`, 100, 20],
+]) {
+  r = await compat.get(path, { headers });
+  assert.equal(r.status(), 200, path);
+  const page = await r.json();
+  assert.equal(page.TotalRecordCount, 120, path);
+  assert.equal(page.StartIndex, start, path);
+  assert.equal(page.Items.length, count, path);
+  if (path.startsWith('/Shows/'))
+    assert.deepEqual(
+      page.Items.map((i) => i.IndexNumber),
+      Array.from({ length: count }, (_, i) => start + i + 1),
+      path,
+    );
+}
 const playlists = (await call('/playlists')).items;
 if (!playlists.some((p) => p.name === 'TV validation mix')) {
   await call('/playlists', 'POST', {
@@ -680,6 +717,7 @@ writeFileSync(
       views: views.Items.map((i) => i.Name),
       libraryPreferences,
       movies: movies.Items.map((i) => i.Name),
+      listsWithoutLimitHoldEveryItem: true,
       compatibilityTokenRejectedByFirstParty: true,
       grantedDirectPlaybackAndProgress: true,
       revokedStreamRejected: true,
