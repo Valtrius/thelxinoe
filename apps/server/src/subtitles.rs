@@ -22,8 +22,9 @@ use thelxinoe_core::resource_locks::ResourceLocks;
 use thelxinoe_playback::{Source, Track};
 use tokio::sync::Semaphore;
 
-/// Whole files read at once, by requests and the worker together.
-static PASSES: Semaphore = Semaphore::const_new(2);
+/// Whole media files read at once: subtitle extractions, by requests and the worker, and
+/// trickplay sheets.
+pub(crate) static READS: Semaphore = Semaphore::const_new(2);
 /// One extraction per file version.
 static LOCKS: LazyLock<ResourceLocks> = LazyLock::new(ResourceLocks::default);
 const COMPLETE: &str = "complete";
@@ -111,7 +112,7 @@ async fn ensure(
         Some(false) => anyhow::bail!("The last extraction of this file failed less than a day ago"),
         None => {}
     }
-    let _pass = PASSES.acquire().await?;
+    let _pass = READS.acquire().await?;
     let tools = state.tools.runtime.media()?;
     let root = root(state);
     tokio::fs::create_dir_all(&root).await?;

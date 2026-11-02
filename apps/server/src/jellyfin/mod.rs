@@ -9,6 +9,7 @@ pub(crate) mod discovery;
 mod online;
 mod playback;
 mod profile;
+pub(crate) use profile::video_range;
 pub(crate) mod quick_connect;
 pub(crate) mod stills;
 mod trickplay;
