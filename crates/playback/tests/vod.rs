@@ -10,7 +10,7 @@ use std::{
     process::{Command, Output},
     time::UNIX_EPOCH,
 };
-use thelxinoe_playback::{Capabilities, Options, Pipelines, Source, decision};
+use thelxinoe_playback::{Capabilities, Conversion, Options, Pipelines, Source, decision};
 
 fn run(program: &str, args: &[&str]) -> Output {
     let mut command = Command::new(program);
@@ -539,19 +539,6 @@ async fn vod_conversion_tone_maps_pq_and_hlg_and_refuses_dolby_vision_without_a_
     )
     .await
     .unwrap();
-    // A browser without HEVC or AC-3.
-    let browser = Options {
-        quality: "auto".into(),
-        audio: None,
-        subtitle: None,
-        capabilities: Capabilities {
-            containers: vec!["mp4".into()],
-            video: vec!["h264".into()],
-            audio: vec!["aac".into()],
-            hls: true,
-            ..Capabilities::default()
-        },
-    };
     let mut sources = Vec::new();
     for (transfer, hdr10) in [
         (
@@ -595,13 +582,81 @@ async fn vod_conversion_tone_maps_pq_and_hlg_and_refuses_dolby_vision_without_a_
                 media.to_str().unwrap(),
             ],
         );
-        let source = source(temp.path(), &media);
+        sources.push(source(temp.path(), &media));
+    }
+    // A PQ stream that tags its transfer only, which zscale can't convert as tagged.
+    let untagged = temp.path().join("untagged.ts");
+    run(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            sources[0].path.to_str().unwrap(),
+            "-map",
+            "0",
+            "-c",
+            "copy",
+            "-bsf:v",
+            "hevc_metadata=colour_primaries=2:matrix_coefficients=2",
+            untagged.to_str().unwrap(),
+        ],
+    );
+    let untagged = source(temp.path(), &untagged);
+    for key in ["color_primaries", "color_space"] {
+        assert!(
+            untagged.probe["streams"][0][key]
+                .as_str()
+                .is_none_or(|tag| tag == "unknown"),
+            "{key}"
+        );
+    }
+    // A browser without HEVC or AC-3.
+    let browser = Options {
+        quality: "auto".into(),
+        audio: None,
+        subtitle: None,
+        capabilities: Capabilities {
+            containers: vec!["mp4".into()],
+            video: vec!["h264".into()],
+            audio: vec!["aac".into()],
+            hls: true,
+            ..Capabilities::default()
+        },
+    };
+    // A Jellyfin client conversion, at half the frame rate of the source.
+    let jellyfin = Options {
+        capabilities: Capabilities {
+            hls: true,
+            hls_container: Some("ts".into()),
+            hls_video: Some(vec![]),
+            hls_audio: Some(vec![]),
+            conversion: Some(Conversion {
+                width: 64,
+                height: 64,
+                frame_rate: 5.0,
+                profile: "high".into(),
+                level: 30,
+                deinterlace: false,
+                fit: false,
+            }),
+            ..Capabilities::default()
+        },
+        ..browser.clone()
+    };
+    for (id, source, options, pictures) in [
+        ("pq", &sources[0], &browser, 30),
+        ("hlg", &sources[1], &browser, 30),
+        ("untagged", &untagged, &browser, 30),
+        ("jellyfin", &sources[0], &jellyfin, 15),
+    ] {
         let (revision, _) = pipelines
-            .start_vod(transfer, &source, &browser, "transcode")
+            .start_vod(id, source, options, "transcode")
             .await
             .unwrap();
         let segment = pipelines
-            .file(transfer, &revision, "segment-000000.ts")
+            .file(id, &revision, "segment-000000.ts")
             .await
             .unwrap()
             .unwrap();
@@ -624,9 +679,9 @@ async fn vod_conversion_tone_maps_pq_and_hlg_and_refuses_dolby_vision_without_a_
         let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
         let stream = &probe["streams"][0];
         for key in ["color_primaries", "color_transfer", "color_space"] {
-            assert_eq!(stream[key], "bt709", "{transfer} {key}");
+            assert_eq!(stream[key], "bt709", "{id} {key}");
         }
-        // The SDR picture carries none of the source's HDR metadata.
+        // The SDR picture carries none of the HDR metadata of the source.
         assert!(
             probe["frames"][0]["side_data_list"]
                 .as_array()
@@ -636,23 +691,23 @@ async fn vod_conversion_tone_maps_pq_and_hlg_and_refuses_dolby_vision_without_a_
                     |data| !["Mastering display metadata", "Content light level metadata"]
                         .contains(&data["side_data_type"].as_str().unwrap_or(""))
                 ),
-            "{transfer} {probe}"
+            "{id} {probe}"
         );
         // Without tone mapping, the red shows as brown.
         let red = colour(&segment, 4, 28);
         assert!(
             red[0] > 150.0 && red[1] < red[0] / 4.0 && red[2] < red[0] / 4.0,
-            "{transfer} red {red:?}"
+            "{id} red {red:?}"
         );
         let white = colour(&segment, 36, 60);
         assert!(
             white
                 .iter()
                 .all(|v| *v > 160.0 && (v - white[1]).abs() < 12.0),
-            "{transfer} white {white:?}"
+            "{id} white {white:?}"
         );
-        pipelines.stop(transfer).await;
-        sources.push(source);
+        assert_eq!(frames(&segment).len(), pictures, "{id}");
+        pipelines.stop(id).await;
     }
     // Dolby Vision profile 5 has no base layer FFmpeg reproduces: its video is refused, while
     // its audio still converts.

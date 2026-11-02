@@ -62,9 +62,32 @@ pub fn video_range(video: &Value) -> (&'static str, &'static str) {
 /// Whether converting a video stream, always to SDR BT.709, tone maps its PQ or HLG picture.
 /// Fails for Dolby Vision without a standard base layer: FFmpeg can't reproduce its picture.
 pub fn needs_tone_mapping(video: &Value) -> Result<bool> {
-    match video_range(video) {
-        (_, "DOVI" | "DOVIInvalid") => bail!("This Dolby Vision video cannot be converted"),
-        (range, _) => Ok(range == "HDR"),
+    if ["DOVI", "DOVIInvalid"].contains(&video_range(video).1) {
+        bail!("This Dolby Vision video cannot be converted");
+    }
+    Ok(["smpte2084", "arib-std-b67"].contains(&video["color_transfer"].as_str().unwrap_or("")))
+}
+
+/// A `setparams` filter giving a PQ or HLG stream's missing primaries and matrix their BT.2020
+/// values, without which zscale can't convert it; empty when the stream has both. Like
+/// `TONE_MAP`, which it precedes, it starts with a comma.
+pub(crate) fn missing_hdr_tags(video: &Value) -> String {
+    let params = [
+        ("color_primaries", "color_primaries=bt2020"),
+        ("color_space", "colorspace=bt2020nc"),
+    ]
+    .into_iter()
+    .filter(|(key, _)| {
+        video[*key]
+            .as_str()
+            .is_none_or(|tag| tag == "unknown" || tag.starts_with("reserved"))
+    })
+    .map(|(_, param)| param)
+    .collect::<Vec<_>>();
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!(",setparams={}", params.join(":"))
     }
 }
 
@@ -93,6 +116,8 @@ mod tests {
                 ("SDR", "DOVIWithSDR"),
                 Some(false),
             ),
+            // Tone mapping follows the transfer the base layer is tagged with.
+            (dolby_vision(8, 2, pq), ("SDR", "DOVIWithSDR"), Some(true)),
             (dolby_vision(7, 6, pq), ("HDR", "DOVIWithEL"), Some(true)),
             (dolby_vision(5, 0, "bt709"), ("HDR", "DOVI"), None),
             (dolby_vision(10, 0, pq), ("HDR", "DOVI"), None),
