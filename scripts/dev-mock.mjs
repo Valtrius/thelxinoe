@@ -4,6 +4,7 @@ import { WebSocketServer } from 'ws';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { artwork } from './density-fixtures.mjs';
 import { createMockState, installMockApi } from './mock/api.mjs';
+import { archiveMovies } from './mock/data.mjs';
 import { prepareSample, samplePath, sheetPath } from './mock/playback.mjs';
 import { mockUiPlugin } from './mock/build.mjs';
 import { freePort } from './ci-resources.mjs';
@@ -174,6 +175,15 @@ const server = await preview({
               }
               movie.progress = progress;
               events.emit('catalog.status.changed', {});
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({ saved: true }));
+            }
+            if (req.url === '/__mock/library' && req.method === 'POST') {
+              let raw = '';
+              for await (const chunk of req) raw += chunk;
+              const { movies = 0 } = JSON.parse(raw || '{}');
+              state.library.push(...archiveMovies(state.library, movies));
+              events.emit('catalog.changed', {});
               res.writeHead(200, { 'Content-Type': 'application/json' });
               return res.end(JSON.stringify({ saved: true }));
             }
