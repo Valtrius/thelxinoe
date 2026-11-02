@@ -22,6 +22,7 @@
   } from '@lucide/svelte';
   import SegmentSkip from './SegmentSkip.svelte';
   import PlayerOption from './PlayerOption.svelte';
+  import StyledSubtitles from './StyledSubtitles.svelte';
   import { chapterAt, chapterMarks, chapterTitle } from './chapters';
   import { playerHandleReveal, playerReveal } from './player-reveal';
   import { api } from './api';
@@ -40,6 +41,7 @@
     type MediaChoice,
     type MediaInfo,
     type Playback,
+    type Preferences,
   } from './playback';
   let {
     choice,
@@ -145,6 +147,23 @@
     tapRevealsControls = false;
   let audibleVolume = 1;
   let lastSubtitle: string | null = null;
+  // Until the viewer picks one, the server chooses the subtitle for the audio that plays.
+  let subtitleChosen = false;
+  // Seconds the subtitles show later, for this playback only.
+  let subtitleOffset = $state(0),
+    subtitleSize = $state(1),
+    // Styled tracks whose renderer failed, shown as WebVTT instead.
+    unstyled = $state<string[]>([]);
+  const shownSubtitle = $derived(
+    active?.subtitles.find((track) => track.id === subtitle),
+  );
+  const styledSubtitle = $derived(
+    shownSubtitle?.url &&
+      ['ass', 'ssa'].includes(shownSubtitle.codec ?? '') &&
+      !unstyled.includes(shownSubtitle.id)
+      ? shownSubtitle
+      : undefined,
+  );
   $effect.pre(() => {
     const savedHeight = $appearance.player_height;
     if (canResize && !drag) resizedHeight = savedHeight;
@@ -353,13 +372,43 @@
     }
   }
   function setSubtitle(value: string) {
+    // A conversion burns a picture subtitle in, so changing one starts it again.
+    const burned = (id: string) =>
+      active?.subtitles.some((track) => track.id === id && !track.url);
+    const restart = burned(value) || burned(subtitle);
+    if (restart && busy) return;
+    subtitleChosen = true;
     if (value === 'off') {
       if (subtitle && subtitle !== 'off') lastSubtitle = subtitle;
     } else {
       lastSubtitle = value;
     }
     subtitle = value;
+    if (restart) void changeOptions();
+    else selectSubtitle();
+  }
+  function shiftSubtitles(seconds: number) {
+    if (!shownSubtitle?.url) return false;
+    subtitleOffset = Math.round((subtitleOffset + seconds) * 10) / 10;
     selectSubtitle();
+    return true;
+  }
+  let sizeSave: ReturnType<typeof setTimeout> | undefined;
+  function resizeSubtitles(step: number) {
+    const size = Math.max(0.5, Math.min(2, subtitleSize + step));
+    subtitleSize = Math.round(size * 10) / 10;
+    clearTimeout(sizeSave);
+    sizeSave = setTimeout(async () => {
+      try {
+        const saved = await api<Preferences>('/playback/preferences');
+        await api('/playback/preferences', 'PUT', {
+          ...saved,
+          subtitle_size: subtitleSize,
+        });
+      } catch {
+        // The size still applies to this playback.
+      }
+    }, 500);
   }
   function toggleSubtitles() {
     const subtitles = active?.subtitles ?? [];
@@ -464,6 +513,12 @@
         break;
       case 'c':
         toggleSubtitles();
+        break;
+      case 'z':
+        if (!shiftSubtitles(-0.1)) return;
+        break;
+      case 'x':
+        if (!shiftSubtitles(0.1)) return;
         break;
       case '.':
         stepFrame(1);
@@ -623,7 +678,11 @@
       info = loaded;
       quality = loaded.preferences.quality;
       audio = null;
-      subtitle = loaded.preferences.subtitles ? '' : 'off';
+      subtitle = '';
+      subtitleChosen = false;
+      subtitleOffset = 0;
+      subtitleSize = loaded.preferences.subtitle_size ?? 1;
+      unstyled = [];
       await start(undefined, revision);
     } catch (e) {
       if (revision === generation) error = String(e);
@@ -637,11 +696,14 @@
       {
         quality,
         audio,
-        subtitle: subtitle || null,
-        capabilities: capabilities(
-          info?.sources.find((s) => !choice.fileId || s.id === choice.fileId)
-            ?.probe,
-        ),
+        subtitle: subtitleChosen ? subtitle || null : null,
+        capabilities: {
+          ...capabilities(
+            info?.sources.find((s) => !choice.fileId || s.id === choice.fileId)
+              ?.probe,
+          ),
+          burn_subtitles: true,
+        },
       },
       at,
       {
@@ -843,19 +905,18 @@
   }
   function selectSubtitle() {
     if (!player) return;
+    const shift = subtitleOffset - (active?.timeline_start ?? 0);
     for (const track of player.textTracks) {
-      track.mode = track.id === subtitle ? 'showing' : 'disabled';
+      track.mode =
+        track.id === subtitle && !styledSubtitle ? 'showing' : 'disabled';
       for (const cue of track.cues ?? []) {
         let original = cueTimes.get(cue);
         if (!original) {
           original = { start: cue.startTime, end: cue.endTime };
           cueTimes.set(cue, original);
         }
-        cue.startTime = Math.max(
-          0,
-          original.start - (active?.timeline_start ?? 0),
-        );
-        cue.endTime = Math.max(0, original.end - (active?.timeline_start ?? 0));
+        cue.startTime = Math.max(0, original.start + shift);
+        cue.endTime = Math.max(0, original.end + shift);
       }
     }
   }
@@ -1019,7 +1080,8 @@
   }}
 >
   <video
-    class="block h-full w-full touch-manipulation object-contain"
+    class="block h-full w-full touch-manipulation object-contain [&::cue]:[font-size:calc(var(--subtitle-size)*100%)]"
+    style:--subtitle-size={subtitleSize}
     data-sidebar-resize="video"
     bind:this={player}
     playsinline
@@ -1052,16 +1114,30 @@
     }}
   >
     {#each active?.subtitles ?? [] as track (track.id)}
-      <track
-        id={track.id}
-        src={mediaUrl(track.url)}
-        kind="subtitles"
-        srclang={track.language || 'und'}
-        label={track.title || track.language || 'Subtitles'}
-        onload={selectSubtitle}
-      />
+      {#if track.url}<track
+          id={track.id}
+          src={mediaUrl(track.url)}
+          kind="subtitles"
+          srclang={track.language || 'und'}
+          label={track.title || track.language || 'Subtitles'}
+          onload={selectSubtitle}
+        />{/if}
     {/each}
   </video>
+  {#if active && styledSubtitle?.url}
+    {@const track = styledSubtitle.id}
+    {#key track}<StyledSubtitles
+        video={player}
+        url={`${styledSubtitle.url}${styledSubtitle.url.includes('?') ? '&' : '?'}format=ass`}
+        fonts={active.fonts ?? []}
+        offset={active.timeline_start - subtitleOffset}
+        size={subtitleSize}
+        failed={() => {
+          unstyled = [...unstyled, track];
+          selectSubtitle();
+        }}
+      />{/key}
+  {/if}
 
   <div
     class={[
@@ -1316,13 +1392,37 @@
           value={subtitle}
           options={[
             { value: 'off', label: 'Off' },
-            ...(active?.subtitles ?? []).map((track) => ({
-              value: track.id,
-              label:
+            ...(active?.subtitles ?? []).map((track) => {
+              const label =
                 `${track.language ?? ''} ${track.title ?? ''}`.trim() ||
-                'Subtitles',
-            })),
+                'Subtitles';
+              return {
+                value: track.id,
+                label:
+                  track.forced && !/forced/i.test(label)
+                    ? `${label} (Forced)`
+                    : label,
+              };
+            }),
           ]}
+          steppers={shownSubtitle?.url
+            ? [
+                {
+                  label: 'Offset',
+                  value: `${subtitleOffset > 0 ? '+' : ''}${subtitleOffset.toFixed(1)} s`,
+                  less: 'Show subtitles earlier',
+                  more: 'Show subtitles later',
+                  step: (direction) => shiftSubtitles(direction / 10),
+                },
+                {
+                  label: 'Size',
+                  value: `${Math.round(subtitleSize * 100)}%`,
+                  less: 'Smaller subtitles',
+                  more: 'Larger subtitles',
+                  step: (direction) => resizeSubtitles(direction / 10),
+                },
+              ]
+            : []}
           disabled={busy || !active}
           open={optionMenu === 'subtitles'}
           setOpen={(open) => (optionMenu = open ? 'subtitles' : null)}

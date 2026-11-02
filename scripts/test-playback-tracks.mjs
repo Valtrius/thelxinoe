@@ -1,6 +1,6 @@
 import { request } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 const origin = process.env.THELXINOE_PLAYBACK_URL ?? 'https://localhost:20443';
 const api = await request.newContext({
@@ -109,8 +109,127 @@ try {
     },
   });
   assert.equal(invalid.status(), 400);
+  await call(`/playback/${session.id}`, 'DELETE');
+
+  await call('/playback/preferences', 'PUT', {
+    ...preferences,
+    subtitles: false,
+    subtitle_size: 1.5,
+  });
+  assert.equal((await call('/playback/preferences')).subtitle_size, 1.5);
+  const oversized = await api.put('/api/v1/playback/preferences', {
+    data: { ...preferences, subtitle_size: 3 },
+  });
+  assert.equal(oversized.status(), 400);
+  const movies = (await call('/catalog?kind=movie')).items;
+  const styled = movies.find((i) => i.title === 'Styled');
+  const picture = movies.find((i) => i.title === 'Picture');
+  assert.ok(styled && picture);
+  // The web player has picture subtitles burned in; desktop and Jellyfin
+  // clients select embedded tracks, forced ones included, themselves.
+  const web = { ...options.capabilities, burn_subtitles: true };
+  const native = { ...options.capabilities, native_tracks: true };
+  const play = (media, capabilities, subtitle = null, position = 0) =>
+    call('/playback', 'POST', {
+      media_id: media.id,
+      options: { ...options, subtitle, capabilities },
+      position,
+    });
+
+  // A forced styled track in the audio's language shows by default, in its
+  // own format and with the font the file attaches.
+  session = await play(styled, web);
+  assert.equal(session.selected_subtitle, 'embedded-2');
+  const track = session.subtitles.find((s) => s.id === 'embedded-2');
+  assert.equal(track.codec, 'ass');
+  const script = await (await api.get(`${track.url}&format=ass`)).text();
+  assert.match(script, /Style: Sign,Liberation Sans,24,/);
+  assert.match(script, /\{\\pos\(160,40\)\}Styled fixture/);
+  assert.match(await (await api.get(track.url)).text(), /^WEBVTT/);
+  assert.equal(session.fonts.length, 1);
+  const font = await api.get(session.fonts[0]);
+  assert.equal(font.status(), 200);
+  assert.ok(
+    (await font.body()).equals(
+      readFileSync('frontend/node_modules/jassub/dist/default.woff2'),
+    ),
+  );
+  await call(`/playback/${session.id}`, 'DELETE');
+  session = await play(styled, native);
+  assert.equal(session.selected_subtitle, null);
+  await call(`/playback/${session.id}`, 'DELETE');
+
+  // The white box of the picture tracks covers the bottom of the black
+  // picture until 14 s.
+  const burned = async (url, at = 0) => {
+    const playlist = await (await api.get(url)).text();
+    const name = playlist.split('\n').find((s) => s.startsWith('segment-'));
+    writeFileSync(
+      '.local/burned-subtitle.ts',
+      await (
+        await api.get(new URL(name, new URL(url, origin)).toString())
+      ).body(),
+    );
+    // Decoded from the segment's start: a seek into it can miss its references.
+    const gray = execFileSync(
+      'ffmpeg',
+      [
+        ...['-hide_banner', '-loglevel', 'error', '-i'],
+        ...['.local/burned-subtitle.ts', '-ss', String(at), '-frames:v', '1'],
+        ...['-vf', 'scale=320:180', '-pix_fmt', 'gray', '-f', 'rawvideo'],
+        'pipe:1',
+      ],
+      { windowsHide: true },
+    );
+    assert.equal(gray.length, 320 * 180);
+    assert.ok(gray[40 * 320 + 160] < 40, 'The picture above the box is black');
+    return gray[140 * 320 + 160] > 200;
+  };
+  // A forced DVD track is burned in, and keeps its timeline across seeks:
+  // the box still shows after a seek into it, and is gone after it ends.
+  session = await play(picture, web);
+  assert.equal(session.selected_subtitle, 'embedded-3');
+  assert.equal(session.mode, 'transcode');
+  assert.equal(session.encoding.subtitle, 3);
+  assert.match(
+    session.conversion_reason,
+    /Picture subtitles are burned into the video/,
+  );
+  assert.equal(session.subtitles.find((s) => s.id === 'embedded-3').url, null);
+  assert.ok(await burned(session.url, 1), 'The DVD subtitle is burned in');
+  for (const [position, shown] of [
+    [8, true],
+    [15, false],
+  ]) {
+    const seek = await call(`/playback/${session.id}/seek`, 'POST', {
+      position,
+    });
+    assert.equal(seek.timeline_start, position);
+    assert.equal(
+      await burned(seek.url),
+      shown,
+      `The subtitle shows ${shown ? 'after' : 'only before'} ${position} s`,
+    );
+  }
+  await call(`/playback/${session.id}`, 'DELETE');
+  session = await play(picture, web, 'embedded-2');
+  assert.ok(await burned(session.url, 1), 'The PGS subtitle is burned in');
+  await call(`/playback/${session.id}`, 'DELETE');
+  // A client that can't burn them in is never given picture subtitles.
+  session = await play(picture, options.capabilities);
+  assert.equal(session.selected_subtitle, null);
+  assert.equal(session.mode, 'remux');
+  assert.deepEqual(session.subtitles, []);
+  const refused = await api.post('/api/v1/playback', {
+    data: {
+      media_id: picture.id,
+      options: { ...options, subtitle: 'embedded-2' },
+      position: 0,
+    },
+  });
+  assert.equal(refused.status(), 400);
   console.log(
-    'Saved audio/subtitle languages, embedded WebVTT and actual selected audio (880 Hz) passed.',
+    'Saved audio/subtitle languages, embedded WebVTT, actual selected audio (880 Hz), styled tracks with their fonts, forced and burned-in picture subtitles passed.',
   );
 } finally {
   if (session) await call(`/playback/${session.id}`, 'DELETE').catch(() => {});

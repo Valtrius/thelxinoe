@@ -24,6 +24,7 @@ export type Preferences = {
   subtitle_language: string;
   subtitles: boolean;
   replay_gain: string;
+  subtitle_size: number;
 };
 export type Track = {
   id: string;
@@ -32,13 +33,14 @@ export type Track = {
   codec: string;
   language: string;
   title: string;
+  forced?: boolean;
   supported: boolean;
 };
 export type Options = {
   quality: string;
   audio: number | null;
   subtitle: string | null;
-  capabilities: ReturnType<typeof capabilities>;
+  capabilities: ReturnType<typeof capabilities> & { burn_subtitles?: boolean };
 };
 export type Playback = {
   file_id?: string;
@@ -56,7 +58,17 @@ export type Playback = {
   timeline_start: number;
   video: boolean;
   tracks: Track[];
-  subtitles: { id: string; language: string; title: string; url: string }[];
+  /** A subtitle without an address is a picture, which a conversion burns in. */
+  subtitles: {
+    id: string;
+    language: string;
+    title: string;
+    codec?: string;
+    forced?: boolean;
+    url: string | null;
+  }[];
+  /** The fonts attached to the file, for its styled subtitles. */
+  fonts?: string[];
   selected_subtitle: string | null;
   options: Options;
   chapters: Chapter[];

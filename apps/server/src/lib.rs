@@ -319,6 +319,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/playback/{id}/subtitles/{track}",
             get(playback::subtitle),
         )
+        .route("/api/v1/playback/{id}/fonts/{index}", get(playback::font))
         .route("/api/v1/catalog/{id}/playback", get(playback::media_info))
         .route("/api/v1/admin/jobs", get(realtime::jobs))
         .route(

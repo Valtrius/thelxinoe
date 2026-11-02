@@ -1,7 +1,7 @@
 //! Embedded text subtitles, extracted once per file version into the cache. FFmpeg reads the
 //! whole file to reach a subtitle track, minutes for a large file on a slow disk, so one pass
 //! writes every text track of the file, and a background worker extracts the library ahead
-//! of playback.
+//! of playback. The fonts that styled subtitles use are cached the same way, on demand.
 
 #[path = "storage/subtitles.rs"]
 mod storage;
@@ -36,6 +36,9 @@ const SPACE: u64 = 512 * 1024 * 1024;
 
 fn root(state: &AppState) -> PathBuf {
     state.config.cache.join("subtitles")
+}
+fn fonts(state: &AppState) -> PathBuf {
+    state.config.cache.join("fonts")
 }
 fn name(source: &str, generation: &str) -> String {
     thelxinoe_auth::digest(&format!("{source}:{generation}"))
@@ -82,6 +85,61 @@ pub(crate) async fn track(
     anyhow::ensure!(
         tokio::fs::try_exists(&path).await?,
         "The extraction has no copy of this track"
+    );
+    Ok(path)
+}
+
+/// The cached copy of font attachment `index` of `source`. The first request for a file version
+/// copies all of its fonts; a file keeps them in its header, so this reads little of it.
+pub(crate) async fn font(state: &AppState, source: &Source, index: i64) -> anyhow::Result<PathBuf> {
+    let attachments = thelxinoe_playback::font_attachments(&source.probe);
+    anyhow::ensure!(attachments.contains(&index), "Not a font attachment");
+    let dir = fonts(state).join(name(&source.id, &source.generation));
+    let key = dir.to_string_lossy().into_owned();
+    let _lock = LOCKS.write(&[&key]).await;
+    if !tokio::fs::try_exists(dir.join(COMPLETE)).await? {
+        let tools = state.tools.runtime.media()?;
+        let root = fonts(state);
+        tokio::fs::create_dir_all(&root).await?;
+        anyhow::ensure!(
+            fs2::available_space(&root)? >= SPACE,
+            "Insufficient font cache space"
+        );
+        let partial = tempfile::Builder::new().prefix(PARTIAL).tempdir_in(&root)?;
+        source.validate().await?;
+        tools.ffmpeg.verify_unchanged().await?;
+        let mut command = tokio::process::Command::new(&tools.ffmpeg.path);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000);
+        command.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y"]);
+        // Each font goes to a path of ours; an attachment's own file name is untrusted.
+        for attachment in &attachments {
+            command
+                .arg(format!("-dump_attachment:{attachment}"))
+                .arg(partial.path().join(attachment.to_string()));
+        }
+        command
+            .arg("-i")
+            .arg(&source.path)
+            .args(["-t", "0", "-f", "null", "-"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let status = tokio::time::timeout(Duration::from_secs(60), command.status())
+            .await
+            .context("Font extraction timed out")??;
+        anyhow::ensure!(status.success(), "FFmpeg could not extract the fonts");
+        tokio::fs::write(partial.path().join(COMPLETE), []).await?;
+        if tokio::fs::try_exists(&dir).await? {
+            tokio::fs::remove_dir_all(&dir).await?;
+        }
+        tokio::fs::rename(partial.keep(), &dir).await?;
+    }
+    let path = dir.join(index.to_string());
+    anyhow::ensure!(
+        tokio::fs::try_exists(&path).await?,
+        "The extraction has no copy of this font"
     );
     Ok(path)
 }
@@ -263,7 +321,8 @@ pub async fn prune(state: &AppState) -> anyhow::Result<()> {
         .into_iter()
         .map(|(source, generation)| name(&source, &generation))
         .collect();
-    sweep(&root(state), &keep, DAY).await
+    sweep(&root(state), &keep, DAY).await?;
+    sweep(&fonts(state), &keep, DAY).await
 }
 async fn sweep(root: &Path, keep: &HashSet<String>, age: Duration) -> anyhow::Result<()> {
     let mut entries = match tokio::fs::read_dir(root).await {

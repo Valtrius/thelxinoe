@@ -722,6 +722,7 @@ fn negotiate_for_container(
         hls_media: None,
         allow_conversion: None,
         strip_dolby_vision,
+        burn_subtitles: false,
     }
 }
 

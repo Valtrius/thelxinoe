@@ -7,6 +7,9 @@ use serde_json::Value;
 pub struct Encoding {
     pub video: bool,
     pub audio: bool,
+    /// The embedded picture subtitle stream burned into the video.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<i64>,
 }
 impl Encoding {
     pub(crate) fn for_mode(source: &Source, options: &Options, mode: &str) -> Result<Self> {
@@ -19,6 +22,7 @@ impl Encoding {
             return Ok(Self {
                 video: source.video_codec().is_some(),
                 audio: true,
+                subtitle: None,
             });
         }
         let planned = decision(source, options)?;
@@ -28,6 +32,7 @@ impl Encoding {
             Self {
                 video: source.video_codec().is_some(),
                 audio: true,
+                subtitle: None,
             }
         })
     }
@@ -219,7 +224,22 @@ pub fn decision(source: &Source, options: &Options) -> Result<Decision> {
         .flatten()
         .find(|s| s["codec_type"] == "audio")
         .and_then(|s| s["index"].as_i64());
-    if !resize
+    let burn = options
+        .subtitle
+        .as_deref()
+        .and_then(|id| id.strip_prefix("embedded-")?.parse::<i64>().ok())
+        .filter(|index| {
+            caps.burn_subtitles
+                && video.is_some()
+                && streams.into_iter().flatten().any(|s| {
+                    s["index"].as_i64() == Some(*index)
+                        && s["codec_type"] == "subtitle"
+                        && crate::PICTURE_SUBTITLES
+                            .contains(&s["codec_name"].as_str().unwrap_or(""))
+                })
+        });
+    if burn.is_none()
+        && !resize
         && !reduce_rate
         && video_ok
         && audio_ok
@@ -253,12 +273,17 @@ pub fn decision(source: &Source, options: &Options) -> Result<Decision> {
             })
     }) && supported(options, audio, "mp4", true)
         && !(video.is_none() && reduce_rate);
+    let convert_video = video.is_some() && !copy_video;
     let encoding = Encoding {
-        video: video.is_some() && !copy_video,
+        video: convert_video || burn.is_some(),
         audio: audio.is_some() && !copy_audio,
+        subtitle: burn,
     };
     if (encoding.video || encoding.audio) && caps.allow_conversion == Some(false) {
         bail!("The client disabled the required conversion");
+    }
+    if options.quality == "original" && burn.is_some() {
+        bail!("Picture subtitles are burned into a converted video; select Auto");
     }
     if options.quality == "original" && (encoding.video || encoding.audio) {
         bail!("Original quality is unsupported by this client; select Auto");
@@ -270,12 +295,15 @@ pub fn decision(source: &Source, options: &Options) -> Result<Decision> {
     if reduce_rate {
         reasons.push("Requested bitrate limit");
     }
-    if encoding.video && !resize && !reduce_rate {
+    if convert_video && !resize && !reduce_rate {
         reasons.push(if !timestamps {
             "Source timestamps cannot be copied reliably"
         } else {
             "Video format is unsupported by this client"
         });
+    }
+    if burn.is_some() {
+        reasons.push("Picture subtitles are burned into the video");
     }
     if encoding.audio {
         reasons.push("Audio format is unsupported by this client");
