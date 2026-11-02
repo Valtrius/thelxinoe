@@ -1,6 +1,8 @@
 mod cache;
 mod dynamic_range;
 pub use dynamic_range::{needs_tone_mapping, video_range};
+mod hardware;
+pub use hardware::{Accelerator, HardwareStatus};
 #[cfg(test)]
 mod maintenance_tests;
 mod pipeline;
@@ -9,6 +11,7 @@ pub use remote::{MediaAccessDenied, RemoteSource};
 mod planning;
 mod vod;
 pub use pipeline::{CleanupReason, Pipelines, RunHandle, StoppedRun};
+pub(crate) use planning::Args;
 pub use planning::{Decision, Encoding, codec_string, decision};
 
 use anyhow::{Result, bail};
@@ -97,12 +100,16 @@ pub fn tone_map_filter(video: &Value) -> String {
 
 /// Maps PQ or HLG to SDR BT.709 in linear light, without the HDR metadata FFmpeg would
 /// otherwise pass on to the SDR output.
-const TONE_MAP: &str = ",zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL";
+pub(crate) const TONE_MAP: &str = ",zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL";
 /// FFmpeg output options converting the audio to stereo AAC.
 pub(crate) const AUDIO_CONVERSION_ARGS: [&str; 8] =
     ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000"];
-/// FFmpeg output options converting the video to 8-bit SDR H.264.
-pub(crate) fn video_conversion_args(options: &Options, probe: &Value) -> Result<Vec<String>> {
+/// FFmpeg options converting the video to 8-bit SDR H.264, on the GPU when `hardware` can.
+pub(crate) fn video_conversion_args(
+    options: &Options,
+    probe: &Value,
+    hardware: Option<&Accelerator>,
+) -> Result<Args> {
     let video = probe["streams"]
         .as_array()
         .into_iter()
@@ -120,7 +127,6 @@ pub(crate) fn video_conversion_args(options: &Options, probe: &Value) -> Result<
         // The picture keeps its size; H.264 only needs it even.
         format!("scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'{tone_filter}")
     };
-    let mut extra = Vec::new();
     if let Some(c) = &options.capabilities.conversion {
         if !(2..=7680).contains(&c.width)
             || c.width % 2 != 0
@@ -160,17 +166,54 @@ pub(crate) fn video_conversion_args(options: &Options, probe: &Value) -> Result<
                 c.width, c.height, c.width, c.height
             );
         }
-        extra = vec![
-            "-profile:v".into(),
-            c.profile.clone(),
-            "-level:v".into(),
-            format!("{}.{}", c.level / 10, c.level % 10),
-            "-refs".into(),
-            "1".into(),
-        ];
+    }
+    let plan = hardware.map(|h| h.plan(video, options, tone_map));
+    let mut output = match &plan {
+        Some(plan) => vec![
+            "-c:v".into(),
+            "h264_vaapi".into(),
+            // Chosen by the driver otherwise, possibly constant.
+            "-rc_mode".into(),
+            "VBR".into(),
+            "-vf".into(),
+            plan.filter(options, video, tone_map, &filter),
+        ],
+        None => [
+            "-c:v", "libx264", "-preset", "veryfast", "-threads", "2", "-pix_fmt", "yuv420p",
+            "-vf", &filter,
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+    };
+    let rate = conversion_rate(options, probe)?;
+    output.extend(
+        [
+            "-b:v",
+            &rate.to_string(),
+            "-maxrate",
+            &rate.to_string(),
+            "-bufsize",
+            &(rate * 2).to_string(),
+        ]
+        .map(str::to_owned),
+    );
+    if let Some(c) = &options.capabilities.conversion {
+        let (profile, level) = match &plan {
+            None => (
+                c.profile.as_str(),
+                format!("{}.{}", c.level / 10, c.level % 10),
+            ),
+            // VAAPI encodes Baseline's constrained subset, which has no B-frames.
+            Some(_) if c.profile == "baseline" => {
+                output.extend(["-bf".into(), "0".into()]);
+                ("constrained_baseline", c.level.to_string())
+            }
+            Some(_) => (c.profile.as_str(), c.level.to_string()),
+        };
+        output.extend(["-profile:v", profile, "-level:v", &level, "-refs", "1"].map(str::to_owned));
     }
     if tone_map {
-        extra.extend(
+        output.extend(
             [
                 "-color_primaries",
                 "bt709",
@@ -182,30 +225,10 @@ pub(crate) fn video_conversion_args(options: &Options, probe: &Value) -> Result<
             .map(str::to_owned),
         );
     }
-    let rate = conversion_rate(options, probe)?;
-    let mut args = [
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-threads",
-        "2",
-        "-pix_fmt",
-        "yuv420p",
-        "-vf",
-        &filter,
-        "-b:v",
-        &rate.to_string(),
-        "-maxrate",
-        &rate.to_string(),
-        "-bufsize",
-        &(rate * 2).to_string(),
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    args.extend(extra);
-    Ok(args)
+    Ok(Args {
+        input: plan.map(|p| p.input_args()).unwrap_or_default(),
+        output,
+    })
 }
 /// The highest rate a conversion uses at an H.264 level, well within the level's own.
 pub fn level_rate(level: u32) -> u32 {

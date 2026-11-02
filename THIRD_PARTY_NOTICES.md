@@ -15,6 +15,7 @@ which records each artifact's download address and SHA-256.
 | yt-dlp, including its standalone binary | Unlicense; the binary bundles Python packages | [yt-dlp](https://github.com/yt-dlp/yt-dlp), [nightly builds](https://github.com/yt-dlp/yt-dlp-nightly-builds) |
 | Deno                                    | MIT                                           | [denoland/deno](https://github.com/denoland/deno)                                                             |
 | Streamlink and its Python dependencies  | BSD-2-Clause and their own licenses           | [streamlink/streamlink](https://github.com/streamlink/streamlink), [PyPI](https://pypi.org/)                  |
+| Intel VA-API drivers, libva and gmmlib  | MIT; i965 shaders EPL-1.0 and Apache-2.0      | [iHD](https://github.com/intel/media-driver), [i965](https://github.com/intel/intel-vaapi-driver)             |
 | Python 3.11 and Debian base system      | PSF-2.0 and Debian package licenses           | [python:3.11-slim-trixie](https://hub.docker.com/_/python), [Debian](https://sources.debian.org/)             |
 | Rust crates compiled into the binaries  | MIT, Apache-2.0 and others                    | [`Cargo.lock`](Cargo.lock)                                                                                    |
 | npm packages bundled in the web app     | MIT and others                                | [`pnpm-lock.yaml`](pnpm-lock.yaml)                                                                            |
@@ -22,6 +23,9 @@ which records each artifact's download address and SHA-256.
 Each FFmpeg archive identifies the FFmpeg revision it was built from in its name
 (for example `n8.1.3-9-g29e619e767`) and the matching BtbN build tag in the lock
 file's `notes_url`.
+
+The `iHD` and `i965` drivers are Debian's `non-free` builds: their GPU kernels ship
+without source.
 
 ## Web app
 

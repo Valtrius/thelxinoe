@@ -1,7 +1,8 @@
 //! A complete VOD timeline for clients that seek by requesting HLS segments.
 //! Segments are generated on demand and may be evicted and regenerated.
 use crate::{
-    CleanupReason, Decision, Encoding, Options, RemoteSource, RunHandle, Source, StoppedRun,
+    Accelerator, CleanupReason, Decision, Encoding, Options, RemoteSource, RunHandle, Source,
+    StoppedRun,
 };
 use anyhow::{Context, Result, bail};
 use std::{
@@ -26,6 +27,8 @@ struct Run {
     remote: Option<RemoteSource>,
     options: Options,
     encoding: Encoding,
+    /// The GPU this run's video conversions use, until one fails.
+    hardware: Arc<std::sync::Mutex<Option<Accelerator>>>,
     boundaries: Vec<f64>,
     video_start: f64,
     gate: Mutex<Option<RemoteWork>>,
@@ -49,6 +52,7 @@ pub struct VodCache {
     slots: Arc<Semaphore>,
     /// Keyframe indexes of local files by file generation; see `index`.
     indexes: Mutex<HashMap<String, Arc<OnceCell<Keyframes>>>>,
+    hardware: Arc<crate::hardware::Hardware>,
 }
 type Keyframes = (Vec<f64>, f64);
 impl VodCache {
@@ -57,6 +61,7 @@ impl VodCache {
         slots: Arc<Semaphore>,
         tools: Runtime,
         scanner: Arc<crate::cache::Scanner>,
+        hardware: Arc<crate::hardware::Hardware>,
     ) -> Result<Self> {
         let root = root.join("vod");
         tokio::fs::create_dir_all(&root).await?;
@@ -67,6 +72,7 @@ impl VodCache {
             runs: Mutex::new(HashMap::new()),
             slots,
             indexes: Mutex::new(HashMap::new()),
+            hardware,
         })
     }
     /// A local file's keyframe index, built once per file generation. Listing a file's
@@ -250,6 +256,9 @@ impl VodCache {
                 remote,
                 options: options.clone(),
                 encoding,
+                hardware: Arc::new(std::sync::Mutex::new(
+                    self.hardware.accelerator().filter(|_| encoding.video),
+                )),
                 boundaries,
                 video_start,
                 gate: Mutex::new(None),
@@ -336,6 +345,10 @@ impl VodCache {
         let start = run.boundaries[index];
         let duration = run.boundaries[index + 1] - start;
         let remux_video = !run.encoding.video && run.source.video_codec().is_some();
+        let hardware = run.hardware.lock().unwrap().clone();
+        let args = run
+            .encoding
+            .args(&run.options, &run.source.probe, hardware.as_ref())?;
         let mut command = Command::new(&run.tools.ffmpeg.path);
         command.args([
             "-hide_banner",
@@ -350,6 +363,7 @@ impl VodCache {
         if start > 0.0 && run.remote.is_none() {
             command.args(["-ss", &start.to_string()]);
         }
+        command.args(&args.input);
         if let Some(remote) = &run.remote {
             command.env_remove("FFREPORT");
             for address in std::iter::once(&remote.video).chain(remote.audio.iter()) {
@@ -364,7 +378,7 @@ impl VodCache {
         } else {
             command.arg("-i").arg(&run.source.path);
         }
-        command.args(run.encoding.args(&run.options, &run.source.probe)?);
+        command.args(&args.output);
         if remux_video {
             command.arg("-copyts");
         } else if index + 2 < run.boundaries.len() {
@@ -464,6 +478,15 @@ impl VodCache {
         };
         if status.is_err() {
             let _ = child.kill().await;
+        }
+        if hardware.is_some() && !matches!(&status, Ok(s) if s.success()) && !*canceled.borrow() {
+            // Later segments skip the GPU too.
+            *run.hardware.lock().unwrap() = None;
+            if status.is_ok() {
+                tracing::warn!(revision = %run.revision, index, "Hardware conversion failed; converting in software");
+                drop((_partials, _slot, gate));
+                return Box::pin(self.file(id, revision, name)).await;
+            }
         }
         let status = status?;
         if status.success() && remux_video {
@@ -634,80 +657,15 @@ impl VodCache {
             let end = (index + 8).min(run.boundaries.len() - 1);
             let start = run.boundaries[index];
             let duration = run.boundaries[end] - start;
-            let mut command = Command::new(&run.tools.ffmpeg.path);
-            command.env_clear();
-            for name in ["PATH", "SystemRoot", "WINDIR"] {
-                if let Some(value) = std::env::var_os(name) {
-                    command.env(name, value);
-                }
-            }
-            command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
-            for address in std::iter::once(&remote.video).chain(remote.audio.iter()) {
-                command
-                    .args(remote.network_args())
-                    .args(["-rw_timeout", "15000000"]);
-                if start > 0.0 {
-                    command.args(["-ss", &start.to_string()]);
-                }
-                command.args(["-i", address]);
-            }
-            command.args([
-                "-t",
-                &duration.to_string(),
-                "-map",
-                "0:v:0",
-                "-map",
-                if remote.audio.is_some() {
-                    "1:a:0"
-                } else {
-                    "0:a:0?"
-                },
-                "-sn",
-                "-dn",
-                "-map_metadata",
-                "-1",
-            ]);
-            command.args(run.encoding.args(&run.options, &run.source.probe)?);
-            let fragmented = run.options.capabilities.hls_container.as_deref() == Some("mp4");
-            if fragmented {
-                command.args([
-                    "-hls_segment_type",
-                    "fmp4",
-                    "-hls_fmp4_init_filename",
-                    "work-init.mp4",
-                ]);
-            }
-            command
-                .args([
-                    "-force_key_frames",
-                    "expr:gte(t,n_forced*6)",
-                    "-avoid_negative_ts",
-                    "make_zero",
-                    "-f",
-                    "hls",
-                    "-hls_time",
-                    "6",
-                    "-hls_list_size",
-                    "0",
-                    "-start_number",
-                    &index.to_string(),
-                    "-hls_flags",
-                    "independent_segments+temp_file",
-                    "-hls_segment_filename",
-                ])
-                .arg(run.directory.join(if fragmented {
-                    "segment-%06d.m4s"
-                } else {
-                    "segment-%06d.ts"
-                }))
-                .arg(run.directory.join("work.m3u8"))
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true);
-            #[cfg(windows)]
-            command.creation_flags(0x08000000);
-            let child = command.spawn().context("Start public video conversion")?;
+            let hardware = run.hardware.lock().unwrap().clone();
+            let command = |hardware: Option<&Accelerator>| {
+                window_command(run, remote, index, start, duration, hardware)
+            };
+            let child = command(hardware.as_ref())?
+                .spawn()
+                .context("Start public video conversion")?;
+            let mut fallback = hardware.is_some().then(|| command(None)).transpose()?;
+            let shared = run.hardware.clone();
             let mut canceled = run.canceled.subscribe();
             let directory = run.directory.clone();
             let task = tokio::spawn(async move {
@@ -720,17 +678,26 @@ impl VodCache {
                 };
                 let _slot = slot;
                 let mut child = child;
-                let result = tokio::select! {
-                    result = tokio::time::timeout(Duration::from_secs(60), child.wait()) =>
-                        result.context("Public video conversion timed out").and_then(|r| r.map_err(Into::into)),
-                    _ = canceled.changed() => Err(anyhow::anyhow!("Playback was stopped")),
-                    result = monitor_work(&directory) => Err(result),
-                };
-                if result.is_err() {
-                    let _ = child.kill().await;
+                loop {
+                    let result = tokio::select! {
+                        result = tokio::time::timeout(Duration::from_secs(60), child.wait()) =>
+                            result.context("Public video conversion timed out").and_then(|r| r.map_err(Into::into)),
+                        _ = canceled.changed() => Err(anyhow::anyhow!("Playback was stopped")),
+                        result = monitor_work(&directory) => Err(result),
+                    };
+                    if result.is_err() {
+                        let _ = child.kill().await;
+                    }
+                    if result?.success() {
+                        return Ok(());
+                    }
+                    let Some(mut command) = fallback.take() else {
+                        bail!("Unable to prepare public video segments");
+                    };
+                    tracing::warn!("Hardware conversion failed; converting in software");
+                    *shared.lock().unwrap() = None;
+                    child = command.spawn().context("Start public video conversion")?;
                 }
-                anyhow::ensure!(result?.success(), "Unable to prepare public video segments");
-                Ok(())
             });
             *work = Some(RemoteWork {
                 first: index,
@@ -817,6 +784,95 @@ impl VodCache {
         }
         Ok(removed)
     }
+}
+/// The FFmpeg command converting at most 48 seconds of a public video from segment `index`,
+/// publishing each segment as soon as it is ready.
+fn window_command(
+    run: &Run,
+    remote: &RemoteSource,
+    index: usize,
+    start: f64,
+    duration: f64,
+    hardware: Option<&Accelerator>,
+) -> Result<Command> {
+    let args = run
+        .encoding
+        .args(&run.options, &run.source.probe, hardware)?;
+    let mut command = Command::new(&run.tools.ffmpeg.path);
+    command.env_clear();
+    for name in ["PATH", "SystemRoot", "WINDIR"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
+    command.args(&args.input);
+    for address in std::iter::once(&remote.video).chain(remote.audio.iter()) {
+        command
+            .args(remote.network_args())
+            .args(["-rw_timeout", "15000000"]);
+        if start > 0.0 {
+            command.args(["-ss", &start.to_string()]);
+        }
+        command.args(["-i", address]);
+    }
+    command.args([
+        "-t",
+        &duration.to_string(),
+        "-map",
+        "0:v:0",
+        "-map",
+        if remote.audio.is_some() {
+            "1:a:0"
+        } else {
+            "0:a:0?"
+        },
+        "-sn",
+        "-dn",
+        "-map_metadata",
+        "-1",
+    ]);
+    command.args(&args.output);
+    let fragmented = run.options.capabilities.hls_container.as_deref() == Some("mp4");
+    if fragmented {
+        command.args([
+            "-hls_segment_type",
+            "fmp4",
+            "-hls_fmp4_init_filename",
+            "work-init.mp4",
+        ]);
+    }
+    command
+        .args([
+            "-force_key_frames",
+            "expr:gte(t,n_forced*6)",
+            "-avoid_negative_ts",
+            "make_zero",
+            "-f",
+            "hls",
+            "-hls_time",
+            "6",
+            "-hls_list_size",
+            "0",
+            "-start_number",
+            &index.to_string(),
+            "-hls_flags",
+            "independent_segments+temp_file",
+            "-hls_segment_filename",
+        ])
+        .arg(run.directory.join(if fragmented {
+            "segment-%06d.m4s"
+        } else {
+            "segment-%06d.ts"
+        }))
+        .arg(run.directory.join("work.m3u8"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    Ok(command)
 }
 async fn publish_initializations(run: &Run, work: &RemoteWork) -> Result<()> {
     if run.options.capabilities.hls_container.as_deref() != Some("mp4") {

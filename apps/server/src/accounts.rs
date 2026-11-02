@@ -388,7 +388,7 @@ pub async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Resu
     let _policy = state.transcoding.read().await;
     let value = storage::settings(&state.db).await?;
     Ok(Json(
-        json!({"timezone":value.timezone,"time_format":value.time_format,"video_transcoding":value.transcoding.video_transcoding,"audio_transcoding":value.transcoding.audio_transcoding,"public_url":state.config.public_url.as_ref().map(ToString::to_string),"trusted_proxies":state.config.trusted_proxies.iter().map(ToString::to_string).collect::<Vec<_>>()}),
+        json!({"timezone":value.timezone,"time_format":value.time_format,"video_transcoding":value.transcoding.video_transcoding,"audio_transcoding":value.transcoding.audio_transcoding,"hardware_conversion":value.transcoding.hardware_conversion,"hardware":state.playback.hardware(),"public_url":state.config.public_url.as_ref().map(ToString::to_string),"trusted_proxies":state.config.trusted_proxies.iter().map(ToString::to_string).collect::<Vec<_>>()}),
     ))
 }
 pub(crate) struct SettingsView {
@@ -408,6 +408,7 @@ pub struct Settings {
     time_format: Option<String>,
     video_transcoding: Option<bool>,
     audio_transcoding: Option<bool>,
+    hardware_conversion: Option<bool>,
 }
 pub async fn save_settings(
     State(state): State<AppState>,
@@ -430,7 +431,12 @@ pub async fn save_settings(
     let value = storage::save_settings(&state.db, settings, p)
         .await?
         .ok_or_else(ApiError::forbidden)?;
+    let enabled = value.transcoding.hardware_conversion && !policy.hardware_conversion;
     *policy = value.transcoding;
+    state.playback.use_hardware(policy.hardware_conversion);
+    if enabled {
+        tokio::spawn(crate::transcoding::probe_hardware(state.clone()));
+    }
     for run in state.playback.runs().await {
         if let Some(encoding) = state.playback.encoding(&run).await
             && policy.check(encoding).is_err()
@@ -444,11 +450,11 @@ pub async fn save_settings(
         .emit(
             None,
             "server.settings.changed",
-            json!({"timezone":value.timezone,"time_format":value.time_format,"video_transcoding":policy.video_transcoding,"audio_transcoding":policy.audio_transcoding}),
+            json!({"timezone":value.timezone,"time_format":value.time_format,"video_transcoding":policy.video_transcoding,"audio_transcoding":policy.audio_transcoding,"hardware_conversion":policy.hardware_conversion}),
         )
         .await?;
     Ok(Json(
-        json!({"ok":true,"timezone":value.timezone,"time_format":value.time_format,"video_transcoding":policy.video_transcoding,"audio_transcoding":policy.audio_transcoding}),
+        json!({"ok":true,"timezone":value.timezone,"time_format":value.time_format,"video_transcoding":policy.video_transcoding,"audio_transcoding":policy.audio_transcoding,"hardware_conversion":policy.hardware_conversion}),
     ))
 }
 

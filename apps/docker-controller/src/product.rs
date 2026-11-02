@@ -2231,7 +2231,8 @@ mod tests {
             "Cmd":["thelxinoe-server"],"Entrypoint":null,"WorkingDir":"/","Healthcheck":{"Test":["CMD","old-check"]},
             "Labels":{"com.docker.compose.project":"thelxinoe","com.docker.compose.image":"sha256:old",
                 "org.opencontainers.image.version":"0.0.1","app.thelxinoe.component":"server","vendor":"thelxinoe"}},
-            "HostConfig":{"ReadonlyRootfs":true},"NetworkSettings":{"Networks":{"media":{"Aliases":["server"],"IPAMConfig":null}}}});
+            "HostConfig":{"ReadonlyRootfs":true,"Devices":[{"PathOnHost":"/dev/dri","PathInContainer":"/dev/dri","CgroupPermissions":"rwm"}],"GroupAdd":["937"]},
+            "NetworkSettings":{"Networks":{"media":{"Aliases":["server"],"IPAMConfig":null}}}});
         let previous = json!({"Id":"sha256:old","Config":{"Env":["PATH=/usr/bin","THELXINOE_WEB=/opt/web"],
             "Cmd":["thelxinoe-server"],"Entrypoint":null,"WorkingDir":"/","Healthcheck":{"Test":["CMD","old-check"]},
             "Labels":{"org.opencontainers.image.version":"0.0.1","vendor":"thelxinoe"}}});
@@ -2272,7 +2273,8 @@ mod tests {
             later["Labels"][COMPOSE_IMAGE],
             "ghcr.io/valtrius/thelxinoe-server:latest"
         );
-        assert_eq!(spec["HostConfig"]["ReadonlyRootfs"], true);
+        // Including host access it was granted, such as a GPU and the group that opens it.
+        assert_eq!(spec["HostConfig"], raw["HostConfig"]);
         // Without image evidence the container's configuration is kept as it was.
         let kept = recreate(&raw, "image", &Value::Null, &Value::Null).unwrap();
         assert_eq!(kept["Env"], raw["Config"]["Env"]);
@@ -2391,12 +2393,13 @@ mod tests {
                     "media_source":"/srv/media","appdata_source":storage})).unwrap();
                 store::commit_generation(&root, 1, &serde_json::to_value(&accepted).unwrap())
                     .unwrap();
-                // Compose recreated both from a rebuild and an edited .env.
+                // Compose recreated both from a rebuild, an edited .env and a GPU added in
+                // compose.override.yaml.
                 fixture.insert("controller", controller("controller", &format!("sha256:{}", "2".repeat(64))));
-                fixture.insert(
-                    "server",
-                    server("server", &format!("sha256:{}", "2".repeat(64)), &["THELXINOE_PUBLIC_URL=https://media.example"]),
-                );
+                let mut recreated = server("server", &format!("sha256:{}", "2".repeat(64)), &["THELXINOE_PUBLIC_URL=https://media.example"]);
+                recreated["HostConfig"]["Devices"] = json!([{"PathOnHost":"/dev/dri","PathInContainer":"/dev/dri","CgroupPermissions":"rwm"}]);
+                recreated["HostConfig"]["GroupAdd"] = json!(["937"]);
+                fixture.insert("server", recreated.clone());
                 let mut oneoff = controller("oneoff", &format!("sha256:{}", "2".repeat(64)));
                 oneoff["Config"]["Labels"]["com.docker.compose.oneoff"] = json!("True");
                 fixture.insert("oneoff", oneoff);
@@ -2417,12 +2420,18 @@ mod tests {
                 assert!(outcome.starts_with("Adopted as generation 2"), "{outcome}");
                 let reviewed = reviewed.into_inner();
                 for expected in ["server Image changed", "controller Image changed",
-                    "server Config.Env.THELXINOE_PUBLIC_URL added"] {
+                    "server Config.Env.THELXINOE_PUBLIC_URL added", "server HostConfig.Devices added",
+                    "server HostConfig.GroupAdd added"] {
                     assert!(reviewed.iter().any(|line| line.starts_with(expected)), "{expected} in {reviewed:?}");
                 }
                 let current: Deployment = store::read(&root.join("desired-state.json")).unwrap();
                 assert_eq!((current.id.as_str(), current.generation), ("deployment", 2));
                 assert_eq!((current.server["Id"].clone(), current.controller["Id"].clone()), (json!("server"), json!("controller")));
+                // Updates and backups then expect the GPU, and its loss is drift.
+                assert!(deployment_matches(&current.server, &recreated));
+                let mut lost = recreated.clone();
+                lost["HostConfig"]["Devices"] = json!([]);
+                assert!(!deployment_matches(&current.server, &lost));
                 let again = accept_containers("oneoff", Some(runtime.path()), |_| unreachable!()).await.unwrap();
                 assert!(again.starts_with("Nothing to accept"), "{again}");
                 // A different deployment folder, a second network or a moved media folder that

@@ -246,6 +246,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
         .2;
     assert_eq!(defaults["video_transcoding"], true);
     assert_eq!(defaults["audio_transcoding"], true);
+    assert_eq!(defaults["hardware_conversion"], false);
     let display = call(
         &state,
         "/api/v1/admin/settings",
@@ -650,7 +651,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
             &state,
             "/api/v1/admin/settings",
             "PUT",
-            json!({"video_transcoding":false,"audio_transcoding":false}),
+            json!({"video_transcoding":false,"audio_transcoding":false,"hardware_conversion":true}),
             &cookie
         )
         .await
@@ -669,6 +670,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
     assert_eq!(persisted.0, StatusCode::OK);
     assert_eq!(persisted.2["video_transcoding"], false);
     assert_eq!(persisted.2["audio_transcoding"], false);
+    assert_eq!(persisted.2["hardware_conversion"], true);
     let evidence_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/online-transcoding-policy.json");
     tokio::fs::create_dir_all(evidence_path.parent().unwrap())

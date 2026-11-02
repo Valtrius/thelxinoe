@@ -1,4 +1,4 @@
-use crate::{Options, Source, bitrate, resolution};
+use crate::{Accelerator, Options, Source, bitrate, resolution};
 use anyhow::{Result, bail};
 use serde::Serialize;
 use serde_json::Value;
@@ -36,20 +36,28 @@ impl Encoding {
             }
         })
     }
-    pub(crate) fn args(self, options: &Options, probe: &Value) -> Result<Vec<String>> {
-        let mut result = Vec::new();
-        if !self.video && !self.audio {
-            result.extend(["-c".into(), "copy".into()]);
+    pub(crate) fn args(
+        self,
+        options: &Options,
+        probe: &Value,
+        hardware: Option<&Accelerator>,
+    ) -> Result<Args> {
+        let mut args = if self.video {
+            crate::video_conversion_args(options, probe, hardware)?
         } else {
-            if self.video {
-                result.extend(crate::video_conversion_args(options, probe)?);
-            } else {
-                result.extend(["-c:v".into(), "copy".into()]);
+            Args::default()
+        };
+        let output = &mut args.output;
+        if !self.video && !self.audio {
+            output.extend(["-c".into(), "copy".into()]);
+        } else {
+            if !self.video {
+                output.extend(["-c:v".into(), "copy".into()]);
             }
             if self.audio {
-                result.extend(crate::AUDIO_CONVERSION_ARGS.map(str::to_owned));
+                output.extend(crate::AUDIO_CONVERSION_ARGS.map(str::to_owned));
             } else {
-                result.extend(["-c:a".into(), "copy".into()]);
+                output.extend(["-c:a".into(), "copy".into()]);
             }
         }
         if !self.video && options.capabilities.strip_dolby_vision {
@@ -60,7 +68,7 @@ impl Encoding {
             });
             // dovi_rpu drops the configuration record but only the HEVC unit that ends a
             // picture, while enhancement layer units come before it.
-            result.extend([
+            output.extend([
                 "-bsf:v".into(),
                 if hevc {
                     "filter_units=remove_types=62|63,dovi_rpu=strip=1"
@@ -70,8 +78,16 @@ impl Encoding {
                 .into(),
             ]);
         }
-        Ok(result)
+        Ok(args)
     }
+}
+/// FFmpeg options of a conversion.
+#[derive(Debug, Default)]
+pub(crate) struct Args {
+    /// Before the video input.
+    pub input: Vec<String>,
+    /// After the inputs.
+    pub output: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Decision {
