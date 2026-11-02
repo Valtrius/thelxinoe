@@ -21,7 +21,7 @@ pub(super) struct MediaQuery {
     pub(super) id: Option<String>,
     pub(super) parent: Option<String>,
     pub(super) start: usize,
-    pub(super) limit: usize,
+    pub(super) limit: Option<usize>,
 }
 
 pub(super) async fn browse_media(
@@ -86,8 +86,10 @@ pub(super) async fn browse_media(
             })
             .collect::<Vec<_>>()
             .join(",");
-        let sql =
-            format!("{SELECT} {FROM} {filter} ORDER BY {sort},m.id LIMIT {limit} OFFSET {start}");
+        let sql = format!(
+            "{SELECT} {FROM} {filter} ORDER BY {sort},m.id LIMIT {} OFFSET {start}",
+            crate::jellyfin::storage::sql_limit(limit)
+        );
         let rows = db
             .prepare(&sql)?
             .query_map(rusqlite::params_from_iter(&args), |r| {
@@ -328,8 +330,8 @@ pub(super) struct PlaylistQuery {
     pub(super) id: Option<String>,
     pub(super) server: String,
     pub(super) favorite: bool,
-    pub(super) start: u32,
-    pub(super) limit: u32,
+    pub(super) start: usize,
+    pub(super) limit: Option<usize>,
     pub(super) search: Option<String>,
     pub(super) media: Option<String>,
     pub(super) library_media: Option<&'static str>,
@@ -367,7 +369,7 @@ pub(super) async fn playlists(
         let library_filter=match library_media {Some("Audio")=>"media_type='Audio'",Some("Video")=>"media_type='Video'",_=>"1"};
         let filter=format!("(?2 IS NULL OR id=?2) AND (?3=0 OR favorite=1) AND (?4 IS NULL OR instr(lower(name),lower(?4))>0) AND (?5 IS NULL OR instr(lower(?5),lower(media_type))>0) AND {library_filter}");
         let total=db.query_row(&format!("{source} SELECT COUNT(*) FROM lists WHERE {filter}"),params![user,id,favorite,search,media],|r|r.get::<_,i64>(0).map(|v|v as usize))?;
-        let items=db.prepare(&format!("{source} SELECT id,name,description,media_type,favorite,children FROM lists WHERE {filter} ORDER BY {order} {direction},id LIMIT ?6 OFFSET ?7"))?.query_map(params![user,id,favorite,search,media,limit,start],|r|Ok(json!({"Id":r.get::<_,String>(0)?,"Name":r.get::<_,String>(1)?,"Overview":r.get::<_,String>(2)?,"Type":"Playlist","MediaType":r.get::<_,String>(3)?,"IsFolder":true,"LocationType":"Remote","ServerId":server,"ChildCount":r.get::<_,i64>(5)?,"ImageTags":{},"UserData":{"Key":r.get::<_,String>(0)?,"ItemId":r.get::<_,String>(0)?,"IsFavorite":r.get::<_,bool>(4)?,"PlayCount":0,"Played":false,"PlaybackPositionTicks":0}})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let items=db.prepare(&format!("{source} SELECT id,name,description,media_type,favorite,children FROM lists WHERE {filter} ORDER BY {order} {direction},id LIMIT ?6 OFFSET ?7"))?.query_map(params![user,id,favorite,search,media,crate::jellyfin::storage::sql_limit(limit),start as i64],|r|Ok(json!({"Id":r.get::<_,String>(0)?,"Name":r.get::<_,String>(1)?,"Overview":r.get::<_,String>(2)?,"Type":"Playlist","MediaType":r.get::<_,String>(3)?,"IsFolder":true,"LocationType":"Remote","ServerId":server,"ChildCount":r.get::<_,i64>(5)?,"ImageTags":{},"UserData":{"Key":r.get::<_,String>(0)?,"ItemId":r.get::<_,String>(0)?,"IsFavorite":r.get::<_,bool>(4)?,"PlayCount":0,"Played":false,"PlaybackPositionTicks":0}})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok((items,total))
     }).await
 }

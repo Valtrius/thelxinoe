@@ -23,9 +23,11 @@
     error: string | null;
     watched_users?: string[];
   };
+  type Totals = { pending: number; history: number };
   const ids = $props.id();
   let view = $state('activity');
   let items = $state<Item[]>([]);
+  let totals = $state<Totals>({ pending: 0, history: 0 });
   let loaded = $state(false);
   let busy = $state(false);
   let error = $state('');
@@ -43,6 +45,8 @@
           : (b.eligible_at ?? b.due_at) - (a.eligible_at ?? a.due_at),
       ),
   );
+  const total = $derived(scheduled ? totals.pending : totals.history);
+  const n = (value: number) => value.toLocaleString();
   const reason = (item: Item) =>
     item.reason === 'storage_limit'
       ? 'Storage limit'
@@ -67,9 +71,12 @@
   async function refresh() {
     const current = requests.begin();
     try {
-      const result = await api<{ items: Item[] }>('/admin/retention');
+      const result = await api<{ items: Item[]; totals: Totals }>(
+        '/admin/retention/deletions',
+      );
       if (current()) {
         items = result.items;
+        totals = result.totals;
         loaded = true;
         error = '';
       }
@@ -138,7 +145,8 @@
   >
     {#snippet actions()}
       <span class="text-xs text-muted"
-        >{visible.length} {visible.length === 1 ? 'item' : 'items'}</span
+        >{total > visible.length ? `${n(visible.length)} of ` : ''}{n(total)}
+        {total === 1 ? 'item' : 'items'}</span
       >
     {/snippet}
     {#if !loaded}

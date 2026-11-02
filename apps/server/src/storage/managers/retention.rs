@@ -22,12 +22,20 @@ pub(super) async fn revalidate_operation(
     }).await
 }
 
-pub(super) async fn list(db: &Database) -> anyhow::Result<Value> {
-    db.read("managers.retention.list", |db|{
+pub(super) async fn settings(db: &Database) -> anyhow::Result<Value> {
+    db.read("managers.retention.settings", |db|{
         let policies=db.prepare("SELECT domain,enabled,grace_seconds,exclude_specials,trigger_users,storage_limit_bytes,exclude_from_lists,remove_from_manager FROM retention_policies ORDER BY domain")?.query_map([],|r|Ok(json!({"domain":r.get::<_,String>(0)?,"enabled":r.get::<_,bool>(1)?,"grace_seconds":r.get::<_,i64>(2)?,"exclude_specials":r.get::<_,bool>(3)?,"trigger_users":serde_json::from_str::<Value>(&r.get::<_,String>(4)?).unwrap_or_default(),"storage_limit_bytes":r.get::<_,i64>(5)?,"exclude_from_lists":r.get::<_,bool>(6)?,"remove_from_manager":r.get::<_,bool>(7)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let items=db.prepare("SELECT c.id,c.media_id,COALESCE(s.title||' · '||m.title,m.title),c.state,c.eligible_at,c.due_at,c.error,c.watched_users,m.kind FROM retention_candidates c JOIN media m ON m.id=c.media_id LEFT JOIN media s ON s.id=m.parent_id AND m.kind='season' ORDER BY c.state='pending' DESC,c.eligible_at DESC LIMIT 200")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"media_id":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"eligible_at":r.get::<_,i64>(4)?,"due_at":r.get::<_,i64>(5)?,"error":r.get::<_,Option<String>>(6)?,"watched_users":serde_json::from_str::<Value>(&r.get::<_,String>(7)?).unwrap_or_default(),"domain":if r.get::<_,String>(8)?=="movie" {"movies"}else{"shows"},"reason":"watched"})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let users=db.prepare("SELECT id,username FROM users ORDER BY username")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,String>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(json!({"policies":policies,"items":items,"users":users}))
+        Ok(json!({"policies":policies,"users":users}))
+    }).await
+}
+
+/// Every scheduled deletion and the latest `history` outcomes, with how many outcomes there are.
+pub(super) async fn deletions(db: &Database, history: i64) -> anyhow::Result<(Vec<Value>, i64)> {
+    db.read("managers.retention.deletions", move|db|{
+        let items=db.prepare("SELECT c.id,c.media_id,COALESCE(s.title||' · '||m.title,m.title),c.state,c.eligible_at,c.due_at,c.error,c.watched_users,m.kind FROM retention_candidates c JOIN media m ON m.id=c.media_id LEFT JOIN media s ON s.id=m.parent_id AND m.kind='season' WHERE c.state='pending' OR c.id IN (SELECT id FROM retention_candidates WHERE state<>'pending' ORDER BY eligible_at DESC,id LIMIT ?1)")?.query_map([history],|r|Ok(json!({"id":r.get::<_,String>(0)?,"media_id":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"eligible_at":r.get::<_,i64>(4)?,"due_at":r.get::<_,i64>(5)?,"error":r.get::<_,Option<String>>(6)?,"watched_users":serde_json::from_str::<Value>(&r.get::<_,String>(7)?).unwrap_or_default(),"domain":if r.get::<_,String>(8)?=="movie" {"movies"}else{"shows"},"reason":"watched"})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let outcomes=db.query_row("SELECT COUNT(*) FROM retention_candidates WHERE state<>'pending'",[],|r|r.get::<_,i64>(0))?;
+        Ok((items,outcomes))
     }).await
 }
 

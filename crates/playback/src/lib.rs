@@ -1,4 +1,6 @@
 mod cache;
+mod dynamic_range;
+pub use dynamic_range::{needs_tone_mapping, video_range};
 #[cfg(test)]
 mod maintenance_tests;
 mod pipeline;
@@ -51,8 +53,6 @@ pub struct Conversion {
     pub profile: String,
     pub level: u32,
     #[serde(default)]
-    pub tone_map: bool,
-    #[serde(default)]
     pub deinterlace: bool,
     #[serde(default)]
     pub fit: bool,
@@ -87,12 +87,35 @@ pub fn conversion_rate(options: &Options, probe: &Value) -> Result<u32> {
         .unwrap_or_else(|| picture.map_or(8_000_000, |(w, h)| picture_rate(w, h)))
         .min(conversion.map_or(u32::MAX, |c| level_rate(c.level))))
 }
-pub(crate) fn conversion_args(options: &Options, probe: &Value) -> Result<Vec<String>> {
+/// The filters that follow the scaling of a PQ or HLG stream and tone map it to SDR BT.709.
+pub fn tone_map_filter(video: &Value) -> String {
+    format!("{}{TONE_MAP}", dynamic_range::missing_hdr_tags(video))
+}
+
+/// Maps PQ or HLG to SDR BT.709 in linear light, without the HDR metadata FFmpeg would
+/// otherwise pass on to the SDR output.
+const TONE_MAP: &str = ",zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL";
+/// FFmpeg output options converting the audio to stereo AAC.
+pub(crate) const AUDIO_CONVERSION_ARGS: [&str; 8] =
+    ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000"];
+/// FFmpeg output options converting the video to 8-bit SDR H.264.
+pub(crate) fn video_conversion_args(options: &Options, probe: &Value) -> Result<Vec<String>> {
+    let video = probe["streams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1);
+    let tone_map = video.map(needs_tone_mapping).transpose()?.unwrap_or(false);
+    // Scaled first: tone mapping works on float RGB, the costliest pixels to process.
+    let tone_filter = match video {
+        Some(video) if tone_map => tone_map_filter(video),
+        _ => String::new(),
+    };
     let mut filter = if let Some(height) = resolution(&options.quality) {
-        format!("scale=w=-2:h='min({height},ih)'")
+        format!("scale=w=-2:h='min({height},ih)'{tone_filter}")
     } else {
         // The picture keeps its size; H.264 only needs it even.
-        "scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'".to_owned()
+        format!("scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'{tone_filter}")
     };
     let mut extra = Vec::new();
     if let Some(c) = &options.capabilities.conversion {
@@ -107,26 +130,31 @@ pub(crate) fn conversion_args(options: &Options, probe: &Value) -> Result<Vec<St
         {
             bail!("Invalid conversion limits");
         }
+        let source_rate = video
+            .and_then(|v| v["avg_frame_rate"].as_str()?.split_once('/'))
+            .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
+            .filter(|rate| rate.is_finite());
+        // Frames dropped first are neither scaled nor tone mapped.
+        let fps = format!("fps={:.6}", c.frame_rate);
+        let (before, after) = if source_rate.is_some_and(|rate| c.frame_rate < rate) {
+            (format!("{fps},"), String::new())
+        } else {
+            (String::new(), format!(",{fps}"))
+        };
         filter = format!(
-            "{}{}scale={}:{},setsar=1,fps={:.6}",
+            "{}{before}scale={}:{}{tone_filter},setsar=1{after}",
             if c.deinterlace {
                 "yadif=mode=send_frame:parity=auto,"
             } else {
                 ""
             },
-            if c.tone_map {
-                "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,"
-            } else {
-                ""
-            },
             c.width,
             c.height,
-            c.frame_rate
         );
         if c.fit {
             filter = format!(
-                "scale={}:{}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={:.6}",
-                c.width, c.height, c.width, c.height, c.frame_rate
+                "{before}scale={}:{}:force_original_aspect_ratio=decrease:force_divisible_by=2{tone_filter},pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1{after}",
+                c.width, c.height, c.width, c.height
             );
         }
         extra = vec![
@@ -137,19 +165,19 @@ pub(crate) fn conversion_args(options: &Options, probe: &Value) -> Result<Vec<St
             "-refs".into(),
             "1".into(),
         ];
-        if c.tone_map {
-            extra.extend(
-                [
-                    "-color_primaries",
-                    "bt709",
-                    "-color_trc",
-                    "bt709",
-                    "-colorspace",
-                    "bt709",
-                ]
-                .map(str::to_owned),
-            );
-        }
+    }
+    if tone_map {
+        extra.extend(
+            [
+                "-color_primaries",
+                "bt709",
+                "-color_trc",
+                "bt709",
+                "-colorspace",
+                "bt709",
+            ]
+            .map(str::to_owned),
+        );
     }
     let rate = conversion_rate(options, probe)?;
     let mut args = [
@@ -169,14 +197,6 @@ pub(crate) fn conversion_args(options: &Options, probe: &Value) -> Result<Vec<St
         &rate.to_string(),
         "-bufsize",
         &(rate * 2).to_string(),
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-ac",
-        "2",
-        "-ar",
-        "48000",
     ]
     .into_iter()
     .map(str::to_owned)
