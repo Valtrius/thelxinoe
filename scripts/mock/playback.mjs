@@ -10,6 +10,10 @@ export const samplePath = new URL(
   '../../.local/mock/sample.mp4',
   import.meta.url,
 );
+export const sheetPath = new URL(
+  '../../.local/mock/trickplay-0.jpg',
+  import.meta.url,
+);
 const audioTrack = {
   id: 'audio-0',
   index: 0,
@@ -27,10 +31,53 @@ const probe = {
   ],
 };
 export async function prepareSample() {
-  if (existsSync(samplePath)) return;
   await mkdir(dirname(fileURLToPath(samplePath)), { recursive: true });
+  if (!existsSync(samplePath)) {
+    const temporary = new URL(
+      `../../.local/mock/sample-${process.pid}.mp4`,
+      import.meta.url,
+    );
+    await execute(
+      'ffmpeg',
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc2=size=640x360:rate=12',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=220:sample_rate=44100',
+        '-t',
+        '90',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-crf',
+        '32',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '48k',
+        '-movflags',
+        '+faststart',
+        '-y',
+        fileURLToPath(temporary),
+      ],
+      { windowsHide: true, timeout: 30000 },
+    );
+    await rename(temporary, samplePath);
+  }
+  if (existsSync(sheetPath)) return;
+  // The server's trickplay layout: 320 pixels wide, one every 10 s, 10×10 a sheet.
   const temporary = new URL(
-    `../../.local/mock/sample-${process.pid}.mp4`,
+    `../../.local/mock/trickplay-${process.pid}.jpg`,
     import.meta.url,
   );
   await execute(
@@ -39,36 +86,20 @@ export async function prepareSample() {
       '-hide_banner',
       '-loglevel',
       'error',
-      '-f',
-      'lavfi',
       '-i',
-      'testsrc2=size=640x360:rate=12',
-      '-f',
-      'lavfi',
-      '-i',
-      'sine=frequency=220:sample_rate=44100',
-      '-t',
-      '90',
-      '-c:v',
-      'libx264',
-      '-preset',
-      'ultrafast',
-      '-crf',
-      '32',
-      '-pix_fmt',
-      'yuv420p',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '48k',
-      '-movflags',
-      '+faststart',
+      fileURLToPath(samplePath),
+      '-vf',
+      'fps=1/10,scale=320:180,tile=10x10',
+      '-frames:v',
+      '1',
+      '-q:v',
+      '5',
       '-y',
       fileURLToPath(temporary),
     ],
     { windowsHide: true, timeout: 30000 },
   );
-  await rename(temporary, samplePath);
+  await rename(temporary, sheetPath);
 }
 
 export async function playbackApi(s, c) {
@@ -141,6 +172,18 @@ export async function playbackApi(s, c) {
             { start: 24, title: 'The long climb to the summit' },
             { start: 61.5, title: null },
           ],
+      trickplay:
+        item && item.kind !== 'track' && existsSync(sheetPath)
+          ? {
+              width: 320,
+              height: 180,
+              columns: 10,
+              rows: 10,
+              interval: 10,
+              count: 9,
+              sheets: ['/mock-media/trickplay-0.jpg'],
+            }
+          : null,
       probe,
       replay_gain: s.playbackPreferences.replay_gain,
     };

@@ -60,8 +60,19 @@ export type Playback = {
   selected_subtitle: string | null;
   options: Options;
   chapters: Chapter[];
+  trickplay?: Trickplay | null;
   probe: Probe;
   replay_gain: string;
+};
+/** Sheets of `columns`×`rows` thumbnails, one every `interval` seconds. */
+export type Trickplay = {
+  width: number;
+  height: number;
+  columns: number;
+  rows: number;
+  interval: number;
+  count: number;
+  sheets: string[];
 };
 export type Probe = {
   format?: { tags?: Record<string, string> };

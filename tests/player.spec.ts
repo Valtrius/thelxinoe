@@ -14,7 +14,11 @@ import { freezeClock } from './helpers/clock';
 // Exercise the real player with decoded media and a controlled server boundary.
 // This suite starts its own Vite server and never touches an account or deployment.
 const title = 'A journey through the mountains';
-let mp4: Buffer, segment: Buffer, shortSegment: Buffer, wav: Buffer;
+let mp4: Buffer,
+  segment: Buffer,
+  shortSegment: Buffer,
+  wav: Buffer,
+  sheet: Buffer;
 // Separate video and audio files shaped like YouTube's: an initialization
 // segment, a `sidx` fragment index, then keyframe-aligned fragments.
 let original: Record<'video' | 'audio', Buffer>;
@@ -219,6 +223,30 @@ test.beforeAll(() => {
     ],
     { input: mp4, windowsHide: true },
   );
+  // A trickplay sheet of the 60 s fixture: 320×180 thumbnails, one every 10 s.
+  sheet = execFileSync(
+    'ffmpeg',
+    [
+      '-v',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc2=size=320x180:rate=1',
+      '-t',
+      '60',
+      '-vf',
+      'fps=1/10,tile=10x10',
+      '-frames:v',
+      '1',
+      '-f',
+      'image2pipe',
+      '-c:v',
+      'mjpeg',
+      'pipe:1',
+    ],
+    { windowsHide: true },
+  );
   mkdirSync('.local/player-ui', { recursive: true });
 });
 test.afterEach(async ({ page }) => {
@@ -256,6 +284,7 @@ async function fixture(
     indexed?: boolean;
     failProgress?: 'network' | number;
     chapters?: { start: number; title: string | null }[];
+    trickplay?: boolean;
   } = {},
 ) {
   const metadata = gate(!!options.hold),
@@ -294,6 +323,7 @@ async function fixture(
     toolsFailed: false,
     resolvePreparing: false,
     autoQuality: options.autoQuality ?? '1080p',
+    sheets: 0,
   };
   page.on('pageerror', (error) => state.errors.push(error.message));
   const videos = Array.from({ length: 80 }, (_, i) => ({
@@ -572,6 +602,17 @@ async function fixture(
           selected_subtitle: 'off',
           options: input.options,
           chapters: options.chapters ?? [],
+          trickplay: options.trickplay
+            ? {
+                width: 320,
+                height: 180,
+                columns: 10,
+                rows: 10,
+                interval: 10,
+                count: 6,
+                sheets: ['/fixture/trickplay/0?grant=fixture'],
+              }
+            : null,
           probe: {
             streams: [
               { codec_type: 'video', height: 540, avg_frame_rate: '12/1' },
@@ -690,6 +731,10 @@ async function fixture(
       });
     },
   );
+  await page.route('**/fixture/trickplay/0?grant=fixture', (route) => {
+    state.sheets++;
+    return route.fulfill({ contentType: 'image/jpeg', body: sheet });
+  });
   await page.route('**/fixture/track.wav', (route) =>
     route.fulfill({ contentType: 'audio/wav', body: wav }),
   );
@@ -1900,35 +1945,101 @@ test('pausing while a seek waits for media keeps playback paused', async ({
   expect(state.errors).toEqual([]);
 });
 
-test('the seek bar keeps a held position while playback continues and seeks there on release', async ({
-  page,
-}) => {
-  const state = await fixture(page, { indexed: true });
-  await decoded(page);
-  const video = page.locator('video');
-  const slider = page.getByRole('slider', { name: 'Playback position' });
-  const box = (await slider.boundingBox())!;
-  // Hovering reveals the controls and confirms the slider receives the press.
-  await slider.hover({
-    position: { x: box.width * 0.75, y: box.height / 2 },
+for (const touch of [false, true])
+  test.describe(touch ? 'touch seeking' : 'pointer seeking', () => {
+    if (touch)
+      test.use({
+        hasTouch: true,
+        isMobile: true,
+        viewport: { width: 390, height: 844 },
+      });
+
+    test('the seek bar previews and keeps a held position while playback continues and seeks there on release', async ({
+      page,
+    }) => {
+      const state = await fixture(page, { indexed: true, trickplay: true });
+      await decoded(page);
+      const video = page.locator('video');
+      const slider = page.getByRole('slider', { name: 'Playback position' });
+      const preview = page.locator('.seek-preview');
+      const box = (await slider.boundingBox())!;
+      const at = { x: box.x + box.width * 0.75, y: box.y + box.height / 2 };
+      // The thumbnail of a time and its label.
+      const shows = async (seconds: number) => {
+        await expect(preview).toHaveText(
+          `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`,
+        );
+        const [x, y] = await preview
+          .locator('.seek-preview-image')
+          .evaluate((image) =>
+            getComputedStyle(image)
+              .backgroundPosition.split(' ')
+              .map(parseFloat),
+          );
+        expect(x).toBeCloseTo((Math.floor(seconds / 10) / 9) * 100, 2);
+        expect(y).toBe(0);
+      };
+      const cdp = touch ? await page.context().newCDPSession(page) : null;
+      // A touch drags there from the bar's first quarter.
+      const press = async (x: number) => {
+        if (!cdp) return page.mouse.down();
+        await cdp.send('Input.dispatchTouchEvent', {
+          type: 'touchStart',
+          touchPoints: [{ x: x - box.width * 0.5, y: at.y }],
+        });
+        for (let step = 1; step <= 5; step++)
+          await cdp.send('Input.dispatchTouchEvent', {
+            type: 'touchMove',
+            touchPoints: [{ x: x - box.width * 0.5 * (1 - step / 5), y: at.y }],
+          });
+      };
+      const release = () =>
+        cdp
+          ? cdp.send('Input.dispatchTouchEvent', {
+              type: 'touchEnd',
+              touchPoints: [],
+            })
+          : page.mouse.up();
+      if (touch) {
+        // Touch has no hover: a tap brings back the controls playback hid.
+        const controls = page.locator('.player-controls');
+        await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
+        await video.tap();
+        await expect(controls).toHaveCSS('opacity', '1');
+      } else {
+        // Hovering reveals the controls and previews the time under the pointer.
+        await slider.hover({
+          position: { x: box.width * 0.75, y: box.height / 2 },
+        });
+        await expect(preview).toBeVisible();
+      }
+      const hovered = touch ? null : await preview.textContent();
+      await press(at.x);
+      const held = Number(await slider.inputValue());
+      expect(held).toBeGreaterThan(30);
+      await shows(held);
+      if (hovered) expect(hovered).toBe(await preview.textContent());
+      // Playback keeps updating its position while the bar stays held.
+      const before = await video.evaluate(
+        (v: HTMLVideoElement) => v.currentTime,
+      );
+      await expect
+        .poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime))
+        .toBeGreaterThan(before + 0.75);
+      expect(Number(await slider.inputValue())).toBe(held);
+      await shows(held);
+      await release();
+      await expect
+        .poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime))
+        .toBeGreaterThanOrEqual(held);
+      if (!touch) await page.mouse.move(at.x, box.y - 120);
+      await expect(preview).toHaveCount(0);
+      await decoded(page);
+      expect(state.sheets).toBeGreaterThan(0);
+      expect(state.seeks).toEqual([]);
+      expect(state.errors).toEqual([]);
+    });
   });
-  await page.mouse.down();
-  const held = Number(await slider.inputValue());
-  expect(held).toBeGreaterThan(30);
-  // Playback keeps updating its position while the pointer stays down.
-  const before = await video.evaluate((v: HTMLVideoElement) => v.currentTime);
-  await expect
-    .poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime))
-    .toBeGreaterThan(before + 0.75);
-  expect(Number(await slider.inputValue())).toBe(held);
-  await page.mouse.up();
-  await expect
-    .poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime))
-    .toBeGreaterThanOrEqual(held);
-  await decoded(page);
-  expect(state.seeks).toEqual([]);
-  expect(state.errors).toEqual([]);
-});
 
 test('a seek before playback starts keeps the pause control while it waits', async ({
   page,
@@ -2014,6 +2125,9 @@ test('chapters mark the seek bar, name the current one, and seek from their menu
   ).toMatch(/\* 0\.25\).*\* 0\.75\)/);
   await expect(page.locator('.playback-chapter')).toHaveText('· Opening');
   await expect(slider).toHaveAttribute('aria-valuetext', /, Opening$/);
+  // Without thumbnails, hovering the bar previews nothing.
+  await slider.hover();
+  await expect(page.locator('.seek-preview')).toHaveCount(0);
   await page.getByRole('button', { name: 'Chapters', exact: true }).click();
   await expect(
     page.getByRole('menuitemradio', { name: '0:00 · Opening', exact: true }),

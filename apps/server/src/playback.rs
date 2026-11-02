@@ -257,8 +257,9 @@ pub(crate) async fn create_with_delivery(
         }
     };
     let subtitles:Vec<_>=tracks.iter().filter(|t|t.kind=="subtitle" && t.supported).map(|t|json!({"id":t.id,"language":t.language,"title":t.title,"url":format!("/api/v1/playback/{sid}/subtitles/{}?grant={grant}",t.id)})).collect();
+    let trickplay = crate::trickplay::web(state, p, &source).await?;
     Ok(
-        json!({"id":sid,"file_id":source.id,"generation":source.generation,"url":url,"grant":grant,"mode":mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":position,"duration":duration,"timeline_start":timeline_start,"video":source.video_codec().is_some(),"tracks":tracks,"subtitles":subtitles,"selected_subtitle":input.options.subtitle,"options":input.options,"chapters":thelxinoe_playback::chapters(&source.probe),"probe":source.probe,"replay_gain":prefs.replay_gain}),
+        json!({"id":sid,"file_id":source.id,"generation":source.generation,"url":url,"grant":grant,"mode":mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":position,"duration":duration,"timeline_start":timeline_start,"video":source.video_codec().is_some(),"tracks":tracks,"subtitles":subtitles,"selected_subtitle":input.options.subtitle,"options":input.options,"chapters":thelxinoe_playback::chapters(&source.probe),"trickplay":trickplay,"probe":source.probe,"replay_gain":prefs.replay_gain}),
     )
 }
 #[derive(Clone)]

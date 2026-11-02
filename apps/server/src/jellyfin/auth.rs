@@ -118,6 +118,19 @@ impl Device {
     }
 }
 pub async fn principal(state: &AppState, headers: &HeaderMap, query: &Query) -> Result<Principal> {
+    let token = token(headers, query)?;
+    let principal = thelxinoe_auth::resolve(&state.db, &token, "jellyfin")
+        .await?
+        .ok_or_else(ApiError::unauthorized)?;
+    if let Some(user) = query.get("userid")
+        && super::canonical(user) != principal.user.id
+    {
+        return Err(ApiError::forbidden());
+    }
+    Ok(principal)
+}
+/// The access token of a request, when every place that carries one names the same.
+pub fn token(headers: &HeaderMap, query: &Query) -> Result<String> {
     let fields = authorization(headers)?;
     let mut candidates = Vec::new();
     if let Some(token) = fields.get("token") {
@@ -146,15 +159,7 @@ pub async fn principal(state: &AppState, headers: &HeaderMap, query: &Query) -> 
     if token.len() != 64 || candidates.iter().any(|other| *other != token) {
         return Err(ApiError::unauthorized());
     }
-    let principal = thelxinoe_auth::resolve(&state.db, token, "jellyfin")
-        .await?
-        .ok_or_else(ApiError::unauthorized)?;
-    if let Some(user) = query.get("userid")
-        && super::canonical(user) != principal.user.id
-    {
-        return Err(ApiError::forbidden());
-    }
-    Ok(principal)
+    Ok(token.to_owned())
 }
 pub async fn login(
     state: &AppState,

@@ -324,6 +324,111 @@ const still = await compat.get(`/Items/${direct.Id}/Images/Primary`, {
 });
 assert.equal(still.status(), 200, 'A movie without artwork shows a still');
 assert.equal(still.headers()['content-type'], 'image/jpeg');
+// The trickplay worker takes the sheets of library videos while nothing plays.
+let item;
+for (let attempt = 0; attempt < 240; attempt++) {
+  item = await (await compat.get(`/Items/${direct.Id}`, { headers })).json();
+  if (Object.keys(item.Trickplay ?? {}).length) break;
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+}
+const mediaSourceId = item.MediaSources[0].Id;
+const trickplay = item.Trickplay?.[mediaSourceId]?.['320'];
+assert.ok(trickplay?.Bandwidth > 0, 'Direct has trickplay sheets');
+assert.deepEqual(
+  { ...trickplay, Bandwidth: 0 },
+  {
+    Width: 320,
+    Height: 180,
+    TileWidth: 10,
+    TileHeight: 10,
+    ThumbnailCount: 2,
+    Interval: 10000,
+    Bandwidth: 0,
+  },
+);
+for (const [fields, listed] of [
+  ['', false],
+  ['&Fields=Trickplay', true],
+]) {
+  const list = await compat.get(`/Items?Ids=${direct.Id}${fields}`, {
+    headers,
+  });
+  assert.equal('Trickplay' in (await list.json()).Items[0], listed, fields);
+}
+/** The width and height of a JPEG. */
+function jpegSize(jpeg) {
+  for (let at = 2; at < jpeg.length; at += 2 + jpeg.readUInt16BE(at + 2))
+    if (jpeg[at + 1] >= 0xc0 && jpeg[at + 1] <= 0xc3)
+      return [jpeg.readUInt16BE(at + 7), jpeg.readUInt16BE(at + 5)];
+}
+// Android TV and Wholphin fetch sheets with the SDK's undashed media source ID.
+const sheet = `/Videos/${direct.Id}/Trickplay/320/0.jpg?mediaSourceId=${mediaSourceId.replaceAll('-', '')}`;
+r = await compat.get(sheet, { headers });
+assert.equal(r.status(), 200);
+assert.equal(r.headers()['content-type'], 'image/jpeg');
+assert.deepEqual(jpegSize(await r.body()), [3200, 1800]);
+assert.equal((await compat.get(sheet)).status(), 401);
+for (const missing of [
+  sheet.replace('/0.jpg', '/1.jpg'),
+  sheet.replace('/320/', '/640/'),
+])
+  assert.equal((await compat.get(missing, { headers })).status(), 404);
+r = await compat.get(
+  `/Videos/${direct.Id}/Trickplay/320/tiles.m3u8?mediaSourceId=${mediaSourceId}`,
+  { headers },
+);
+assert.equal(r.status(), 200);
+const tiles = await r.text();
+assert.match(
+  tiles,
+  /#EXT-X-IMAGES-ONLY\n#EXTINF:20,\n#EXT-X-TILES:RESOLUTION=320x180,LAYOUT=10x10,DURATION=10\n0\.jpg\?/,
+);
+// Players read the playlist's sheets without headers.
+r = await compat.get(
+  `/Videos/${direct.Id}/Trickplay/320/${tiles.split('\n').find((line) => line.startsWith('0.jpg?'))}`,
+);
+assert.equal(r.status(), 200);
+// The web player gets the sheets with its playback, authorized like artwork.
+const webPlayback = await call('/playback', 'POST', {
+  media_id: direct.Id,
+  position: 0,
+  options: {
+    quality: 'auto',
+    audio: null,
+    subtitle: null,
+    capabilities: {
+      containers: ['mp4'],
+      video: ['h264'],
+      audio: ['aac'],
+      hls: true,
+    },
+  },
+});
+await call(`/playback/${webPlayback.id}`, 'DELETE');
+assert.deepEqual(
+  { ...webPlayback.trickplay, sheets: webPlayback.trickplay.sheets.length },
+  {
+    width: 320,
+    height: 180,
+    columns: 10,
+    rows: 10,
+    interval: 10,
+    count: 2,
+    sheets: 1,
+  },
+);
+r = await api.get(webPlayback.trickplay.sheets[0]);
+assert.equal(r.status(), 200);
+assert.equal(r.headers()['cache-control'], 'private, max-age=86400');
+assert.deepEqual(jpegSize(await r.body()), [3200, 1800]);
+assert.equal(
+  (
+    await api.get(
+      webPlayback.trickplay.sheets[0].replace(/grant=[^&]+/, 'grant=0'),
+    )
+  ).status(),
+  401,
+);
 assert.equal(
   (
     await compat.get(

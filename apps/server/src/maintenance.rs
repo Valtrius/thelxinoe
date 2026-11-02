@@ -1,5 +1,6 @@
 //! Daily housekeeping: finished jobs, expired sign-in credentials, old tool runs, stale
-//! segment fingerprints, files missing for a month and cached artwork and subtitles.
+//! segment fingerprints, files missing for a month and cached artwork, subtitles and
+//! trickplay.
 
 #[path = "storage/maintenance.rs"]
 mod storage;
@@ -23,6 +24,9 @@ async fn prune(state: &AppState) -> anyhow::Result<()> {
     }
     if let Err(error) = crate::subtitles::prune(state).await {
         tracing::warn!("Subtitle cache cleanup failed: {error:#}");
+    }
+    if let Err(error) = crate::trickplay::prune(state).await {
+        tracing::warn!("Trickplay cache cleanup failed: {error:#}");
     }
     let started = now();
     let mut removed = 0;

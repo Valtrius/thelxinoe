@@ -42,6 +42,7 @@ pub mod subtitles;
 mod timezones;
 pub mod tools;
 mod transcoding;
+pub mod trickplay;
 pub mod user_media;
 pub mod validation;
 pub use jellyfin::discovery::run as run_discovery;
@@ -210,6 +211,7 @@ pub fn router(state: AppState) -> Router {
         .merge(online::router(state.clone()))
         .merge(managers::router())
         .merge(segments::router())
+        .merge(trickplay::router())
         .merge(operations::router())
         .merge(backups::router())
         .route("/api/v1/{*path}", axum::routing::any(not_found))

@@ -265,7 +265,11 @@ pub async fn prune(state: &AppState) -> anyhow::Result<()> {
         .collect();
     sweep(&root(state), &keep, DAY).await
 }
-async fn sweep(root: &Path, keep: &HashSet<String>, age: Duration) -> anyhow::Result<()> {
+pub(crate) async fn sweep(
+    root: &Path,
+    keep: &HashSet<String>,
+    age: Duration,
+) -> anyhow::Result<()> {
     let mut entries = match tokio::fs::read_dir(root).await {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
