@@ -20,7 +20,8 @@
           (value = {
             ...v,
             quality: v.quality.endsWith('mbps') ? 'auto' : v.quality,
-            // Older servers leave autoplay at its default.
+            // The desktop app also signs in to servers from before autoplay
+            // was a preference; a switch cannot bind to a missing value.
             autoplay: v.autoplay ?? true,
           }),
       )
