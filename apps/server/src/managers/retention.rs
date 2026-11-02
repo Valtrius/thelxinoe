@@ -48,18 +48,30 @@ pub(super) async fn revalidate_operation(
     Ok(())
 }
 
+/// Outcomes only accumulate, so only the latest are listed. Scheduled deletions are bounded
+/// by the movies, seasons and downloads there are, and all of them are listed.
+const HISTORY: i64 = 200;
+
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let mut value = storage::list(&state.db).await?;
-    let (videos, usage) = crate::auto_delete::list(&state.db).await?;
+    let (mut value, outcomes) = storage::list(&state.db, HISTORY).await?;
+    let (videos, video_outcomes, usage) = crate::auto_delete::list(&state.db, HISTORY).await?;
     let items = value["items"].as_array_mut().expect("retention items");
     items.extend(videos);
+    // The next deletion first, then the latest outcome.
     items.sort_by_key(|item| {
-        (
-            item["state"] != "pending",
-            item["due_at"].as_i64().unwrap_or(0),
-        )
+        let pending = item["state"] == "pending";
+        let at = item[if pending { "due_at" } else { "eligible_at" }]
+            .as_i64()
+            .unwrap_or(0);
+        (!pending, if pending { at } else { -at })
     });
+    let pending = items
+        .iter()
+        .filter(|item| item["state"] == "pending")
+        .count();
+    items.truncate(pending + HISTORY as usize);
+    value["totals"] = json!({"pending":pending,"history":outcomes + video_outcomes});
     value["video_usage"] = json!(usage);
     Ok(Json(value))
 }

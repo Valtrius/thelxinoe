@@ -17,6 +17,8 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
   }));
   const writes: { domain: string; value: (typeof policies)[number] }[] = [];
   let rejectNextVideoSave = false;
+  // Outcomes beyond the latest ones the server lists.
+  const olderOutcomes = 250;
   const items = [
     {
       id: 'video-pending',
@@ -25,7 +27,7 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
       title: 'Shared video',
       state: 'pending',
       reason: 'watched',
-      due_at: 1791648000,
+      due_at: 1791648000 + 86400,
       error: null,
       watched_users: ['Alice', 'Bob'],
     },
@@ -43,11 +45,16 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
   ];
   await page.route('**/api/v1/admin/retention**', async (route) => {
     const path = new URL(route.request().url()).pathname;
+    const pending = items.filter((item) => item.state === 'pending').length;
     if (path.endsWith('/retention'))
       return route.fulfill({
         json: {
           policies,
           items,
+          totals: {
+            pending,
+            history: items.length - pending + olderOutcomes,
+          },
           users: [
             { id: 'alice', username: 'Alice' },
             { id: 'bob', username: 'Bob' },
@@ -231,6 +238,11 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
     .getByLabel('Audit view', { exact: true })
     .selectOption('scheduled');
   const queue = page.getByRole('region', { name: 'Scheduled deletions' });
+  await expect(queue.locator('.setting-row')).toHaveText([
+    /Arrival/,
+    /Shared video/,
+  ]);
+  await expect(queue.getByText('2 items', { exact: true })).toBeVisible();
   await expect(
     queue.getByRole('button', { name: 'Cancel', exact: true }),
   ).toHaveCount(0);
@@ -250,6 +262,9 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
     .getByLabel('Audit view', { exact: true })
     .selectOption('deletions');
   const history = page.getByRole('region', { name: 'Deletion history' });
+  await expect(
+    history.getByText(`2 of ${2 + olderOutcomes} items`, { exact: true }),
+  ).toBeVisible();
   await expect(
     history.locator('.setting-row').filter({ hasText: 'Shared video' }),
   ).toContainText('Kept');

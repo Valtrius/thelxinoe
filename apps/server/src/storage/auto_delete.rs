@@ -331,10 +331,15 @@ pub(super) async fn evaluate(db: &Database, root: PathBuf) -> anyhow::Result<usi
     }).await
 }
 
-pub(super) async fn list(db: &Database) -> anyhow::Result<(Vec<Value>, VideoUsage)> {
-    db.read("auto_delete.list",|db| {
-        let items=db.prepare("SELECT id,video_id,title,state,reason,eligible_at,due_at,error,watched_users FROM video_retention_candidates ORDER BY state='pending' DESC,eligible_at DESC LIMIT 200")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"video_id":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"reason":r.get::<_,String>(4)?,"eligible_at":r.get::<_,i64>(5)?,"due_at":r.get::<_,i64>(6)?,"error":r.get::<_,Option<String>>(7)?,"watched_users":serde_json::from_str::<Value>(&r.get::<_,String>(8)?).unwrap_or_default(),"domain":"videos"})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok((items,usage(db)?))
+/// Every scheduled deletion and the latest `history` outcomes, with how many outcomes there are.
+pub(super) async fn list(
+    db: &Database,
+    history: i64,
+) -> anyhow::Result<(Vec<Value>, i64, VideoUsage)> {
+    db.read("auto_delete.list",move|db| {
+        let items=db.prepare("SELECT id,video_id,title,state,reason,eligible_at,due_at,error,watched_users FROM video_retention_candidates WHERE state='pending' OR id IN (SELECT id FROM video_retention_candidates WHERE state<>'pending' ORDER BY eligible_at DESC,id LIMIT ?1)")?.query_map([history],|r|Ok(json!({"id":r.get::<_,String>(0)?,"video_id":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"reason":r.get::<_,String>(4)?,"eligible_at":r.get::<_,i64>(5)?,"due_at":r.get::<_,i64>(6)?,"error":r.get::<_,Option<String>>(7)?,"watched_users":serde_json::from_str::<Value>(&r.get::<_,String>(8)?).unwrap_or_default(),"domain":"videos"})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let outcomes=db.query_row("SELECT COUNT(*) FROM video_retention_candidates WHERE state<>'pending'",[],|r|r.get::<_,i64>(0))?;
+        Ok((items,outcomes,usage(db)?))
     }).await
 }
 
