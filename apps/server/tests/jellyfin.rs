@@ -1113,6 +1113,42 @@ async fn online_libraries_and_watchlists_are_private_stable_and_use_existing_set
         .0,
         StatusCode::OK
     );
+    // Without Limit an online library lists every entry, and Items?Ids reads them all back.
+    state.db.write("test.fixture", |db| {
+        let tx = db.transaction()?;
+        for index in 0..600 {
+            tx.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,privacy,duration,published_at) VALUES('alice',?1,'channel',?1,'public',120,100)",[format!("v{index:010}")])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }).await.unwrap();
+    let youtube = roots.iter().find(|v| v["Name"] == "YouTube").unwrap()["Id"]
+        .as_str()
+        .unwrap();
+    let path = format!("/Items?ParentId={youtube}&IncludeItemTypes=Video");
+    let (status, all) = call(&state, &path, "GET", Value::Null, &auth).await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert_eq!(all["TotalRecordCount"], 602);
+    let ids = all["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), 602);
+    // The first listing mapped 600 new entries; the mapping was kept.
+    assert_eq!(
+        call(&state, &path, "GET", Value::Null, &auth).await.1["Items"],
+        all["Items"]
+    );
+    assert_eq!(state.db.write("test.fixture", |db|Ok(db.query_row("SELECT COUNT(*) FROM compat_online_items WHERE user_id='alice' AND youtube_video_id IS NOT NULL",[],|r|r.get::<_,i64>(0))?)).await.unwrap(),602);
+    let lookup = format!("/Items?Ids={},{}", ids.join(","), ids[0]);
+    for (headers, total) in [(&auth, 602), (&bob, 0)] {
+        let (status, page) = call(&state, &lookup, "GET", Value::Null, headers).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["TotalRecordCount"], total);
+        assert_eq!(page["Items"].as_array().unwrap().len(), total);
+    }
     state
         .db
         .write("test.fixture", |db| {
@@ -1311,6 +1347,7 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
             100,
             100,
         ),
+        ("/Items?ParentId=long-1&StartIndex=-5&Limit=10", 600, 0, 10),
         ("/Playlists/long-mix/Items", 150, 0, 150),
         ("/Playlists/long-mix/Items?StartIndex=140", 150, 140, 10),
     ] {
@@ -1325,18 +1362,37 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
             assert_eq!(items[count - 1]["IndexNumber"], start + count, "{path}");
         }
     }
-    let (status, latest) = call(
-        &state,
+    for path in [
         "/Items/Latest?ParentId=shows",
+        "/Items/Latest?ParentId=shows&Limit=",
+    ] {
+        let (status, latest) = call(&state, path, "GET", Value::Null, &alice).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {latest}");
+        // Jellyfin's default length for this list.
+        assert_eq!(latest.as_array().unwrap().len(), 20, "{path}");
+        assert_eq!(latest[0]["Id"], "long-e600", "{path}");
+    }
+    for path in [
+        "/Items/Latest?ParentId=shows&Limit=abc",
+        "/Items/Latest?ParentId=shows&Limit=-1",
+        "/Items?ParentId=long-1&Limit=1.5",
+        "/Items?ParentId=long-1&StartIndex=x",
+        "/Playlists/long-mix/Items?Limit=-1",
+    ] {
+        let (status, error) = call(&state, path, "GET", Value::Null, &alice).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {error}");
+    }
+    // A single item has no pages.
+    let (status, season) = call(
+        &state,
+        "/Items/long-1?StartIndex=5&Limit=abc",
         "GET",
         Value::Null,
         &alice,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{latest}");
-    // Jellyfin's default length for this list.
-    assert_eq!(latest.as_array().unwrap().len(), 20);
-    assert_eq!(latest[0]["Id"], "long-e600");
+    assert_eq!(status, StatusCode::OK, "{season}");
+    assert_eq!(season["Id"], "long-1");
     for id in ["mix", "one"] {
         let (status, data) = call(
             &state,

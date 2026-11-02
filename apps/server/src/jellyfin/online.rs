@@ -102,6 +102,14 @@ impl Identity {
     pub fn media(&self) -> String {
         format!("{}:{}", self.kind, self.key)
     }
+    /// The online service the entry belongs to; watchlists are YouTube's.
+    fn provider(&self) -> &str {
+        if self.kind == "watchlist" {
+            "youtube"
+        } else {
+            &self.kind
+        }
+    }
     pub fn list(&self) -> Result<i64> {
         if self.kind != "watchlist" {
             return Err(ApiError::not_found());
@@ -114,14 +122,26 @@ pub async fn resolve(state: &AppState, p: &Principal, item: &str) -> Result<Opti
     let user = p.user.id.clone();
     let identity = storage::resolve(item, user, &state.db).await?;
     if let Some(identity) = &identity {
-        let provider = if identity.kind == "watchlist" {
-            "youtube"
-        } else {
-            &identity.kind
-        };
-        crate::online::availability::require_enabled(state, provider).await?;
+        crate::online::availability::require_enabled(state, identity.provider()).await?;
     }
     Ok(identity)
+}
+/// The online entries among comma-separated `ids`, read in one query however many there are.
+async fn resolve_all(state: &AppState, p: &Principal, ids: &str) -> Result<Vec<Identity>> {
+    let ids = ids
+        .split(',')
+        .map(canonical)
+        .collect::<std::collections::BTreeSet<_>>();
+    let user = p.user.id.clone();
+    let identities = storage::resolve_all(ids.into_iter().collect(), user, &state.db).await?;
+    let providers = identities
+        .iter()
+        .map(Identity::provider)
+        .collect::<std::collections::BTreeSet<_>>();
+    for provider in providers {
+        crate::online::availability::require_enabled(state, provider).await?;
+    }
+    Ok(identities)
 }
 pub async fn ensure_lists(state: &AppState, p: &Principal) -> Result<()> {
     if !crate::online::availability::enabled(state, "youtube").await? {
@@ -220,16 +240,9 @@ pub async fn browse(
     let video_only = query
         .get("includeitemtypes")
         .is_some_and(|types| types.split(',').all(|t| t.eq_ignore_ascii_case("Video")));
-    let mapped_ids = if let Some(ids) = query.get("ids") {
-        let mut resolved = Vec::new();
-        for id in ids.split(',') {
-            if let Some(item) = resolve(state, p, id).await? {
-                resolved.push(item);
-            }
-        }
-        resolved
-    } else {
-        Vec::new()
+    let mapped_ids = match query.get("ids") {
+        Some(ids) => resolve_all(state, p, ids).await?,
+        None => Vec::new(),
     };
     if single.is_none()
         && provider.is_none()
@@ -252,7 +265,7 @@ pub async fn browse(
     let (start, limit) = if is_single {
         (0, Some(1))
     } else {
-        catalog::page(&q)
+        catalog::page(&q)?
     };
     let (mut items, total) = storage::browse(
         &state.db,

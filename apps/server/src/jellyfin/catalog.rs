@@ -56,16 +56,26 @@ pub fn chapters(probe: &Value) -> Value {
     )
 }
 pub fn result(items: Vec<Value>, total: usize, start: usize) -> Value {
-    json!({"Items":items,"TotalRecordCount":total,"StartIndex":start})
+    let mut page = json!({"TotalRecordCount":total,"StartIndex":start});
+    page["Items"] = Value::Array(items);
+    page
 }
 /// Like Jellyfin, a list starts at `StartIndex` and holds every remaining item unless the
-/// client sends a `Limit`.
-pub fn page(query: &Query) -> (usize, Option<usize>) {
-    let number = |key: &str| query.get(key).and_then(|v| v.parse::<usize>().ok());
-    (
-        number("startindex").unwrap_or(0).min(1_000_000),
-        number("limit"),
-    )
+/// client sends a `Limit`. Jellyfin rejects values that aren't numbers and gives a negative
+/// `Limit` no consistent meaning, so both are refused; an empty one is absent.
+pub fn page(query: &Query) -> Result<(usize, Option<usize>)> {
+    let number = |key: &str, name: &str| match query.get(key).map(String::as_str) {
+        None | Some("") => Ok(None),
+        Some(value) => value
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| ApiError::bad(format!("Invalid {name}"))),
+    };
+    let start = number("startindex", "StartIndex")?.unwrap_or(0);
+    let limit = number("limit", "Limit")?
+        .map(|limit| usize::try_from(limit).map_err(|_| ApiError::bad("Invalid Limit")))
+        .transpose()?;
+    Ok((start.clamp(0, 1_000_000) as usize, limit))
 }
 pub async fn views(state: &AppState) -> Result<Value> {
     let server = state.server_id.to_string();
@@ -152,8 +162,8 @@ async fn browse_media(
             return Ok(root.clone());
         }
     }
-    let (start, limit) = page(&q);
     let single = id.is_some();
+    let (start, limit) = if single { (0, Some(1)) } else { page(&q)? };
     let (mut items, total) = storage::browse_media(
         &state.db,
         storage::MediaQuery {
@@ -234,7 +244,7 @@ pub async fn playlist_items(
     let (revision, tracks) = storage::playlist_items(id, &state.db)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let (start, limit) = page(query);
+    let (start, limit) = page(query)?;
     let entries = tracks
         .iter()
         .enumerate()
@@ -280,7 +290,7 @@ pub async fn playlists(
         .is_some_and(|v| v.eq_ignore_ascii_case("true"))
         || q.get("filters")
             .is_some_and(|v| v.split(',').any(|f| f.eq_ignore_ascii_case("IsFavorite")));
-    let (start, limit) = if single { (0, Some(1)) } else { page(q) };
+    let (start, limit) = if single { (0, Some(1)) } else { page(q)? };
     let search = q.get("searchterm").cloned();
     let media = q.get("mediatypes").cloned();
     let library_media = match q.get("parentid").map(|parent| canonical(parent)).as_deref() {

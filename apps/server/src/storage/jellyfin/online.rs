@@ -2,12 +2,46 @@
 use super::*;
 use thelxinoe_database::Database;
 
+const IDENTITY: &str = "SELECT id,CASE WHEN youtube_video_id IS NOT NULL THEN 'youtube' WHEN twitch_channel_id IS NOT NULL THEN 'twitch' WHEN kick_slug IS NOT NULL THEN 'kick' ELSE 'watchlist' END,CAST(COALESCE(youtube_video_id,twitch_channel_id,kick_slug,watchlist_id) AS TEXT) FROM compat_online_items";
+fn identity(r: &rusqlite::Row<'_>) -> rusqlite::Result<Identity> {
+    Ok(Identity {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        key: r.get(2)?,
+    })
+}
+
 pub(super) async fn resolve(
     item: String,
     user: String,
     db: &Database,
 ) -> anyhow::Result<Option<Identity>> {
-    db.read("jellyfin.online.resolve", move |db| Ok(db.query_row("SELECT id,CASE WHEN youtube_video_id IS NOT NULL THEN 'youtube' WHEN twitch_channel_id IS NOT NULL THEN 'twitch' WHEN kick_slug IS NOT NULL THEN 'kick' ELSE 'watchlist' END,CAST(COALESCE(youtube_video_id,twitch_channel_id,kick_slug,watchlist_id) AS TEXT) FROM compat_online_items WHERE id=?1 AND user_id=?2", params![item,user], |r| Ok(Identity{id:r.get(0)?,kind:r.get(1)?,key:r.get(2)?})).optional()?)).await
+    db.read("jellyfin.online.resolve", move |db| {
+        Ok(db
+            .query_row(
+                &format!("{IDENTITY} WHERE id=?1 AND user_id=?2"),
+                params![item, user],
+                identity,
+            )
+            .optional()?)
+    })
+    .await
+}
+
+pub(super) async fn resolve_all(
+    items: Vec<String>,
+    user: String,
+    db: &Database,
+) -> anyhow::Result<Vec<Identity>> {
+    db.read("jellyfin.online.resolve_all", move |db| {
+        Ok(db
+            .prepare(&format!(
+                "{IDENTITY} WHERE user_id=?2 AND id IN (SELECT value FROM json_each(?1))"
+            ))?
+            .query_map(params![json!(items).to_string(), user], identity)?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+    .await
 }
 
 pub(super) async fn ensure_lists(user: String, db: &Database) -> anyhow::Result<()> {
