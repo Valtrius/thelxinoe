@@ -715,7 +715,7 @@ async fn watched(state: &AppState, token: &str) -> Vec<&'static str> {
     watched
 }
 #[tokio::test]
-async fn series_order_marks_earlier_episodes_and_finds_the_next_one() {
+async fn episodes_follow_series_order_and_the_files_they_share() {
     let (_temp, state) = fixture().await;
     state.db.write("test.fixture", |db| {
         for (id,kind,parent,number) in [("season2","season","show",2),("e3","episode","season2",1),("e4","episode","season2",2)] {
@@ -727,7 +727,7 @@ async fn series_order_marks_earlier_episodes_and_finds_the_next_one() {
         }
         Ok(())
     }).await.unwrap();
-    let (alice, _) = login(&state, "alice").await;
+    let (alice, viewer) = login(&state, "alice").await;
     let (bob, _) = login(&state, "bob").await;
 
     // The next episode crosses seasons; Specials and the last episode have none.
@@ -754,6 +754,26 @@ async fn series_order_marks_earlier_episodes_and_finds_the_next_one() {
     assert_eq!(next("e1/next?file_id=e1").await["id"], "e3");
     assert_eq!(next("e2/next?file_id=e2").await["id"], "e3");
     assert_eq!(next("e1/next?file_id=e2").await["id"], "e2");
+    // Finishing that file finishes both episodes, so Next up agrees. Marking one by hand
+    // leaves the other alone.
+    session(&state, &viewer, "both", "e1").await;
+    progress(&state, &viewer, "both", 0, 50.0, "playing").await;
+    assert!(watched(&state, &alice).await.is_empty());
+    progress(&state, &viewer, "both", 1, 95.0, "stopped").await;
+    assert_eq!(watched(&state, &alice).await, ["e1", "e2"]);
+    assert_eq!(
+        ok(&state, &alice, "/me/home", "GET", Value::Null).await["next_up"][0]["id"],
+        "e3"
+    );
+    ok(
+        &state,
+        &alice,
+        "/catalog/e1/state",
+        "PUT",
+        json!({"watched":false}),
+    )
+    .await;
+    assert_eq!(watched(&state, &alice).await, ["e2"]);
     state
         .db
         .write("test.fixture", |db| {
