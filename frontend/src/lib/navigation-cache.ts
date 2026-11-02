@@ -42,6 +42,24 @@ export class NavigationCache {
     this.entries.delete(key);
   }
 
+  private store(key: string, entry: Entry) {
+    this.remove(key);
+    if ((key.length + entry.json.length) * 2 > this.maxBytes) return;
+    this.entries.set(key, entry);
+    this.bytes += (key.length + entry.json.length) * 2;
+    while (this.bytes > this.maxBytes || this.entries.size > this.maxEntries)
+      this.remove(this.entries.keys().next().value!);
+  }
+
+  // Replaces a snapshot with the page's later copy, such as one with further
+  // pages, keeping its age. A snapshot dropped meanwhile stays dropped.
+  update(source: PageSource, key: string, value: unknown) {
+    const cacheKey = `${source}:${key}`;
+    const previous = this.entries.get(cacheKey);
+    if (previous)
+      this.store(cacheKey, { ...previous, json: JSON.stringify(value) });
+  }
+
   read<T>(
     source: PageSource,
     key: string,
@@ -80,21 +98,11 @@ export class NavigationCache {
                 ) {
                   // Serialize before the view can wrap or mutate the response. This
                   // also bounds retained payload memory and isolates each reader.
-                  const json = JSON.stringify(value);
-                  this.remove(cacheKey);
-                  if ((cacheKey.length + json.length) * 2 <= this.maxBytes) {
-                    this.entries.set(cacheKey, {
-                      source,
-                      json,
-                      at: Date.now(),
-                    });
-                    this.bytes += (cacheKey.length + json.length) * 2;
-                    while (
-                      this.bytes > this.maxBytes ||
-                      this.entries.size > this.maxEntries
-                    )
-                      this.remove(this.entries.keys().next().value!);
-                  }
+                  this.store(cacheKey, {
+                    source,
+                    json: JSON.stringify(value),
+                    at: Date.now(),
+                  });
                 }
                 return value;
               },

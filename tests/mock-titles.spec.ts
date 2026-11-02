@@ -435,25 +435,60 @@ test('libraries scan without manual folder settings', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test('returning from a title restores where the library grid was scrolled', async ({
+test('the library grid pages in every title and keeps them through Back and changes', async ({
   page,
 }) => {
   const errors = track(page);
+  // A few pages of movies.
+  await page.request.post('/__mock/library', { data: { movies: 300 } });
+  const all = (
+    await (await page.request.get('/api/v1/catalog?kind=movie&limit=0')).json()
+  ).total as number;
   await page.goto('/#library/movies');
-  const target = card(page, 'movie-19');
-  await target.scrollIntoViewIfNeeded();
+  const tiles = page.locator('article.library-tile');
   const scroller = page.locator('.workspace-scroll');
-  const before = await scroller.evaluate((element) => element.scrollTop);
+  await expect(page.getByText(`${all} items`, { exact: true })).toBeVisible();
+  await expect(tiles).toHaveCount(120);
+  // Pages load as the grid nears its end, through to the last title.
+  await expect
+    .poll(async () => {
+      await scroller.evaluate((element) => element.scrollTo(0, 1e7));
+      return tiles.count();
+    })
+    .toBe(all);
+  await expect(page.getByRole('status', { name: /^Loading more/ })).toHaveCount(
+    0,
+  );
+
+  const target = card(page, 'movie-300');
+  await target.scrollIntoViewIfNeeded();
+  const scroll = () => scroller.evaluate((element) => element.scrollTop);
+  const before = await scroll();
   expect(before).toBeGreaterThan(0);
+  // Back shows every loaded page again without reading them anew.
+  const pages: string[] = [];
+  page.on('request', (request) => {
+    if (/\/api\/v1\/catalog\?.*offset=/.test(request.url()))
+      pages.push(request.url());
+  });
   await target.locator('.card-primary').click();
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   await page
     .getByRole('button', { name: 'Back to movies', exact: true })
     .click();
   await expect(target).toBeVisible();
-  await expect
-    .poll(() => scroller.evaluate((element) => element.scrollTop))
-    .toBe(before);
+  await expect.poll(scroll).toBe(before);
+  await expect(tiles).toHaveCount(all);
+  expect(pages).toEqual([]);
+
+  // A change reads the list again with every page it shows.
+  await page.request.post('/__mock/library', { data: { movies: 1 } });
+  await expect(
+    page.getByText(`${all + 1} items`, { exact: true }),
+  ).toBeVisible();
+  await expect(tiles).toHaveCount(all + 1);
+  expect(await scroll()).toBe(before);
+  await expect(target).toBeInViewport();
   expect(errors).toEqual([]);
 });
 
