@@ -372,12 +372,7 @@ pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
             ("api/v1/indexer", true),
             ("api/v1/applications", true),
         ],
-        "bazarr" => &[
-            ("api/system/tasks", false),
-            ("api/system/status", false),
-            ("api/movies/wanted", false),
-            ("api/episodes/wanted", false),
-        ],
+        "bazarr" => &[("api/system/tasks", false), ("api/system/status", false)],
         "seerr" => &[
             ("api/v1/settings/public", false),
             ("api/v1/auth/me", false),
