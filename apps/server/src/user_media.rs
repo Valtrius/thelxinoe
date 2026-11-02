@@ -8,13 +8,13 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
 };
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use thelxinoe_core::{Principal, now};
+use thelxinoe_core::{Capability, Principal, now};
 
 pub(crate) use storage::{card, validate_tracks};
 /// Released desktops (API 1) save the music queue before they play a track. They get
@@ -136,6 +136,21 @@ pub async fn set_watched(
         )
         .await?;
     Ok(Json(json!({"episodes":changed})))
+}
+#[derive(Deserialize)]
+pub struct Played {
+    file_id: Option<String>,
+}
+/// The episode to offer when this one finishes, or null.
+pub async fn next_episode(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(media): Path<String>,
+    Query(played): Query<Played>,
+) -> Result<Json<Value>> {
+    security::require(&state, &headers, Capability::Browse).await?;
+    let next = storage::next_episode(media, played.file_id, &state.db).await?;
+    Ok(Json(json!({ "next": next })))
 }
 pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;

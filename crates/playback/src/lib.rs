@@ -238,9 +238,15 @@ pub struct Preferences {
     /// The scale of subtitle text in the web player.
     #[serde(default = "unscaled")]
     pub subtitle_size: f64,
+    /// Whether the next episode starts by itself when one finishes.
+    #[serde(default = "enabled")]
+    pub autoplay: bool,
 }
 fn unscaled() -> f64 {
     1.0
+}
+fn enabled() -> bool {
+    true
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -251,6 +257,7 @@ impl Default for Preferences {
             subtitles: false,
             replay_gain: "track".into(),
             subtitle_size: unscaled(),
+            autoplay: enabled(),
         }
     }
 }

@@ -88,5 +88,5 @@ export function resumeText(episode: Episode) {
 }
 
 /** S02E06 */
-export const episodeCode = (episode: Episode) =>
+export const episodeCode = (episode: Pick<Episode, 'season' | 'number'>) =>
   `S${String(episode.season).padStart(2, '0')}E${String(episode.number).padStart(2, '0')}`;

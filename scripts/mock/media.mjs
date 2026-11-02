@@ -397,6 +397,48 @@ export async function mediaApi(s, c) {
       });
     }
     if (action === 'segments/analyze') return json({ queued: true });
+    if (action === 'next') {
+      // The server's series order: regular seasons, then episodes. The played
+      // file plays past every episode it holds.
+      const parent = (entry) =>
+        s.library.find((other) => other.id === entry.parent_id);
+      const show = parent(item)?.parent_id;
+      const byNumber = (a, b) => a.sort_number - b.sort_number;
+      const order = s.library
+        .filter(
+          (season) =>
+            season.kind === 'season' &&
+            season.parent_id === show &&
+            season.sort_number > 0,
+        )
+        .sort(byNumber)
+        .flatMap((season) =>
+          s.library
+            .filter(
+              (entry) =>
+                entry.kind === 'episode' && entry.parent_id === season.id,
+            )
+            .sort(byNumber),
+        );
+      const file = query.get('file_id') ?? item.fileId;
+      const last = order.findLastIndex(
+        (entry) => entry === item || entry.fileId === file,
+      );
+      const next = order.includes(item)
+        ? order.slice(last + 1).find((entry) => entry.available !== false)
+        : undefined;
+      return json({
+        next: next
+          ? {
+              id: next.id,
+              title: next.title,
+              show: s.library.find((entry) => entry.id === show).title,
+              season: parent(next).sort_number,
+              number: next.sort_number,
+            }
+          : null,
+      });
+    }
     if (action === 'manager-episodes')
       return json({
         items: s.library
