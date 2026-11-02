@@ -191,7 +191,9 @@ impl Plan<'_> {
         let tone = if !tone_map {
             String::new()
         } else if self.accelerator.tone_map && video.is_some_and(hdr10) {
-            ",tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL".into()
+            // tonemap_vaapi drops the HDR metadata and tags its frames BT.709, yet tells the
+            // filter graph they keep the input's matrix; FFmpeg then can't meet -colorspace.
+            ",tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709".into()
         } else {
             format!(",hwdownload,format=p010le{TONE_MAP},format=nv12,hwupload")
         };

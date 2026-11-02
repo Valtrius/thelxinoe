@@ -74,7 +74,7 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
     assert!(decoded);
     assert_eq!(
         filter,
-        "scale_vaapi=w=-2:h='min(1080,ih)':format=p010,tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL"
+        "scale_vaapi=w=-2:h='min(1080,ih)':format=p010,tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
     );
     // The software conversion's rate limits and SDR tags.
     for pair in [
