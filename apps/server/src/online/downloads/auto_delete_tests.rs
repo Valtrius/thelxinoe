@@ -48,6 +48,12 @@ async fn api(state: &AppState, cookie: &str, path: &str, method: &str, body: Val
     response.2
 }
 
+async fn deletions(state: &AppState, cookie: &str) -> Vec<Value> {
+    let path = "/api/v1/admin/retention/deletions";
+    let listed = api(state, cookie, path, "GET", json!({})).await;
+    listed["items"].as_array().unwrap().clone()
+}
+
 #[tokio::test]
 async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_file_ownership() {
     let (_temp, state, cookie) = fixture().await;
@@ -119,15 +125,10 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
     let capacity = api(&state, &cookie, "/api/v1/admin/retention", "GET", json!({})).await;
     assert_eq!(capacity["video_usage"]["unpinned_bytes"], 4);
     assert_eq!(capacity["video_usage"]["pinned_bytes"], 100);
-    assert!(
-        capacity["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|i| i["video_id"] == "oldvideo001"
-                && i["reason"] == "storage_limit"
-                && i["state"] == "complete")
-    );
+    let evicted = deletions(&state, &cookie).await;
+    assert!(evicted.iter().any(|i| i["video_id"] == "oldvideo001"
+        && i["reason"] == "storage_limit"
+        && i["state"] == "complete"));
     state.db.read("test.preserved_lists",|db| {
         assert_eq!(db.query_row("SELECT COUNT(*) FROM youtube_watchlist_items WHERE video_id='oldvideo001'",[],|r|r.get::<_,i64>(0))?,2);
         assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM youtube_download_suppressed WHERE video_id='oldvideo001')",[],|r|r.get::<_,bool>(0))?);
@@ -161,12 +162,9 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         json!({}),
     )
     .await;
-    let one = api(&state, &cookie, "/api/v1/admin/retention", "GET", json!({})).await;
+    let one = deletions(&state, &cookie).await;
     assert!(
-        !one["items"]
-            .as_array()
-            .unwrap()
-            .iter()
+        !one.iter()
             .any(|i| i["video_id"] == "newvideo001" && i["state"] == "pending")
     );
     let token =
@@ -190,10 +188,8 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         json!({}),
     )
     .await;
-    let both = api(&state, &cookie, "/api/v1/admin/retention", "GET", json!({})).await;
-    let candidate = both["items"]
-        .as_array()
-        .unwrap()
+    let both = deletions(&state, &cookie).await;
+    let candidate = both
         .iter()
         .find(|i| i["video_id"] == "newvideo001" && i["state"] == "pending")
         .unwrap();
@@ -211,12 +207,9 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         policy.clone(),
     )
     .await;
-    let off = api(&state, &cookie, "/api/v1/admin/retention", "GET", json!({})).await;
+    let off = deletions(&state, &cookie).await;
     assert!(
-        !off["items"]
-            .as_array()
-            .unwrap()
-            .iter()
+        !off.iter()
             .any(|i| i["state"] == "pending" && i["reason"] == "watched")
     );
     assert_eq!(
@@ -248,10 +241,8 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         json!({}),
     )
     .await;
-    let again = api(&state, &cookie, "/api/v1/admin/retention", "GET", json!({})).await;
-    let candidate = again["items"]
-        .as_array()
-        .unwrap()
+    let again = deletions(&state, &cookie).await;
+    let candidate = again
         .iter()
         .find(|i| i["video_id"] == "newvideo001" && i["state"] == "pending")
         .unwrap();
@@ -431,18 +422,14 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         interrupted.exists(),
         "Recovery must not retry the same generation through its watched countdown"
     );
-    let final_state = api(&state, &cookie, "/api/v1/admin/retention", "GET", json!({})).await;
+    let final_state = deletions(&state, &cookie).await;
     assert!(
-        !final_state["items"]
-            .as_array()
-            .unwrap()
+        !final_state
             .iter()
             .any(|i| i["video_id"] == "interrupted" && i["state"] == "pending")
     );
     assert!(
-        final_state["items"]
-            .as_array()
-            .unwrap()
+        final_state
             .iter()
             .any(|i| i["video_id"] == "changed0001" && i["state"] == "blocked")
     );

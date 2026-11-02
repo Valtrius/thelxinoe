@@ -417,17 +417,7 @@ async fn auto_delete_removes_and_excludes_movies_as_its_policy_says() {
         let saved = call(&state, &path, "POST", policy, &cookie).await;
         assert_eq!(saved.0, StatusCode::OK, "{}", saved.2);
     };
-    let retention = async || {
-        call(
-            &state,
-            "/api/v1/admin/retention",
-            "GET",
-            Value::Null,
-            &cookie,
-        )
-        .await
-        .2
-    };
+    let read = async |path: &str| call(&state, path, "GET", Value::Null, &cookie).await.2;
     save("movies", policy(true, false)).await;
     let evaluated = call(
         &state,
@@ -440,7 +430,7 @@ async fn auto_delete_removes_and_excludes_movies_as_its_policy_says() {
     assert_eq!(evaluated.0, StatusCode::OK, "{}", evaluated.2);
     save("movies", policy(false, true)).await;
     save("shows", policy(true, true)).await;
-    let listed = retention().await;
+    let listed = read("/api/v1/admin/retention").await;
     let options = |domain: &str| {
         let policy = listed["policies"]
             .as_array()
@@ -459,7 +449,8 @@ async fn auto_delete_removes_and_excludes_movies_as_its_policy_says() {
         (json!(false), json!(false)),
         "A deleted season is only unmonitored"
     );
-    let item = &listed["items"][0];
+    let deletions = read("/api/v1/admin/retention/deletions").await;
+    let item = &deletions["items"][0];
     assert_eq!(
         item["state"], "pending",
         "What a deletion does upstream keeps its countdown"
