@@ -58,6 +58,15 @@ pub fn chapters(probe: &Value) -> Value {
 pub fn result(items: Vec<Value>, total: usize, start: usize) -> Value {
     json!({"Items":items,"TotalRecordCount":total,"StartIndex":start})
 }
+/// Like Jellyfin, a list starts at `StartIndex` and holds every remaining item unless the
+/// client sends a `Limit`.
+pub fn page(query: &Query) -> (usize, Option<usize>) {
+    let number = |key: &str| query.get(key).and_then(|v| v.parse::<usize>().ok());
+    (
+        number("startindex").unwrap_or(0).min(1_000_000),
+        number("limit"),
+    )
+}
 pub async fn views(state: &AppState) -> Result<Value> {
     let server = state.server_id.to_string();
     let mut items = storage::views(server, &state.db).await?;
@@ -143,16 +152,7 @@ async fn browse_media(
             return Ok(root.clone());
         }
     }
-    let start = q
-        .get("startindex")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0)
-        .min(1_000_000);
-    let limit = q
-        .get("limit")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(100)
-        .min(500);
+    let (start, limit) = page(&q);
     let single = id.is_some();
     let (mut items, total) = storage::browse_media(
         &state.db,
@@ -234,33 +234,23 @@ pub async fn playlist_items(
     let (revision, tracks) = storage::playlist_items(id, &state.db)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let start = query
-        .get("startindex")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
-    let limit = query
-        .get("limit")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(100)
-        .min(500);
-    let page = tracks
+    let (start, limit) = page(query);
+    let entries = tracks
         .iter()
         .enumerate()
         .skip(start)
-        .take(limit)
+        .take(limit.unwrap_or(usize::MAX))
         .collect::<Vec<_>>();
-    let q = Query::from([
-        (
-            "ids".into(),
-            page.iter()
-                .map(|(_, id)| id.as_str())
-                .collect::<Vec<_>>()
-                .join(","),
-        ),
-        ("limit".into(), "500".into()),
-    ]);
+    let q = Query::from([(
+        "ids".into(),
+        entries
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+    )]);
     let catalog = browse_media(state, p, &q, None).await?;
-    let items = page
+    let items = entries
         .into_iter()
         .filter_map(|(position, id)| {
             let mut item = catalog["Items"]
@@ -290,21 +280,7 @@ pub async fn playlists(
         .is_some_and(|v| v.eq_ignore_ascii_case("true"))
         || q.get("filters")
             .is_some_and(|v| v.split(',').any(|f| f.eq_ignore_ascii_case("IsFavorite")));
-    let start = if single {
-        0
-    } else {
-        q.get("startindex")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0)
-    };
-    let limit = if single {
-        1
-    } else {
-        q.get("limit")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(100)
-            .min(500)
-    };
+    let (start, limit) = if single { (0, Some(1)) } else { page(q) };
     let search = q.get("searchterm").cloned();
     let media = q.get("mediatypes").cloned();
     let library_media = match q.get("parentid").map(|parent| canonical(parent)).as_deref() {
@@ -348,7 +324,7 @@ pub async fn playlists(
     if single {
         items.into_iter().next().ok_or_else(ApiError::not_found)
     } else {
-        Ok(result(items, total, start as usize))
+        Ok(result(items, total, start))
     }
 }
 

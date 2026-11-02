@@ -222,7 +222,7 @@ pub async fn browse(
         .is_some_and(|types| types.split(',').all(|t| t.eq_ignore_ascii_case("Video")));
     let mapped_ids = if let Some(ids) = query.get("ids") {
         let mut resolved = Vec::new();
-        for id in ids.split(',').take(500) {
+        for id in ids.split(',') {
             if let Some(item) = resolve(state, p, id).await? {
                 resolved.push(item);
             }
@@ -249,21 +249,10 @@ pub async fn browse(
     let user = p.user.id.clone();
     let server = state.server_id.to_string();
     let is_single = single.is_some();
-    let start = if is_single {
-        0
+    let (start, limit) = if is_single {
+        (0, Some(1))
     } else {
-        q.get("startindex")
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(0)
-            .min(1_000_000)
-    };
-    let limit = if is_single {
-        1
-    } else {
-        q.get("limit")
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(100)
-            .min(500)
+        catalog::page(&q)
     };
     let (mut items, total) = storage::browse(
         &state.db,

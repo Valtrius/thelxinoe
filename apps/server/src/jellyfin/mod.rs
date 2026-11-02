@@ -553,6 +553,8 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
             }
             if tail.len() == 1 {
                 if tail[0].eq_ignore_ascii_case("Latest") {
+                    // Jellyfin's own default for this list.
+                    query.entry("limit".into()).or_insert_with(|| "20".into());
                     query.insert("sortby".into(), "DateCreated".into());
                     query.insert("sortorder".into(), "Descending".into());
                     query.insert("recursive".into(), "true".into());

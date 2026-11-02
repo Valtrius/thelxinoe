@@ -45,7 +45,7 @@ pub(super) struct BrowseQuery {
     pub(super) user: String,
     pub(super) server: String,
     pub(super) start: usize,
-    pub(super) limit: usize,
+    pub(super) limit: Option<usize>,
 }
 
 pub(super) async fn browse(
@@ -122,7 +122,7 @@ pub(super) async fn browse(
         };
         let clause=if filter.is_empty(){"1".into()}else{filter.join(" AND ")};
         let total=db.query_row(&format!("{SELECT} SELECT COUNT(*) FROM entries WHERE {clause}"),rusqlite::params_from_iter(&args),|r|r.get::<_,i64>(0).map(|v|v as usize))?;
-        let records=db.prepare(&format!("{SELECT} SELECT kind,provider_id,name,overview,duration,live,image,position,played,favorite,created,viewers,genre FROM entries WHERE {clause} ORDER BY {order},provider_id LIMIT {limit} OFFSET {start}"))?.query_map(rusqlite::params_from_iter(&args),|r| {
+        let records=db.prepare(&format!("{SELECT} SELECT kind,provider_id,name,overview,duration,live,image,position,played,favorite,created,viewers,genre FROM entries WHERE {clause} ORDER BY {order},provider_id LIMIT {} OFFSET {start}",crate::jellyfin::storage::sql_limit(limit)))?.query_map(rusqlite::params_from_iter(&args),|r| {
             let overview = r.get::<_,String>(3)?;
             let overview = match r.get::<_,Option<i64>>(11)? {
                 Some(viewers) => format!("{} viewers · {overview}", format_viewers(viewers)),
@@ -131,8 +131,10 @@ pub(super) async fn browse(
             Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,json!({"Name":r.get::<_,String>(2)?,"Overview":overview,"RunTimeTicks":catalog::ticks(r.get::<_,f64>(4)?),"IsLive":r.get::<_,bool>(5)?,"DateCreated":r.get::<_,Option<String>>(10)?,"UserData":{"PlaybackPositionTicks":catalog::ticks(r.get::<_,f64>(7)?),"Played":r.get::<_,bool>(8)?,"PlayCount":i32::from(r.get::<_,bool>(8)?),"IsFavorite":r.get::<_,bool>(9)?}}),r.get::<_,String>(6)?,r.get::<_,Option<String>>(12)?))
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut items=Vec::new();
+        // A list without Limit can map thousands of new entries: one commit, not one each.
+        let tx=db.transaction()?;
         for (kind,key,mut dto,image,genre) in records {
-            let id=mapped(db,&user,&kind,&key)?;
+            let id=mapped(&tx,&user,&kind,&key)?;
             dto["Id"]=json!(id);dto["ServerId"]=json!(server);dto["Type"]=json!("Video");dto["MediaType"]=json!("Video");dto["IsFolder"]=json!(false);dto["LocationType"]=json!("Remote");dto["CanDownload"]=json!(false);dto["ImageTags"]=json!({});dto["PrimaryImageAspectRatio"]=json!(16.0/9.0);
             dto["ParentId"]=json!(ROOTS.iter().find(|r|r.1==kind).unwrap().0);dto["UserData"]["Key"]=json!(id);dto["UserData"]["ItemId"]=json!(id);
             if let Some((genre_id,_,name))=YOUTUBE_GENRES.iter().find(|g|Some(g.1)==genre.as_deref()){dto["Genres"]=json!([name]);dto["GenreItems"]=json!([{"Id":genre_id,"Name":name}]);}
@@ -141,6 +143,7 @@ pub(super) async fn browse(
             dto["MediaSources"]=json!([source_dto(&dto)]);
             items.push(dto);
         }
+        tx.commit()?;
         Ok((items,total))
     }).await
 }
