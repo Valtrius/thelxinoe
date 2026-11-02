@@ -869,3 +869,145 @@ test('episode rows show stills, mark seasons watched and search Sonarr', async (
   ).toHaveCount(1);
   expect(errors).toEqual([]);
 });
+
+/** Starts an episode from the title page and returns its player. */
+async function playEpisode(page: Page, name: string, title: string) {
+  await page.getByRole('button', { name, exact: true }).click();
+  const player = page.getByRole('region', { name: 'Media player' });
+  const video = player.locator('video');
+  await expect(player.getByRole('heading', { name: title })).toBeVisible();
+  await expect
+    .poll(() =>
+      video.evaluate((element: HTMLVideoElement) => element.readyState),
+    )
+    .toBeGreaterThanOrEqual(2);
+  return {
+    player,
+    upNext: player.getByRole('group', { name: 'Up next' }),
+    at: (seconds: number) =>
+      video.evaluate((element: HTMLVideoElement, to) => {
+        element.currentTime = to;
+      }, seconds),
+  };
+}
+// Playback starts, and the position each stopped session reported.
+function playbackRequests(page: Page) {
+  const starts: string[] = [];
+  const stops: number[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() !== 'POST') return;
+    if (path === '/api/v1/playback')
+      starts.push(request.postDataJSON().media_id);
+    else if (
+      /^\/api\/v1\/playback\/[^/]+\/progress$/.test(path) &&
+      request.postDataJSON().state === 'stopped'
+    )
+      stops.push(request.postDataJSON().position);
+  });
+  return { starts, stops };
+}
+
+test('a finishing episode offers the next one from its credits, across seasons, until canceled', async ({
+  page,
+}, info) => {
+  const errors = track(page);
+  const { starts, stops } = playbackRequests(page);
+  await page.goto('/#library/shows/show-0');
+  const { player, upNext, at } = await playEpisode(
+    page,
+    'Play episode 4: Homeward',
+    'Beyond the Horizon · Homeward',
+  );
+  // The sample's credits start at 1:20, after the last 30 seconds begin.
+  await at(70);
+  await expect(
+    player.getByRole('slider', { name: 'Playback position' }),
+  ).toHaveAttribute('aria-valuetext', /^1:1\d of 1:30/);
+  await expect(upNext).toHaveCount(0);
+  await at(79);
+  await expect(
+    upNext.getByRole('button', {
+      name: 'Play S02E01 · First Contact',
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    player.getByRole('button', { name: 'Skip credits' }),
+  ).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('up-next.png') });
+  // The countdown starts the next season through the usual playback start, and
+  // the finished episode reports its end.
+  await expect(
+    player.getByRole('heading', { name: 'Beyond the Horizon · First Contact' }),
+  ).toBeVisible({ timeout: 20_000 });
+  await expect.poll(() => starts).toEqual(['episode-3', 'episode-4']);
+  expect([...new Set(stops)]).toEqual([90]);
+
+  await expect(
+    player.getByRole('slider', { name: 'Playback position' }),
+  ).toHaveAttribute('aria-valuetext', /^0:0\d of 1:30/);
+  await at(79);
+  await upNext.getByRole('button', { name: 'Cancel autoplay' }).click();
+  await expect(upNext).toHaveCount(0);
+  await expect(
+    player.getByRole('button', { name: 'Skip credits' }),
+  ).toHaveCount(0);
+  await at(88);
+  await expect(
+    player.getByRole('button', { name: 'Play', exact: true }),
+  ).toBeVisible();
+  await expect(
+    player.getByRole('heading', { name: 'Beyond the Horizon · First Contact' }),
+  ).toBeVisible();
+  expect(starts).toEqual(['episode-3', 'episode-4']);
+  expect(errors).toEqual([]);
+});
+
+test('the last episode keeps its credits skip, and automatic credits skips go to the next episode', async ({
+  page,
+}) => {
+  const errors = track(page);
+  const { starts, stops } = playbackRequests(page);
+  await page.goto('/#library/shows/show-0');
+  await page.getByRole('tab', { name: 'Season 2' }).click();
+  // Sonarr's later episodes have no file, so nothing follows the fourth.
+  const last = await playEpisode(
+    page,
+    'Play episode 4: Homeward',
+    'Beyond the Horizon · Homeward',
+  );
+  await last.at(79);
+  await expect(
+    last.player.getByRole('button', { name: 'Skip credits' }),
+  ).toBeVisible();
+  await expect(last.upNext).toHaveCount(0);
+
+  expect(
+    (
+      await page.request.put('/api/v1/me/segments', {
+        data: {
+          Intro: 'Ask',
+          Recap: 'Ask',
+          Credits: 'Auto',
+          Preview: 'Ignore',
+        },
+      })
+    ).ok(),
+  ).toBe(true);
+  const { player, at } = await playEpisode(
+    page,
+    'Play episode 3: The Signal',
+    'Beyond the Horizon · The Signal',
+  );
+  await at(78);
+  await expect(
+    player.getByRole('heading', { name: 'Beyond the Horizon · Homeward' }),
+  ).toBeVisible();
+  await expect
+    .poll(() => starts)
+    .toEqual(['episode-7', 'episode-6', 'episode-7']);
+  // Moving on at the credits, before 90%, still finishes the episode.
+  await expect.poll(() => stops.at(-1)).toBe(90);
+  expect(errors).toEqual([]);
+});

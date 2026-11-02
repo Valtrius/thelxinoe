@@ -715,16 +715,54 @@ async fn watched(state: &AppState, token: &str) -> Vec<&'static str> {
     watched
 }
 #[tokio::test]
-async fn seasons_and_the_episodes_before_one_are_marked_at_once() {
+async fn series_order_marks_earlier_episodes_and_finds_the_next_one() {
     let (_temp, state) = fixture().await;
     state.db.write("test.fixture", |db| {
         for (id,kind,parent,number) in [("season2","season","show",2),("e3","episode","season2",1),("e4","episode","season2",2)] {
             db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'root',?2,?3,?1,?1,?4,?5)",params![id,kind,parent,number,now()])?;
+            if kind == "episode" {
+                db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,'root',?1,'generation',10,'mtime',?1,'{}',?2)",params![id,now()])?;
+                db.execute("INSERT INTO media_sources VALUES (?1,?1)",[id])?;
+            }
         }
         Ok(())
     }).await.unwrap();
     let (alice, _) = login(&state, "alice").await;
     let (bob, _) = login(&state, "bob").await;
+
+    // The next episode crosses seasons; Specials and the last episode have none.
+    let next = |path: &str| {
+        let (state, alice, path) = (state.clone(), alice.clone(), format!("/catalog/{path}"));
+        async move { ok(&state, &alice, &path, "GET", Value::Null).await["next"].clone() }
+    };
+    assert_eq!(next("e1/next").await["id"], "e2");
+    assert_eq!(
+        next("e2/next").await,
+        json!({"id":"e3","title":"e3","show":"show","season":2,"number":1})
+    );
+    assert_eq!(next("e4/next").await, Value::Null);
+    assert_eq!(next("special/next").await, Value::Null);
+    // A file holding two episodes plays past both; unavailable episodes are passed over.
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute("INSERT INTO media_sources VALUES ('e2','e1')", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(next("e1/next?file_id=e1").await["id"], "e3");
+    assert_eq!(next("e2/next?file_id=e2").await["id"], "e3");
+    assert_eq!(next("e1/next?file_id=e2").await["id"], "e2");
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute("UPDATE media_files SET present=0 WHERE id='e3'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(next("e2/next").await["id"], "e4");
     let mark = |id: &str, body: Value| {
         let (state, alice, path) = (
             state.clone(),
