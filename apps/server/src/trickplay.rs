@@ -288,7 +288,7 @@ async fn advance(
         .flatten()
         .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
         .ok_or_else(|| Unusable("The file has no video".into()))?;
-    if crate::jellyfin::video_range(video).1 == "DOVI" {
+    if thelxinoe_playback::video_range(video).1 == "DOVI" {
         // Without a base layer, its colors need Dolby Vision processing FFmpeg can't do here.
         return Err(Unusable("Dolby Vision video without a base layer".into()).into());
     }
@@ -384,15 +384,7 @@ fn filter(video: &Value, thumbnails: u32) -> String {
     );
     let transfer = video["color_transfer"].as_str().unwrap_or_default();
     if ["smpte2084", "arib-std-b67"].contains(&transfer) {
-        let primaries = video["color_primaries"]
-            .as_str()
-            .filter(|p| ["bt2020", "bt709"].contains(p))
-            .unwrap_or("bt2020");
-        let matrix = video["color_space"]
-            .as_str()
-            .filter(|m| ["bt2020nc", "bt709"].contains(m))
-            .unwrap_or("bt2020nc");
-        filter.push_str(&format!(",zscale=tin={transfer}:pin={primaries}:min={matrix}:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=full"));
+        filter.push_str(&thelxinoe_playback::tone_map_filter(video));
     }
     filter.push_str(",format=yuvj420p");
     filter
