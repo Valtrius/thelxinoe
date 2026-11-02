@@ -119,15 +119,24 @@ pub(super) async fn enqueue_scan(root_id: String, db: &Database) -> anyhow::Resu
     .await
 }
 
-pub(super) async fn browse(db: &Database, input: Browse) -> anyhow::Result<Vec<Value>> {
+/// A page of the matching items and how many match.
+pub(super) async fn browse(
+    db: &Database,
+    input: Browse,
+    limit: u32,
+) -> anyhow::Result<(Vec<Value>, u32)> {
     db.read("library.browse", move|db|{
-        let mut query=db.prepare("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) FROM media m WHERE (?1 IS NULL OR m.kind=?1) AND (?2 IS NULL OR m.parent_id=?2) AND (?3 IS NULL OR COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) LIKE '%'||?3||'%') AND (?4 IS NULL OR json_extract(m.metadata,'$.belongs_to_collection.id')=?4) ORDER BY m.sort_number,COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) COLLATE NOCASE LIMIT 500")?;
-        Ok(query.query_map(params![input.kind,input.parent,input.q,input.collection],media_row)?.collect::<std::result::Result<Vec<_>,_>>()?)
+        const MATCHING: &str = "FROM media m WHERE (?1 IS NULL OR m.kind=?1) AND (?2 IS NULL OR m.parent_id=?2) AND (?3 IS NULL OR COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) LIKE '%'||?3||'%') AND (?4 IS NULL OR json_extract(m.metadata,'$.belongs_to_collection.id')=?4)";
+        let filter = params![input.kind,input.parent,input.q,input.collection];
+        let total = db.query_row(&format!("SELECT COUNT(*) {MATCHING}"), filter, |r| r.get(0))?;
+        let mut query=db.prepare(&format!("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) {MATCHING} ORDER BY m.sort_number,COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) COLLATE NOCASE,m.id LIMIT ?5 OFFSET ?6"))?;
+        let items = query.query_map(params![input.kind,input.parent,input.q,input.collection,limit,input.offset],media_row)?.collect::<std::result::Result<Vec<_>,_>>()?;
+        Ok((items, total))
     }).await
 }
 
-/// Every top-level movie or show, with when it joined the library and what its files
-/// weigh. A show is available once any of its episodes is.
+/// Every top-level movie or show in a fixed order, with when it joined the library and
+/// what its files weigh. A show is available once any of its episodes is.
 pub(super) async fn titles(db: &Database, kind: String) -> anyhow::Result<Vec<(Value, Facts)>> {
     db.read("library.titles", move |db| {
         let mut query = db.prepare("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,
@@ -138,7 +147,7 @@ pub(super) async fn titles(db: &Database, kind: String) -> anyhow::Result<Vec<(V
                     SELECT file_id FROM media_sources WHERE media_id=m.id
                     UNION SELECT ms.file_id FROM media s JOIN media e ON e.parent_id=s.id JOIN media_sources ms ON ms.media_id=e.id WHERE s.parent_id=m.id)),
                 (SELECT COUNT(DISTINCT e.id) FROM media s JOIN media e ON e.parent_id=s.id JOIN media_sources ms ON ms.media_id=e.id JOIN media_files f ON f.id=ms.file_id WHERE s.parent_id=m.id AND f.present=1)
-            FROM media m WHERE m.kind=?1 AND m.parent_id IS NULL")?;
+            FROM media m WHERE m.kind=?1 AND m.parent_id IS NULL ORDER BY m.id")?;
         Ok(query
             .query_map([kind], |r| {
                 Ok((

@@ -619,29 +619,63 @@ async fn season_requires_complete_confirmed_aired_metadata_and_all_selected_user
     }).await.unwrap();
 }
 
+// Hundreds of movies, seasons and downloads can wait at once. The admin sees every one, the
+// next to go first, while the outcomes that only accumulate stay the latest ones.
 #[tokio::test]
-async fn scheduled_seasons_are_named_with_their_show() {
+async fn every_scheduled_deletion_is_listed_soonest_first() {
     let (_temp, state, _) = movie().await;
     state.db.write("test.fixture", |db| {
-        db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('show','ret-root','show','show','Silo (2023)',1)",[])?;
-        db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('season','ret-root','season','show','season','Season 2',2,1)",[])?;
-        for (key, media) in [("movie-candidate", "ret-movie"), ("season-candidate", "season")] {
-            db.execute("INSERT INTO retention_candidates(id,media_id,stamp,state,eligible_at,due_at) VALUES (?1,?2,'stamp','pending',1,1)",[key,media])?;
+        let tx = db.transaction()?;
+        tx.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+        tx.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('show','ret-root','show','show','Silo (2023)',1)",[])?;
+        tx.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('season','ret-root','season','show','season','Season 2',2,1)",[])?;
+        // Seasons wait less than movies: the latest to qualify is the next to go.
+        tx.execute("INSERT INTO retention_candidates(id,media_id,stamp,state,eligible_at,due_at) VALUES ('season','season','stamp','pending',5000,6000)",[])?;
+        let outcomes = ["complete", "kept", "cancelled", "blocked"].into_iter().cycle();
+        for (i, outcome) in (0..250_i64).zip(outcomes) {
+            let (movie, video) = (format!("movie-{i}"), format!("video-{i}"));
+            tx.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES (?1,'ret-root','movie',?1,?1,1)",[&movie])?;
+            tx.execute("INSERT INTO retention_candidates(id,media_id,stamp,state,eligible_at,due_at) VALUES (?1,?1,'stamp','pending',?2,?3)",params![movie,1000+i,100_000+2*i])?;
+            tx.execute("INSERT INTO video_retention_candidates(id,video_id,generation,stamp,title,reason,state,eligible_at,due_at) VALUES (?1,?1,'g','stamp',?1,'watched','pending',?2,?3)",params![video,1000+i,100_001+2*i])?;
+            tx.execute("INSERT INTO retention_candidates(id,media_id,stamp,state,eligible_at,due_at) VALUES (?1,'ret-movie','stamp',?2,?3,?3)",params![format!("{movie}-outcome"),outcome,2*i])?;
+            tx.execute("INSERT INTO video_retention_candidates(id,video_id,generation,stamp,title,reason,state,eligible_at,due_at) VALUES (?1,?1,'g','stamp',?1,'storage_limit',?2,?3,?3)",params![format!("{video}-outcome"),outcome,2*i+1])?;
         }
+        tx.commit()?;
         Ok(())
     }).await.unwrap();
-    let listed = storage::list(&state.db).await.unwrap();
-    let title = |id: &str| {
-        listed["items"]
-            .as_array()
+    let cookie = format!(
+        "thelxinoe_session={}",
+        crate::test_support::issue_session(&state.db, "alice".into(), "web".into(), "Alice".into())
+            .await
             .unwrap()
-            .iter()
-            .find(|item| item["id"] == id)
-            .unwrap()["title"]
-            .clone()
-    };
-    assert_eq!(title("season-candidate"), "Silo (2023) · Season 2");
-    assert_eq!(title("movie-candidate"), "Retention fixture");
+    );
+    let (status, _, listed) = crate::test_support::call(
+        &state,
+        "/api/v1/admin/retention/deletions",
+        "GET",
+        Value::Null,
+        &cookie,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{listed}");
+    assert_eq!(listed["totals"], json!({"pending":501,"history":500}));
+    let items = listed["items"].as_array().unwrap();
+    let ids = items
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let scheduled = std::iter::once("season".to_owned())
+        .chain((0..250).flat_map(|i| [format!("movie-{i}"), format!("video-{i}")]))
+        .collect::<Vec<_>>();
+    assert_eq!(ids[..501], scheduled[..]);
+    let latest = (300..500)
+        .rev()
+        .map(|at| format!("{}-{}-outcome", ["movie", "video"][at % 2], at / 2))
+        .collect::<Vec<_>>();
+    assert_eq!(ids[501..], latest[..]);
+    let title = |id: &str| items.iter().find(|item| item["id"] == id).unwrap()["title"].clone();
+    assert_eq!(title("season"), "Silo (2023) · Season 2");
+    assert_eq!(title("movie-249-outcome"), "Retention fixture");
 }
 
 #[tokio::test]

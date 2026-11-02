@@ -229,8 +229,30 @@ ffmpeg([
   'forced',
   resolve(root, 'movies', 'Picture (2020).mkv'),
 ]);
+// A season longer than the page some Jellyfin clients assume when they omit Limit.
+const longEpisode = (number) =>
+  resolve(
+    root,
+    'shows',
+    `Long Show.S01E${String(number).padStart(3, '0')}.mp4`,
+  );
+ffmpeg([
+  '-f',
+  'lavfi',
+  '-i',
+  'testsrc2=size=64x36:rate=1',
+  '-t',
+  '1',
+  '-c:v',
+  'libx264',
+  '-pix_fmt',
+  'yuv420p',
+  longEpisode(1),
+]);
+for (let number = 2; number <= 120; number++)
+  copyFileSync(longEpisode(1), longEpisode(number));
 console.log(
-  'Generated direct, remux, transcode, edition, subtitle, styled, picture subtitle and gapless music fixtures.',
+  'Generated direct, remux, transcode, edition, subtitle, styled, picture subtitle, gapless music and long-season fixtures.',
 );
 
 /** A PGS stream that shows one opaque white `box` and clears it after 10 s. */

@@ -41,20 +41,14 @@ impl Encoding {
         if !self.video && !self.audio {
             result.extend(["-c".into(), "copy".into()]);
         } else {
-            let args = crate::conversion_args(options, probe)?;
-            let mut index = 0;
-            while index < args.len() {
-                let key = &args[index];
-                let audio = ["-c:a", "-b:a", "-ac", "-ar"].contains(&key.as_str());
-                if (audio && self.audio) || (!audio && self.video) {
-                    result.extend_from_slice(&args[index..index + 2]);
-                }
-                index += 2;
-            }
-            if !self.video {
+            if self.video {
+                result.extend(crate::video_conversion_args(options, probe)?);
+            } else {
                 result.extend(["-c:v".into(), "copy".into()]);
             }
-            if !self.audio {
+            if self.audio {
+                result.extend(crate::AUDIO_CONVERSION_ARGS.map(str::to_owned));
+            } else {
                 result.extend(["-c:a".into(), "copy".into()]);
             }
         }
@@ -284,6 +278,9 @@ pub fn decision(source: &Source, options: &Options) -> Result<Decision> {
     }
     if options.quality == "original" && burn.is_some() {
         bail!("Picture subtitles are burned into a converted video; select Auto");
+    }
+    if let Some(video) = video.filter(|_| encoding.video) {
+        crate::needs_tone_mapping(video)?;
     }
     if options.quality == "original" && (encoding.video || encoding.audio) {
         bail!("Original quality is unsupported by this client; select Auto");

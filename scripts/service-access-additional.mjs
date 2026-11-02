@@ -92,9 +92,9 @@ export async function additionalAccess({ f, page, manager, scenario, output }) {
       });
       expect(errors).toEqual([]);
       page.off('response', observe);
-      expect(
-        (await f.api(`/admin/support/${manager('bazarr').id}`)).movies,
-      ).toEqual([]);
+      expect(await f.api(`/admin/support/${manager('bazarr').id}`)).toEqual({
+        health: expect.any(Array),
+      });
     },
   );
   for (const kind of ['bazarr', 'nzbget']) {

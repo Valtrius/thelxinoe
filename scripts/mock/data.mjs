@@ -37,29 +37,43 @@ export const viewer = (s) =>
     (user) => user.id === (s.viewer === 'user' ? member.id : admin.id),
   ) ?? s.users[0];
 
+function libraryItem(kind, index, extra = {}) {
+  return {
+    id: `${kind}-${index}`,
+    kind,
+    title: `${titles[index % titles.length]}${index >= 12 ? ' II' : ''}`,
+    year: 2026 - (index % 7),
+    available: true,
+    artwork_url: art(kind, index),
+    overview:
+      'A remote observatory receives an unexpected signal. Its crew follows the clues across a landscape transformed by the changing seasons.',
+    metadata: {
+      genres: ['Drama', 'Adventure'],
+      overview:
+        'An expedition follows a mysterious signal beyond the familiar horizon.',
+      rating: 7.8,
+    },
+    duration: kind === 'track' ? 240 : kind === 'episode' ? 2700 : 6600,
+    position: 0,
+    fileId: `file-${kind}-${index}`,
+    ...extra,
+  };
+}
+
+// Movies after the seeded ones, for a library longer than a page.
+export function archiveMovies(library, count) {
+  const from = library.filter((item) => item.kind === 'movie').length;
+  return Array.from({ length: count }, (_, i) =>
+    libraryItem('movie', from + i, {
+      title: `Archive ${String(from + i).padStart(3, '0')}`,
+    }),
+  );
+}
+
 export function librarySeed() {
   const items = [];
   function add(kind, index, extra = {}) {
-    const item = {
-      id: `${kind}-${index}`,
-      kind,
-      title: `${titles[index % titles.length]}${index >= 12 ? ' II' : ''}`,
-      year: 2026 - (index % 7),
-      available: true,
-      artwork_url: art(kind, index),
-      overview:
-        'A remote observatory receives an unexpected signal. Its crew follows the clues across a landscape transformed by the changing seasons.',
-      metadata: {
-        genres: ['Drama', 'Adventure'],
-        overview:
-          'An expedition follows a mysterious signal beyond the familiar horizon.',
-        rating: 7.8,
-      },
-      duration: kind === 'track' ? 240 : kind === 'episode' ? 2700 : 6600,
-      position: 0,
-      fileId: `file-${kind}-${index}`,
-      ...extra,
-    };
+    const item = libraryItem(kind, index, extra);
     items.push(item);
     return item;
   }

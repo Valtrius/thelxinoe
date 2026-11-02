@@ -7,6 +7,7 @@
   import { api } from './api';
   import { display } from './display.svelte';
   import { navigationCache } from './navigation-cache';
+  import { inBackground } from './page-readiness';
   import { activity, byMedia } from './activity';
   import { LatestRequest } from './latest-request';
   import {
@@ -81,6 +82,12 @@
     status?: TitleStatus | null;
     ended?: boolean;
   };
+  type Page = {
+    items: Item[];
+    total?: number;
+    counts?: LibraryCounts;
+    genres?: string[];
+  };
   // Movies and Shows open a title page; Music keeps its track panel here.
   const titles = $derived(domain !== 'Music');
   let items = $state<Item[]>([]),
@@ -89,6 +96,19 @@
     genres = $state<string[]>([]),
     error = $state(''),
     busy = $state(true);
+  // The grid reads its list a page at a time as the reader nears the end.
+  const pageSize = 120;
+  // The list `items` holds, and its next page loading or failing.
+  let listed = '',
+    extending = $state(false),
+    pageError = $state('');
+  function show(path: string, result: Page) {
+    listed = path;
+    items = result.items;
+    total = result.total ?? result.items.length;
+    counts = result.counts;
+    genres = result.genres ?? [];
+  }
   // Movies and Shows keep each user's sorting and filters.
   const viewKey = $derived(libraryViewKey(domain));
   const shows = $derived(domain === 'Shows');
@@ -138,7 +158,9 @@
   async function load(refreshDetails = true) {
     const request = ++generation;
     busy = true;
+    extending = false;
     error = '';
+    pageError = '';
     try {
       const parent = breadcrumbs.at(-1)?.id;
       const query = parent
@@ -148,21 +170,13 @@
       const list = navigationCache.read(
         'catalog',
         path,
+        // Reading a list again keeps the pages it shows.
         () =>
-          api<{
-            items: Item[];
-            total?: number;
-            counts?: LibraryCounts;
-            genres?: string[];
-          }>(path),
+          api<Page>(
+            `${path}&limit=${Math.max(pageSize, listed === path ? items.length : 0)}`,
+          ),
         (result) => {
-          if (request === generation) {
-            items = result.items;
-            total = result.total ?? result.items.length;
-            counts = result.counts;
-            genres = result.genres ?? [];
-            busy = false;
-          }
+          if (request === generation) show(path, result);
         },
       );
       const groups =
@@ -185,6 +199,60 @@
       if (request === generation) busy = false;
     }
   }
+  async function more() {
+    if (busy || extending || pageError || items.length >= total) return;
+    const request = generation,
+      path = listed;
+    extending = true;
+    try {
+      const page = await inBackground(() =>
+        api<Page>(`${path}&offset=${items.length}&limit=${pageSize}`),
+      );
+      if (request !== generation) return;
+      const known = new Set(items.map((item) => item.id));
+      const added = page.items.filter((item) => !known.has(item.id));
+      show(path, {
+        ...page,
+        items: [...items, ...added],
+        // A page with nothing new ends the list until it is read again.
+        total: added.length ? page.total : items.length,
+      });
+      navigationCache.update('catalog', path, { items, total, counts, genres });
+    } catch (e) {
+      if (request === generation) pageError = String(e);
+    } finally {
+      if (request === generation) extending = false;
+    }
+  }
+  // A track plays on through the whole album, not only the pages shown.
+  async function trackQueue() {
+    const path = listed,
+      shown = items;
+    const rest =
+      shown.length < total
+        ? await api<Page>(
+            `${path}&offset=${shown.length}&limit=${total - shown.length}`,
+          ).then(
+            (page) => page.items,
+            // Playback still starts with the tracks already shown.
+            () => [],
+          )
+        : [];
+    const known = new Set(shown.map((item) => item.id));
+    return [...shown, ...rest.filter((item) => !known.has(item.id))].filter(
+      (item) => item.kind === 'track' && item.available,
+    );
+  }
+  function nearEnd(node: HTMLElement) {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void more();
+      },
+      { root: node.closest('.workspace-scroll'), rootMargin: '150% 0px' },
+    );
+    observer.observe(node);
+    return { destroy: () => observer.disconnect() };
+  }
   $effect(() => {
     void domain;
     const parents: string[] = ancestors ?? [];
@@ -197,6 +265,7 @@
       const crumb = id ? known.get(id) : undefined;
       generation++;
       busy = true;
+      extending = false;
       closeDetails();
       breadcrumbs = [];
       search = query;
@@ -374,8 +443,7 @@
     collectionChanged={() =>
       filtersChanged ? filtersChanged(search, collection) : void load()}
   />{#if busy && !items.length}<Skeleton class="ml-1.5 w-16" />{:else}<span
-      class="ml-1.5 text-muted"
-      >{items.length < total ? `${items.length} of ${total}` : items.length} items</span
+      class="ml-1.5 text-muted">{total} items</span
     >{/if}
   {#if admin}<div class="ml-auto">
       <DropdownMenu.Root bind:open={actionsOpen}>
@@ -442,17 +510,16 @@
         >
         {#if file.present}<Button
             size="form"
-            onclick={() =>
+            onclick={async () => {
+              const item = selected!;
               play({
-                id: selected!.id,
-                title: selected!.title,
+                id: item.id,
+                title: item.title,
                 fileId: file.id,
-                kind: selected!.kind,
-                queue:
-                  selected!.kind === 'track'
-                    ? items.filter((i) => i.kind === 'track' && i.available)
-                    : undefined,
-              })}>Play {file.edition || 'media'}</Button
+                kind: item.kind,
+                queue: item.kind === 'track' ? await trackQueue() : undefined,
+              });
+            }}>Play {file.edition || 'media'}</Button
           >{/if}
       </div>
     {/each}
@@ -494,7 +561,25 @@
               changed={() => void load()}
             />{/if}{/snippet}</LibraryCard
       >{/each}
-  </MediaGrid>{:else if busy}<MediaSkeleton
+  </MediaGrid>
+  {#if items.length < total}
+    <!-- Mounted again after each read, so a list still short of the screen keeps loading. -->
+    {#if !busy && !extending && !pageError}<div use:nearEnd></div>{/if}
+    {#if pageError}<Notice variant="error" role="alert"
+        >{pageError}<Button
+          variant="ghost"
+          size="sm"
+          onclick={() => {
+            pageError = '';
+            void more();
+          }}>Try again</Button
+        ></Notice
+      >{:else if extending}<MediaSkeleton
+        label={`Loading more ${domain.toLowerCase()}`}
+        shape={domain === 'Music' ? 'square' : 'poster'}
+      />{/if}
+  {/if}
+{:else if busy}<MediaSkeleton
     label={`Loading ${domain.toLowerCase()}`}
     shape={domain === 'Music' ? 'square' : 'poster'}
   />{:else if !error}<section class={emptyClass}>

@@ -477,15 +477,6 @@ fn text(value: &Value, secret: &str) -> String {
         .take(500)
         .collect()
 }
-async fn wanted(c: &Connection<'_>, domain: &str) -> Result<Value> {
-    c.call(
-        reqwest::Method::GET,
-        &format!("{domain}/wanted"),
-        &[("start", "0".into()), ("length", "100".into())],
-        None,
-    )
-    .await
-}
 /// The service's live state; `history` adds NZBGet's history, which health checks don't use.
 async fn snapshot(c: &Connection<'_>, s: &Support, history: bool) -> Result<Value> {
     match s.kind.as_str() {
@@ -517,18 +508,13 @@ async fn snapshot(c: &Connection<'_>, s: &Support, history: bool) -> Result<Valu
         }
         _ => {
             let health = c.get("system/health").await?;
-            let movies = wanted(c, "movies").await?;
-            let episodes = wanted(c, "episodes").await?;
-            let summarize = |rows: &Value| {
-                rows["data"].as_array().into_iter().flatten().map(|r|json!({"movie_id":r["radarrId"],"series_id":r["sonarrSeriesId"],"episode_id":r["sonarrEpisodeId"],"title":r.get("title").cloned().unwrap_or_else(||json!(format!("{} - {}",r["seriesTitle"].as_str().unwrap_or("Series"),r["episodeTitle"].as_str().unwrap_or("Episode")))),"missing":r["missing_subtitles"]})).collect::<Vec<_>>()
-            };
             let health = health["data"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .map(|r| text(&r["issue"], &c.key))
                 .collect::<Vec<_>>();
-            Ok(json!({"health":health,"movies":summarize(&movies),"episodes":summarize(&episodes)}))
+            Ok(json!({"health":health}))
         }
     }
 }
@@ -597,14 +583,6 @@ struct Action {
     item_id: i64,
     #[serde(default)]
     value: u32,
-    #[serde(default)]
-    domain: String,
-    #[serde(default)]
-    language: String,
-    #[serde(default)]
-    forced: bool,
-    #[serde(default)]
-    hearing_impaired: bool,
 }
 async fn action(
     State(state): State<AppState>,
@@ -671,62 +649,7 @@ async fn action(
                 .await?;
             }
         }
-        _ => {
-            if input.action != "subtitles"
-                || !matches!(input.domain.as_str(), "movies" | "episodes")
-                || input.item_id <= 0
-                || !(2..=3).contains(&input.language.len())
-                || !input.language.bytes().all(|b| b.is_ascii_lowercase())
-            {
-                return Err(ApiError::bad(
-                    "Select missing subtitles and a language code",
-                ));
-            }
-            let rows = wanted(&c, &input.domain).await?;
-            let field = if input.domain == "movies" {
-                "radarrId"
-            } else {
-                "sonarrEpisodeId"
-            };
-            let row = rows["data"]
-                .as_array()
-                .ok_or_else(unavailable)?
-                .iter()
-                .find(|r| r[field].as_i64() == Some(input.item_id))
-                .ok_or_else(|| {
-                    ApiError::conflict("Media no longer appears in the wanted subtitle list")
-                })?;
-            let mut query = vec![
-                (
-                    if input.domain == "movies" {
-                        "radarrid"
-                    } else {
-                        "episodeid"
-                    },
-                    input.item_id.to_string(),
-                ),
-                ("language", input.language),
-                ("forced", input.forced.to_string()),
-                ("hi", input.hearing_impaired.to_string()),
-            ];
-            if input.domain == "episodes" {
-                query.push((
-                    "seriesid",
-                    row["sonarrSeriesId"]
-                        .as_i64()
-                        .filter(|v| *v > 0)
-                        .ok_or_else(unavailable)?
-                        .to_string(),
-                ));
-            }
-            c.call(
-                reqwest::Method::PATCH,
-                &format!("{}/subtitles", input.domain),
-                &query,
-                None,
-            )
-            .await?;
-        }
+        _ => return Err(ApiError::bad("Unknown subtitle action")),
     }
     storage::action(&state.db, input.action, p, s).await?;
     Ok(Json(json!({"accepted":true})))

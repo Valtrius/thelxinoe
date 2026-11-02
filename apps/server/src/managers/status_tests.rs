@@ -1093,8 +1093,22 @@ INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
                 "Started",
             ],
         ),
+        // Pages continue the sorted list, ties included.
+        (
+            "kind=movie&sort=added&order=desc&limit=4",
+            vec!["Gamma", "alpha wanted", "Started", "Beta"],
+        ),
+        (
+            "kind=movie&sort=added&order=desc&offset=4&limit=4",
+            vec!["delta", "Queued one"],
+        ),
     ] {
         assert_eq!(titles(query).await.0, expected, "{query}");
+    }
+    // Every page counts the whole list.
+    let (_, page) = titles("kind=movie&offset=4&limit=4").await;
+    for key in ["total", "counts", "genres"] {
+        assert_eq!(page[key], body[key], "{key}");
     }
     // Counts follow the search, not the other filters.
     let (_, body) = titles("kind=movie&q=E&watch=watched").await;
@@ -1117,6 +1131,7 @@ INSERT INTO edition_progress VALUES ('alice','movie-started','',30,60,1);")?;
         "kind=movie&availability=",
         "kind=movie&sort=length",
         "kind=show&series=airing",
+        "kind=movie&limit=-1",
     ] {
         let (status, ..) = call(
             &state,
@@ -1457,6 +1472,15 @@ async fn browse_detail_seasons_and_lookup_expose_cached_status() {
     assert_eq!(
         episodes.2["items"][1]["status"],
         json!({"state":"unavailable"})
+    );
+    let second = get(
+        "/api/v1/catalog?parent=season1&offset=1&limit=1".into(),
+        alice.clone(),
+    )
+    .await;
+    assert_eq!(
+        (&second.2["items"][0]["id"], &second.2["total"]),
+        (&json!("e2"), &json!(2))
     );
     let shows = get("/api/v1/catalog?kind=show".into(), bob.clone()).await;
     let items = shows.2["items"].as_array().unwrap();

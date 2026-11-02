@@ -119,6 +119,10 @@ async fn extract(
     source: &Source,
     video: &Value,
 ) -> anyhow::Result<Option<Vec<u8>>> {
+    // Without a standard base layer, a Dolby Vision picture has no correct colours.
+    let Ok(tone_map) = thelxinoe_playback::needs_tone_mapping(video) else {
+        return Ok(None);
+    };
     source.validate().await?;
     let tools = state.tools.runtime.media()?;
     tools.ffmpeg.verify_unchanged().await?;
@@ -133,8 +137,8 @@ async fn extract(
     };
     // Display proportions, so anamorphic pictures are not squeezed.
     let mut filter = format!("scale=w='min({WIDTH},iw*sar)':h='ow/dar'");
-    if ["smpte2084", "arib-std-b67"].contains(&video["color_transfer"].as_str().unwrap_or("")) {
-        filter.push_str(",zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709");
+    if tone_map {
+        filter.push_str(&thelxinoe_playback::tone_map_filter(video));
     }
     filter.push_str(",format=rgb24");
     #[cfg(unix)]
