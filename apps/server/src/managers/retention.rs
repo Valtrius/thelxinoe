@@ -19,7 +19,8 @@ mod tests;
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/admin/retention", get(list))
+        .route("/api/v1/admin/retention", get(settings))
+        .route("/api/v1/admin/retention/deletions", get(deletions))
         .route("/api/v1/admin/retention/policy/{domain}", post(policy))
         .route("/api/v1/admin/retention/evaluate", post(evaluate))
         .route("/api/v1/admin/retention/{id}/{action}", post(action))
@@ -48,15 +49,21 @@ pub(super) async fn revalidate_operation(
     Ok(())
 }
 
+async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
+    security::require(&state, &headers, Capability::ManageServer).await?;
+    let mut value = storage::settings(&state.db).await?;
+    value["video_usage"] = json!(crate::auto_delete::usage(&state.db).await?);
+    Ok(Json(value))
+}
+
 /// Outcomes only accumulate, so only the latest are listed. Scheduled deletions are bounded
 /// by the movies, seasons and downloads there are, and all of them are listed.
 const HISTORY: i64 = 200;
 
-async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
+async fn deletions(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let (mut value, outcomes) = storage::list(&state.db, HISTORY).await?;
-    let (videos, video_outcomes, usage) = crate::auto_delete::list(&state.db, HISTORY).await?;
-    let items = value["items"].as_array_mut().expect("retention items");
+    let (mut items, outcomes) = storage::deletions(&state.db, HISTORY).await?;
+    let (videos, video_outcomes) = crate::auto_delete::list(&state.db, HISTORY).await?;
     items.extend(videos);
     // The next deletion first, then the latest outcome.
     items.sort_by_key(|item| {
@@ -71,9 +78,10 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
         .filter(|item| item["state"] == "pending")
         .count();
     items.truncate(pending + HISTORY as usize);
-    value["totals"] = json!({"pending":pending,"history":outcomes + video_outcomes});
-    value["video_usage"] = json!(usage);
-    Ok(Json(value))
+    Ok(Json(json!({
+        "items": items,
+        "totals": {"pending": pending, "history": outcomes + video_outcomes}
+    })))
 }
 async fn policy(
     State(state): State<AppState>,

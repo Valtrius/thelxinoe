@@ -45,16 +45,22 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
   ];
   await page.route('**/api/v1/admin/retention**', async (route) => {
     const path = new URL(route.request().url()).pathname;
-    const pending = items.filter((item) => item.state === 'pending').length;
-    if (path.endsWith('/retention'))
+    if (path.endsWith('/retention/deletions')) {
+      const pending = items.filter((item) => item.state === 'pending').length;
       return route.fulfill({
         json: {
-          policies,
           items,
           totals: {
             pending,
             history: items.length - pending + olderOutcomes,
           },
+        },
+      });
+    }
+    if (path.endsWith('/retention'))
+      return route.fulfill({
+        json: {
+          policies,
           users: [
             { id: 'alice', username: 'Alice' },
             { id: 'bob', username: 'Bob' },
@@ -312,7 +318,6 @@ test('auto-delete usage and server tools refresh from server events instead of p
             storage_limit_bytes: 100_000_000_000,
           },
         ],
-        items: [],
         users: [],
         video_usage: { unpinned_bytes: 0, pinned_bytes: 0, waiting },
       },
@@ -974,7 +979,6 @@ test('settings sections adapt without hiding controls or stretching fields', asy
       })),
       users: [{ id: 'layout-fixture', username: 'Layout viewer' }],
       roots: [],
-      items: [],
     },
     '/admin/audit': { items: [], actors: [], actions: [], next_before: null },
   };

@@ -655,14 +655,18 @@ export async function settingsApi(s, c) {
     return json({ saved: true });
   }
   if (path.startsWith('/admin/jellyfin-import')) return jellyfinImportApi(s, c);
-  if (path === '/admin/retention') {
-    const pending = s.retention.items.filter(
-      (item) => item.state === 'pending',
-    ).length;
+  if (path === '/admin/retention')
     return json({
-      ...s.retention,
+      policies: s.retention.policies,
+      video_usage: s.retention.video_usage,
       users: s.users,
-      totals: { pending, history: s.retention.items.length - pending },
+    });
+  if (path === '/admin/retention/deletions') {
+    const { items } = s.retention;
+    const pending = items.filter((item) => item.state === 'pending').length;
+    return json({
+      items,
+      totals: { pending, history: items.length - pending },
     });
   }
   const policy = path.match(/^\/admin\/retention\/policy\/([^/]+)$/);

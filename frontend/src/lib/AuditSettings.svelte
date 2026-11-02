@@ -46,6 +46,7 @@
       ),
   );
   const total = $derived(scheduled ? totals.pending : totals.history);
+  const n = (value: number) => value.toLocaleString();
   const reason = (item: Item) =>
     item.reason === 'storage_limit'
       ? 'Storage limit'
@@ -71,7 +72,7 @@
     const current = requests.begin();
     try {
       const result = await api<{ items: Item[]; totals: Totals }>(
-        '/admin/retention',
+        '/admin/retention/deletions',
       );
       if (current()) {
         items = result.items;
@@ -144,7 +145,7 @@
   >
     {#snippet actions()}
       <span class="text-xs text-muted"
-        >{total > visible.length ? `${visible.length} of ` : ''}{total}
+        >{total > visible.length ? `${n(visible.length)} of ` : ''}{n(total)}
         {total === 1 ? 'item' : 'items'}</span
       >
     {/snippet}

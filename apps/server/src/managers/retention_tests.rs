@@ -651,7 +651,7 @@ async fn every_scheduled_deletion_is_listed_soonest_first() {
     );
     let (status, _, listed) = crate::test_support::call(
         &state,
-        "/api/v1/admin/retention",
+        "/api/v1/admin/retention/deletions",
         "GET",
         Value::Null,
         &cookie,

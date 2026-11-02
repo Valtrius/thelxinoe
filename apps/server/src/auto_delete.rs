@@ -21,11 +21,12 @@ pub(crate) struct VideoUsage {
     waiting: i64,
 }
 
-pub(crate) async fn list(
-    db: &Database,
-    history: i64,
-) -> anyhow::Result<(Vec<Value>, i64, VideoUsage)> {
+pub(crate) async fn list(db: &Database, history: i64) -> anyhow::Result<(Vec<Value>, i64)> {
     storage::list(db, history).await
+}
+
+pub(crate) async fn usage(db: &Database) -> anyhow::Result<VideoUsage> {
+    storage::current_usage(db).await
 }
 
 pub(crate) async fn evaluate(state: &AppState) -> anyhow::Result<()> {
