@@ -481,14 +481,20 @@ test('the library grid pages in every title and keeps them through Back and chan
   await expect(tiles).toHaveCount(all);
   expect(pages).toEqual([]);
 
-  // A change reads the list again with every page it shows.
+  // A change reads the list again with every page it shows, so the reader
+  // keeps their place. The title it adds pushes the last one into the next
+  // page, which loads near the end.
   await page.request.post('/__mock/library', { data: { movies: 1 } });
   await expect(
     page.getByText(`${all + 1} items`, { exact: true }),
   ).toBeVisible();
-  await expect(tiles).toHaveCount(all + 1);
   expect(await scroll()).toBe(before);
   await expect(target).toBeInViewport();
+  await scroller.evaluate((element) => element.scrollTo(0, 1e7));
+  await expect(page.getByRole('status', { name: /^Loading more/ })).toHaveCount(
+    0,
+  );
+  await expect(tiles).toHaveCount(all + 1);
   expect(errors).toEqual([]);
 });
 
