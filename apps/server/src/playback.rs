@@ -33,6 +33,10 @@ pub async fn source(state: &AppState, media: &str, file: Option<&str>) -> Result
 pub(crate) async fn idle(state: &AppState) -> anyhow::Result<bool> {
     storage::idle(&state.db).await
 }
+/// Whether something played in the last two minutes.
+pub(crate) async fn playing(state: &AppState) -> anyhow::Result<bool> {
+    storage::playing(&state.db).await
+}
 async fn user_preferences(state: &AppState, p: &Principal) -> Result<Preferences> {
     let user = p.user.id.clone();
     Ok(storage::user_preferences(user, &state.db)

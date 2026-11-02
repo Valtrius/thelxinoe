@@ -1,7 +1,8 @@
 use super::*;
 use crate::test_support::fixture;
 
-/// A movie: its title, its lavfi picture, its length in seconds and its H.264 options.
+/// A movie: its title, its lavfi picture and its length in seconds, then any other inputs and
+/// the H.264 options.
 type Video = (&'static str, &'static str, u32, &'static [&'static str]);
 const PATTERN: Video = (
     "Pattern",
@@ -27,12 +28,32 @@ const RED: Video = (
         "bt2020nc",
     ],
 );
-/// 35 minutes, three sheets.
+/// 35 minutes, three sheets, its brightness rising with time.
 const LONG: Video = (
     "Long",
-    "testsrc2=s=160x90:r=1",
+    "nullsrc=s=160x90:r=1,geq=lum='40+mod(T,150)':cb=128:cr=128,format=yuv420p",
     2100,
     &["-preset", "ultrafast", "-g", "2"],
+);
+/// 1000 s of video in a file 30 s longer: its second window has no video.
+const ENDING: Video = (
+    "Ending",
+    "testsrc2=s=160x90:r=1",
+    1000,
+    &[
+        "-f",
+        "lavfi",
+        "-t",
+        "1030",
+        "-i",
+        "sine=r=8000",
+        "-preset",
+        "ultrafast",
+        "-g",
+        "2",
+        "-c:a",
+        "aac",
+    ],
 );
 const fn small(title: &'static str) -> Video {
     (title, "testsrc2=s=160x90:r=24", 25, &["-g", "48"])
@@ -49,8 +70,9 @@ async fn library(state: &AppState, videos: &[Video]) -> Vec<Source> {
     for (title, picture, seconds, options) in videos {
         let output = std::process::Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"])
-            .args(["-i", picture, "-t", &seconds.to_string(), "-c:v", "libx264"])
+            .args(["-t", &seconds.to_string(), "-i", picture])
             .args(*options)
+            .args(["-c:v", "libx264"])
             .arg(folder.join(format!("{title} (2021).mkv")))
             .output()
             .unwrap();
@@ -115,6 +137,56 @@ async fn sql(state: &AppState, sql: &'static str) {
         .await
         .unwrap();
 }
+/// Alice plays `source`.
+async fn watch(state: &AppState, source: &Source) {
+    let (media, file, generation) = (
+        source.media_id.clone(),
+        source.id.clone(),
+        source.generation.clone(),
+    );
+    state
+        .db
+        .write("test.fixture", move |db| {
+            db.execute("INSERT INTO sessions(id,user_id,token_hash,transport,name,created_at,expires_at,last_seen) VALUES ('watching','alice','watching','web','Browser',1,unixepoch()+3600,1)", [])?;
+            db.execute(
+                "INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,created_at,updated_at) VALUES ('watching','alice','watching',?1,?2,?3,'','playing','direct','{}',2100,unixepoch(),unixepoch())",
+                rusqlite::params![media, file, generation],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+fn modified(path: &std::path::Path) -> std::time::SystemTime {
+    std::fs::metadata(path).unwrap().modified().unwrap()
+}
+/// Sets back a file's time by two days.
+fn age(path: &std::path::Path) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - 2 * DAY)
+        .unwrap();
+}
+/// The frame of `source` at `seconds`, at the thumbnails' size.
+fn frame(source: &Source, seconds: u32) -> image::RgbImage {
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-ss", &seconds.to_string(), "-i"])
+        .arg(&source.path)
+        .args(["-frames:v", "1", "-vf", "scale=320:180", "-f", "image2pipe"])
+        .args(["-c:v", "png", "-"])
+        .output()
+        .unwrap();
+    image::load_from_memory(&output.stdout).unwrap().to_rgb8()
+}
+fn difference(a: &image::RgbImage, b: &image::RgbImage) -> u64 {
+    a.as_raw()
+        .iter()
+        .zip(b.as_raw())
+        .map(|(a, b)| u64::from(a.abs_diff(*b)))
+        .sum()
+}
 /// A scan, the library work previews wait for.
 const DUE_JOB: &str = "INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES ('scan','library.scan','movies','{}','queued',1,1)";
 
@@ -173,32 +245,47 @@ async fn the_worker_takes_the_newest_videos_first_and_tone_maps_hdr() {
 }
 
 #[tokio::test]
-async fn a_video_interrupted_mid_run_keeps_its_sheets_and_continues() {
+async fn an_interrupted_video_keeps_its_sheets_and_continues() {
     let (_temp, state, _) = fixture().await;
-    let long = &library(&state, &[LONG]).await[0];
+    let sources = library(&state, &[ENDING, LONG]).await;
+    let (ending, long) = (&sources[0], &sources[1]);
     let dir = entry(&state, long);
     assert!(next(&state).await.unwrap());
     assert_eq!(resume(&dir).await.sheets, [100]);
     let first = sheets(&dir).join("0.jpg");
-    let taken = std::fs::metadata(&first).unwrap().modified().unwrap();
-    // A job due while a sheet is taken stops FFmpeg: that sheet is dropped, the first kept.
+    let taken = modified(&first);
+    // Library work waits for the sheet that has started, and holds back the next one.
     sql(&state, DUE_JOB).await;
-    assert!(!step(&state, long).await.unwrap());
-    assert_eq!(resume(&dir).await.sheets, [100]);
-    // Later turns wait for the job, then continue from the second sheet.
-    assert!(next(&state).await.unwrap());
-    assert_eq!(resume(&dir).await.sheets, [100]);
-    sql(&state, "DELETE FROM jobs").await;
+    assert!(step(&state, long).await.unwrap());
+    assert_eq!(resume(&dir).await.sheets, [100, 100]);
     assert!(next(&state).await.unwrap());
     assert_eq!(resume(&dir).await.sheets, [100, 100]);
+    sql(&state, "DELETE FROM jobs").await;
+    // Playback stops a sheet: it is dropped, the others kept.
+    watch(&state, long).await;
+    assert!(!step(&state, long).await.unwrap());
+    assert_eq!(resume(&dir).await.sheets, [100, 100]);
+    sql(&state, "DELETE FROM playback_sessions").await;
     assert_eq!(info(&state, &long.id, &long.generation).await, None);
     assert!(next(&state).await.unwrap());
-    let info = info(&state, &long.id, &long.generation).await.unwrap();
-    assert_eq!((info.thumbnail_count, info.sheets()), (210, 3));
-    assert_eq!(
-        std::fs::metadata(&first).unwrap().modified().unwrap(),
-        taken
-    );
+    let three = info(&state, &long.id, &long.generation).await.unwrap();
+    assert_eq!((three.thumbnail_count, three.sheets()), (210, 3));
+    assert_eq!(modified(&first), taken);
+    // The second sheet starts with the frame at 1000 s.
+    let second = image::open(sheets(&dir).join("1.jpg")).unwrap().to_rgb8();
+    let tile = image::imageops::crop_imm(&second, 0, 0, 320, 180).to_image();
+    let nearest = [0, 990, 1000, 1010]
+        .into_iter()
+        .min_by_key(|&seconds| difference(&tile, &frame(long, seconds)))
+        .unwrap();
+    assert_eq!(nearest, 1000);
+    // The window after the end of a video that ends before its file finds none, which
+    // completes the version.
+    assert!(next(&state).await.unwrap());
+    assert_eq!(resume(&entry(&state, ending)).await.sheets, [100]);
+    assert!(next(&state).await.unwrap());
+    let one = info(&state, &ending.id, &ending.generation).await.unwrap();
+    assert_eq!((one.thumbnail_count, one.sheets()), (100, 1));
     assert!(!next(&state).await.unwrap());
 }
 
@@ -208,13 +295,13 @@ async fn unusable_videos_are_skipped_for_good_and_unreadable_ones_for_a_day() {
     let sources = library(&state, &[small("Moved"), small("Vision"), small("Zeroed")]).await;
     let (moved, vision, zeroed) = (&sources[0], &sources[1], &sources[2]);
     // Data FFmpeg can't read, with the size and time the scan recorded.
-    let modified = std::fs::metadata(&zeroed.path).unwrap().modified().unwrap();
+    let scanned = modified(&zeroed.path);
     std::fs::write(&zeroed.path, vec![0; zeroed.size as usize]).unwrap();
     std::fs::File::options()
         .write(true)
         .open(&zeroed.path)
         .unwrap()
-        .set_modified(modified)
+        .set_modified(scanned)
         .unwrap();
     // Dolby Vision profile 5 has no base layer to show instead.
     let file = vision.id.clone();
@@ -231,35 +318,35 @@ async fn unusable_videos_are_skipped_for_good_and_unreadable_ones_for_a_day() {
         .unwrap();
     // Gone before it is read.
     std::fs::remove_file(&moved.path).unwrap();
-    for _ in 0..3 {
-        assert!(next(&state).await.unwrap());
-    }
-    assert!(!next(&state).await.unwrap());
     let marker = |source: &Source, name: &str| entry(&state, source).join(name);
-    let ffmpeg = std::fs::read_to_string(marker(zeroed, UNUSABLE)).unwrap();
-    // FFmpeg's own report follows.
+    let attempt = || async {
+        for _ in 0..3 {
+            assert!(next(&state).await.unwrap());
+        }
+        assert!(!next(&state).await.unwrap());
+    };
+    // FFmpeg's first failure, like the moved file, is retried a day later; Dolby Vision isn't.
+    attempt().await;
+    assert!(marker(zeroed, FAILED).exists() && marker(moved, FAILED).exists());
+    let reason = std::fs::read_to_string(marker(vision, UNUSABLE)).unwrap();
+    assert!(reason.contains("Dolby Vision"), "{reason}");
+    age(&marker(zeroed, FAILED));
+    age(&marker(moved, FAILED));
+    assert!(next(&state).await.unwrap());
+    // Repeated a day later, FFmpeg's failure marks the version for good, with its own report.
+    let reason = std::fs::read_to_string(marker(zeroed, UNUSABLE)).unwrap();
     assert!(
-        ffmpeg.starts_with("FFmpeg could not take the thumbnails\n") && ffmpeg.lines().count() > 1,
-        "{ffmpeg}"
+        reason.starts_with("FFmpeg could not take the thumbnails\n") && reason.lines().count() > 1,
+        "{reason}"
     );
-    assert!(
-        std::fs::read_to_string(marker(vision, UNUSABLE))
-            .unwrap()
-            .contains("Dolby Vision")
-    );
-    // A day later, only the version that could not be read is tried again.
-    let earlier = std::time::SystemTime::now() - 2 * DAY;
+    assert!(next(&state).await.unwrap());
+    assert!(!next(&state).await.unwrap());
     for path in [
         marker(zeroed, UNUSABLE),
         marker(vision, UNUSABLE),
         marker(moved, FAILED),
     ] {
-        std::fs::File::options()
-            .write(true)
-            .open(path)
-            .unwrap()
-            .set_modified(earlier)
-            .unwrap();
+        age(&path);
     }
     assert_eq!(
         (

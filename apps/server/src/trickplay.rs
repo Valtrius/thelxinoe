@@ -48,6 +48,8 @@ const WINDOW_SHEET: &str = "window.jpg";
 const WINDOW_FRAMES: &str = "window.frames";
 const UNUSABLE: &str = "unusable";
 const FAILED: &str = "failed";
+/// The sheet whose FFmpeg failure, repeated by the next attempt, marks the version unusable.
+const STRIKE: &str = "strike";
 /// A file that could not be read is attempted again after this long.
 const DAY: Duration = Duration::from_secs(86400);
 const SPACE: u64 = 512 * 1024 * 1024;
@@ -76,8 +78,11 @@ impl Info {
 fn root(state: &AppState) -> PathBuf {
     state.config.cache.join("trickplay")
 }
+/// The sheets' format. Changing it takes every version again, and maintenance removes the
+/// sheets of the previous format.
+const GENERATOR: u32 = 1;
 fn name(file: &str, generation: &str) -> String {
-    thelxinoe_auth::digest(&format!("{file}:{generation}"))
+    thelxinoe_auth::digest(&format!("{file}:{generation}:{GENERATOR}"))
 }
 /// Jellyfin's folder name for one width's sheets.
 fn sheets(dir: &FilePath) -> PathBuf {
@@ -230,6 +235,12 @@ async fn resume(dir: &FilePath) -> Progress {
     }
     progress
 }
+async fn remove(dir: &FilePath, name: &str) -> std::io::Result<()> {
+    match tokio::fs::remove_file(dir.join(name)).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
 /// Writes `bytes` to `name` in `dir` whole, so a crash never leaves a part of it.
 async fn replace(dir: &FilePath, name: &str, bytes: Vec<u8>) -> std::io::Result<()> {
     let temporary = dir.join(format!("{name}.tmp"));
@@ -238,8 +249,7 @@ async fn replace(dir: &FilePath, name: &str, bytes: Vec<u8>) -> std::io::Result<
 }
 
 /// Takes the next sheet of a file version, and completes the version after its last one.
-/// Playback or library work stops it and returns false: the sheet in progress is dropped, the
-/// others kept.
+/// Playback stops it and returns false: the sheet in progress is dropped, the others kept.
 async fn step(state: &AppState, source: &Source) -> anyhow::Result<bool> {
     let tools = state.tools.runtime.media()?;
     tools.ffmpeg.verify_unchanged().await?;
@@ -253,17 +263,13 @@ async fn step(state: &AppState, source: &Source) -> anyhow::Result<bool> {
     let result = advance(state, source, &tools, &dir).await;
     if let Err(error) = &result {
         // Unusable versions are not read again; others are retried after a day, from the
-        // sheets they already have.
-        let unusable = error.downcast_ref::<Unusable>().is_some();
-        let marker = async {
-            if unusable {
-                tokio::fs::remove_dir_all(&dir).await?;
-                tokio::fs::create_dir_all(&dir).await?;
-            }
-            let name = if unusable { UNUSABLE } else { FAILED };
-            tokio::fs::write(dir.join(name), format!("{error:#}")).await
+        // sheets they already have. Sheets are never discarded.
+        let marker = if error.downcast_ref::<Unusable>().is_some() {
+            UNUSABLE
+        } else {
+            FAILED
         };
-        if let Err(marker) = marker.await {
+        if let Err(marker) = tokio::fs::write(dir.join(marker), format!("{error:#}")).await {
             tracing::warn!("Failed trickplay could not be recorded: {marker:#}");
         }
     }
@@ -311,8 +317,10 @@ async fn advance(
             progress.sheets.push(taken);
             progress.seconds += started.elapsed().as_secs_f64();
             replace(dir, PROGRESS, serde_json::to_vec(&progress)?).await?;
+            remove(dir, STRIKE).await?;
         }
-        // A video that ends before its file does has no thumbnails after its last keyframe.
+        // The version is complete after its last sheet, or once a window has no video: a
+        // video that ends before its file repeats its last frame to the end of that sheet.
         if taken == wanted && (index + 1) * COLUMNS * ROWS < total {
             return Ok(true);
         }
@@ -340,12 +348,16 @@ async fn advance(
         info.bandwidth = info.bandwidth.max((size * 8).div_ceil(u64::from(WINDOW)));
     }
     replace(dir, MANIFEST, serde_json::to_vec(&info)?).await?;
-    for leftover in [PROGRESS, FAILED, WINDOW_FRAMES] {
-        if let Err(error) = tokio::fs::remove_file(dir.join(leftover)).await
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(error.into());
-        }
+    for leftover in [
+        PROGRESS,
+        FAILED,
+        STRIKE,
+        WINDOW_SHEET,
+        WINDOW_FRAMES,
+        &format!("{PROGRESS}.tmp"),
+        &format!("{MANIFEST}.tmp"),
+    ] {
+        remove(dir, leftover).await?;
     }
     tracing::info!(
         file = %source.id,
@@ -385,15 +397,16 @@ fn filter(video: &Value, thumbnails: u32) -> String {
     filter.push_str(",format=yuvj420p");
     filter
 }
-/// At least the window's playing time, or the time to read its share of the file at 4 MiB/s,
-/// plus a minute.
+/// Three times the window's playing time, or the time to read its share of the file at
+/// 2 MiB/s, plus ten minutes: FFmpeg at low priority is slow while other work runs.
 fn limit(source: &Source) -> Duration {
     let share = (source.size as f64 * f64::from(WINDOW) / source.duration()) as u64;
-    Duration::from_secs(60 + u64::from(WINDOW).max(share / (4 * 1024 * 1024)))
+    Duration::from_secs(600 + u64::from(3 * WINDOW).max(share / (2 * 1024 * 1024)))
 }
 
 /// Writes sheet `index` of `source` to the window files in `dir`, from keyframes only, and
-/// returns how many thumbnails it holds. Returns `None` when it stopped for playback.
+/// returns how many thumbnails it holds. Returns `None` when it stopped for playback; library
+/// work waits for the next window, so scans can't stop every window of a long file.
 async fn render(
     state: &AppState,
     source: &Source,
@@ -473,28 +486,43 @@ async fn render(
     let deadline = tokio::time::sleep(limit(source));
     tokio::pin!(deadline);
     let mut check = tokio::time::interval(Duration::from_secs(2));
+    // Whether FFmpeg failed on the file, rather than being stopped or starved.
     let failure = loop {
         tokio::select! {
-            status = child.wait() => {
-                if status?.success() {
-                    break None;
-                }
-                break Some("FFmpeg could not take the thumbnails");
-            }
+            status = child.wait() => break match status?.code() {
+                Some(0) => None,
+                // Signals, as when the system stops FFmpeg.
+                Some(255) | None => Some((false, "FFmpeg was stopped")),
+                Some(_) => Some((true, "FFmpeg could not take the thumbnails")),
+            },
             _ = &mut deadline => {
                 child.kill().await?;
-                break Some("FFmpeg took too long to take the thumbnails");
+                break Some((false, "FFmpeg took too long to take the thumbnails"));
             }
             _ = check.tick() => {
-                if !crate::playback::idle(state).await? {
+                if crate::playback::playing(state).await? {
                     return Ok(None);
                 }
             }
         }
     };
-    if let Some(failure) = failure {
-        let errors = errors.await.unwrap_or_default();
-        return Err(Unusable(format!("{failure}\n{errors}").trim_end().to_owned()).into());
+    if let Some((decoding, failure)) = failure {
+        let report = format!("{failure}\n{}", errors.await.unwrap_or_default());
+        let report = report.trim_end();
+        anyhow::ensure!(decoding, "{report}");
+        // A file that moved or a full cache fails FFmpeg too.
+        source.validate().await?;
+        anyhow::ensure!(
+            fs2::available_space(dir)? >= SPACE,
+            "Insufficient trickplay cache space"
+        );
+        // The failure is the file's own when the next attempt, a day later, repeats it.
+        let strike = dir.join(STRIKE);
+        if tokio::fs::read_to_string(&strike).await.ok() == Some(index.to_string()) {
+            return Err(Unusable(report.to_owned()).into());
+        }
+        tokio::fs::write(&strike, index.to_string()).await?;
+        anyhow::bail!("{report}");
     }
     // A file replaced while it was read gives a new version; this one is never used.
     source.validate().await?;
@@ -547,8 +575,8 @@ async fn next(state: &AppState) -> anyhow::Result<bool> {
     Ok(false)
 }
 
-/// Removes, after a day, the sheets of file versions that are gone and those a crash left
-/// half written.
+/// Removes, after a day, the sheets of file versions that are gone or of an earlier format.
+/// A current version's unfinished sheets stay, to be continued.
 pub async fn prune(state: &AppState) -> anyhow::Result<()> {
     let keep = storage::current(&state.db)
         .await?
