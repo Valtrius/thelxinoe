@@ -462,7 +462,7 @@ async fn handle_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Resu
         "service.transfer" => managers::transfer(state, job).await,
         "recyclarr.sync" => managers::recyclarr::run_job(state, job).await,
         "service.update" => managers::update_service(state, job).await,
-        "manager.request" => managers::acquire(state, job).await.map(|()| true),
+        "manager.request" => managers::acquire(state, job).await,
         "metadata.match" | "metadata.refresh" => managers::run_metadata(state, &job.payload)
             .await
             .map(|()| true),
