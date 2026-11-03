@@ -258,7 +258,7 @@
           aria-controls={`${ids}-panel`}
           tabindex={entry.number === season?.number ? 0 : -1}
           class={[
-            '-mb-px flex shrink-0 items-center gap-2 border-b-2 px-4 pt-2 pb-3 text-xs font-semibold transition-colors hover:text-foreground',
+            'flex shrink-0 items-center gap-2 border-b-2 px-4 pt-2 pb-3 text-xs font-semibold transition-colors hover:text-foreground',
             entry.number === season?.number
               ? 'border-accent text-accent'
               : 'border-transparent text-muted',
