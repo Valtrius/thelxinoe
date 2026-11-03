@@ -530,6 +530,33 @@ for (const format of ['srt', 'vtt']) {
   assert.ok(body.includes('-->'));
   assert.equal(body.startsWith('WEBVTT'), format === 'vtt');
 }
+// Forced subtitles in the audio's language: a text track, never a picture one.
+for (const [name, forced] of [
+  ['Styled', 2],
+  ['Picture', -1],
+]) {
+  r = await compat.get(`/Items?SearchTerm=${name}&IncludeItemTypes=Movie`, {
+    headers,
+  });
+  const [item] = (await r.json()).Items;
+  r = await compat.post(`/Items/${item.Id}/PlaybackInfo`, {
+    headers,
+    data: {
+      DeviceProfile: profile,
+      EnableDirectPlay: true,
+      EnableDirectStream: true,
+      EnableTranscoding: true,
+      SubtitleStreamIndex: -3,
+    },
+  });
+  assert.equal(r.status(), 200);
+  const info = await r.json();
+  assert.equal(info.MediaSources[0].DefaultSubtitleStreamIndex, forced, name);
+  await compat.post('/Sessions/Playing/Stopped', {
+    headers,
+    data: { ItemId: item.Id, PlaySessionId: info.PlaySessionId },
+  });
+}
 const streamPath = `/Videos/${direct.Id}/stream?Static=true&MediaSourceId=${source.Id}&PlaySessionId=${playback.PlaySessionId}&tag=${source.ETag}`;
 r = await compat.get(streamPath, { headers: { Range: 'bytes=0-63' } });
 assert.equal(r.status(), 206);

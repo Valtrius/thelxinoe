@@ -7,6 +7,16 @@ import { apiVersion } from './api-version.mjs';
 export default defineConfig({
   plugins: [svelte(), tailwind(), offlinePage()],
   define: { __THELXINOE_API_VERSION__: JSON.stringify(apiVersion()) },
+  resolve: {
+    alias: {
+      // jassub's requestVideoFrameCallback polyfill is GPL-3.0.
+      'rvfc-polyfill': fileURLToPath(
+        new URL('./src/lib/no-polyfill.ts', import.meta.url),
+      ),
+    },
+  },
+  // The styled subtitle renderer runs in a module worker.
+  worker: { format: 'es' },
   build: {
     rolldownOptions: {
       input: {

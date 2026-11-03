@@ -187,30 +187,43 @@ impl Pipelines {
                 },
             ]);
         } else if let Input::Local(source) = &input {
-            command
-                .args([
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-nostdin",
-                    "-y",
-                    "-readrate",
-                    "1",
-                    "-ss",
-                    &timeline_start.to_string(),
-                    "-seek_timestamp",
-                    "1",
-                    "-i",
-                ])
-                .arg(&source.path);
-            if source.video_codec().is_some() {
-                command.args(["-map", "0:v:0"]);
-            }
+            command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
+            let audio = if encoding.subtitle.is_some() {
+                // The burn graph paces itself. Its input starts earlier to read a subtitle that
+                // already shows at the start; the audio comes from an exact seek, which copied
+                // audio keeps only from the seek on, not from the keyframe before it.
+                command
+                    .args(["-ss"])
+                    .arg((timeline_start - burn_preroll(timeline_start)).to_string())
+                    .args(["-seek_timestamp", "1", "-i"])
+                    .arg(&source.path)
+                    .args(["-readrate", "1", "-ss", &timeline_start.to_string()])
+                    .args(["-seek_timestamp", "1", "-i"])
+                    .arg(&source.path)
+                    .args(["-map", "[video]", "-copypriorss", "0"]);
+                1
+            } else {
+                command
+                    .args([
+                        "-readrate",
+                        "1",
+                        "-ss",
+                        &timeline_start.to_string(),
+                        "-seek_timestamp",
+                        "1",
+                        "-i",
+                    ])
+                    .arg(&source.path);
+                if source.video_codec().is_some() {
+                    command.args(["-map", "0:v:0"]);
+                }
+                0
+            };
             command.args(["-map"]).arg(
                 options
                     .audio
-                    .map(|n| format!("0:{n}"))
-                    .unwrap_or_else(|| "0:a:0?".into()),
+                    .map(|n| format!("{audio}:{n}"))
+                    .unwrap_or_else(|| format!("{audio}:a:0?")),
             );
         }
         command.args(["-sn", "-dn", "-map_metadata", "-1"]);
@@ -218,7 +231,17 @@ impl Pipelines {
             Input::Local(source) => &source.probe,
             Input::Remote { probe, .. } => *probe,
         };
-        command.args(encoding.args(options, probe)?);
+        let mut args = encoding.args(options, probe)?;
+        if let (Input::Local(_), Some(subtitle)) = (&input, encoding.subtitle) {
+            let filter = args
+                .iter()
+                .position(|arg| arg == "-vf")
+                .context("Burning a subtitle requires a video conversion")?;
+            args[filter] = "-filter_complex".into();
+            args[filter + 1] =
+                crate::burn_graph(&args[filter + 1], subtitle, burn_preroll(timeline_start));
+        }
+        command.args(args);
         if encoding.video {
             command.args([
                 "-force_key_frames",
@@ -508,6 +531,13 @@ impl Pipelines {
         );
         Ok(stop)
     }
+}
+
+/// The seconds a conversion that burns in a subtitle reads before `start`. A seek starts the
+/// demuxer at the keyframe before its position, so a subtitle whose packet comes earlier, though
+/// still showing, is never read.
+fn burn_preroll(start: f64) -> f64 {
+    start.min(10.0)
 }
 
 async fn keyframe_start(source: &Source, position: f64, tools: &MediaTools) -> Result<f64> {
