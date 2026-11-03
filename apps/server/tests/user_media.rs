@@ -714,17 +714,104 @@ async fn watched(state: &AppState, token: &str) -> Vec<&'static str> {
     }
     watched
 }
+/// The media Home offers to resume.
+async fn resuming(state: &AppState, token: &str) -> Vec<String> {
+    ok(state, token, "/me/home", "GET", Value::Null).await["continue_watching"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|card| card["id"].as_str().unwrap().to_owned())
+        .collect()
+}
 #[tokio::test]
-async fn seasons_and_the_episodes_before_one_are_marked_at_once() {
+async fn episodes_follow_series_order_and_the_files_they_share() {
     let (_temp, state) = fixture().await;
     state.db.write("test.fixture", |db| {
         for (id,kind,parent,number) in [("season2","season","show",2),("e3","episode","season2",1),("e4","episode","season2",2)] {
             db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'root',?2,?3,?1,?1,?4,?5)",params![id,kind,parent,number,now()])?;
+            if kind == "episode" {
+                db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,'root',?1,'generation',10,'mtime',?1,'{}',?2)",params![id,now()])?;
+                db.execute("INSERT INTO media_sources VALUES (?1,?1)",[id])?;
+            }
         }
         Ok(())
     }).await.unwrap();
-    let (alice, _) = login(&state, "alice").await;
+    let (alice, viewer) = login(&state, "alice").await;
     let (bob, _) = login(&state, "bob").await;
+
+    // Preferences saved before autoplay was a choice keep it on, and the rest of them.
+    state.db.write("test.fixture", |db| {
+        db.execute(r#"INSERT INTO playback_preferences VALUES ('alice','{"quality":"auto","audio_language":"","subtitle_language":"","subtitles":false,"replay_gain":"album"}')"#, [])?;
+        Ok(())
+    }).await.unwrap();
+    let preferences = ok(&state, &alice, "/playback/preferences", "GET", Value::Null).await;
+    assert_eq!(
+        (
+            preferences["replay_gain"].as_str(),
+            preferences["autoplay"].as_bool()
+        ),
+        (Some("album"), Some(true))
+    );
+    let mut changed = preferences.clone();
+    changed["autoplay"] = json!(false);
+    ok(&state, &alice, "/playback/preferences", "PUT", changed).await;
+    assert_eq!(
+        ok(&state, &alice, "/playback/preferences", "GET", Value::Null).await["autoplay"],
+        false
+    );
+
+    // The next episode crosses seasons; Specials and the last episode have none.
+    let next = |path: &str| {
+        let (state, alice, path) = (state.clone(), alice.clone(), format!("/catalog/{path}"));
+        async move { ok(&state, &alice, &path, "GET", Value::Null).await["next"].clone() }
+    };
+    assert_eq!(next("e1/next").await["id"], "e2");
+    assert_eq!(
+        next("e2/next").await,
+        json!({"id":"e3","title":"e3","show":"show","season":2,"number":1})
+    );
+    assert_eq!(next("e4/next").await, Value::Null);
+    assert_eq!(next("special/next").await, Value::Null);
+    // A file holding two episodes plays past both; unavailable episodes are passed over.
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute("INSERT INTO media_sources VALUES ('e2','e1')", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(next("e1/next?file_id=e1").await["id"], "e3");
+    assert_eq!(next("e2/next?file_id=e2").await["id"], "e3");
+    assert_eq!(next("e1/next?file_id=e2").await["id"], "e2");
+    // Finishing that file finishes both episodes: Next up agrees, and the half-watched
+    // second one leaves Continue watching. Marking either by hand leaves the other alone.
+    session(&state, &viewer, "second", "e2").await;
+    progress(&state, &viewer, "second", 0, 50.0, "stopped").await;
+    assert!(watched(&state, &alice).await.is_empty());
+    assert_eq!(resuming(&state, &alice).await, ["e2"]);
+    session(&state, &viewer, "both", "e1").await;
+    progress(&state, &viewer, "both", 0, 95.0, "stopped").await;
+    assert_eq!(watched(&state, &alice).await, ["e1", "e2"]);
+    assert!(resuming(&state, &alice).await.is_empty());
+    assert_eq!(
+        ok(&state, &alice, "/me/home", "GET", Value::Null).await["next_up"][0]["id"],
+        "e3"
+    );
+    for (id, left) in [("e1", vec!["e2"]), ("e2", vec![])] {
+        let path = format!("/catalog/{id}/state");
+        ok(&state, &alice, &path, "PUT", json!({"watched":false})).await;
+        assert_eq!(watched(&state, &alice).await, left, "{id}");
+    }
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute("UPDATE media_files SET present=0 WHERE id='e3'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(next("e2/next").await["id"], "e4");
     let mark = |id: &str, body: Value| {
         let (state, alice, path) = (
             state.clone(),

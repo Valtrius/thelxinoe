@@ -14,6 +14,20 @@ import { freezeClock } from './helpers/clock';
 // Exercise the real player with decoded media and a controlled server boundary.
 // This suite starts its own Vite server and never touches an account or deployment.
 const title = 'A journey through the mountains';
+// A sign in the middle of the picture during the first second.
+const styledScript = String.raw`[Script Info]
+ScriptType: v4.00+
+PlayResX: 960
+PlayResY: 540
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Sign,Liberation Sans,40,&H0000FFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,0,5,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:01.00,Sign,,0,0,0,,{\pos(480,270)}Fixture sign
+`;
 let mp4: Buffer,
   segment: Buffer,
   shortSegment: Buffer,
@@ -271,6 +285,8 @@ async function fixture(
     app?: boolean;
     playerHeight?: number | null;
     subtitles?: boolean;
+    /** A styled track and a forced picture track, which is burned in. */
+    styled?: boolean;
     qualities?: { value: string; label: string }[];
     autoQuality?: string;
     local?: boolean;
@@ -297,8 +313,13 @@ async function fixture(
     starts: [] as {
       media_id: string;
       position: number;
-      options: { quality: string };
+      options: {
+        quality: string;
+        subtitle: string | null;
+        capabilities: { burn_subtitles?: boolean };
+      };
     }[],
+    preferenceSaves: [] as { subtitle_size: number }[],
     seeks: [] as number[],
     ranges: [] as string[],
     // Byte ranges of the indexed media that wait for a release.
@@ -505,6 +526,13 @@ async function fixture(
         },
       });
     }
+    if (path === '/api/v1/playback/preferences') {
+      if (route.request().method() === 'PUT')
+        state.preferenceSaves.push(route.request().postDataJSON());
+      return route.fulfill({
+        json: { quality: 'auto', subtitles: false, subtitle_size: 1 },
+      });
+    }
     if (path.startsWith('/api/v1/catalog/') && path.endsWith('/playback')) {
       if (options.tools === 'metadata' && state.toolsPreparing)
         return route.fulfill({
@@ -555,6 +583,7 @@ async function fixture(
         });
       const input = route.request().postDataJSON();
       state.starts.push(input);
+      const burned = input.options.subtitle === 'embedded-3';
       await preparation.promise;
       if (state.fail)
         return route.fulfill({
@@ -575,31 +604,64 @@ async function fixture(
             : input.options.quality === 'auto'
               ? state.autoQuality
               : input.options.quality,
-          mode: options.mode ?? 'direct',
+          mode: burned ? 'transcode' : (options.mode ?? 'direct'),
+          ...(burned && {
+            encoding: { video: true, audio: false, subtitle: 3 },
+            conversion_reason: 'Picture subtitles are burned into the video',
+          }),
           live: options.live ?? false,
-          url: options.indexed
-            ? '/api/v1/playback/fixture/hls/source/index.m3u8?grant=fixture'
-            : options.gapless
-              ? '/fixture/track.wav'
-              : options.mode === 'remux'
-                ? '/fixture/index.m3u8'
-                : '/fixture/video.mp4',
+          url: burned
+            ? '/fixture/index.m3u8'
+            : options.indexed
+              ? '/api/v1/playback/fixture/hls/source/index.m3u8?grant=fixture'
+              : options.gapless
+                ? '/fixture/track.wav'
+                : options.mode === 'remux'
+                  ? '/fixture/index.m3u8'
+                  : '/fixture/video.mp4',
           position: input.position ?? 0,
           duration: 60,
           timeline_start: 0,
           video: true,
           tracks: [],
-          subtitles: options.subtitles
-            ? [
-                {
-                  id: 'english',
-                  language: 'en',
-                  title: 'English',
-                  url: '/fixture/subtitles.vtt',
-                },
-              ]
-            : [],
-          selected_subtitle: 'off',
+          subtitles: [
+            // Embedded picture tracks come before sidecar text ones.
+            ...(options.styled
+              ? [
+                  {
+                    id: 'embedded-3',
+                    language: 'en',
+                    title: 'DVD',
+                    codec: 'dvd_subtitle',
+                    forced: true,
+                    url: null,
+                  },
+                ]
+              : []),
+            ...(options.subtitles || options.styled
+              ? [
+                  {
+                    id: 'english',
+                    language: 'en',
+                    title: 'English',
+                    url: '/fixture/subtitles.vtt',
+                  },
+                ]
+              : []),
+            ...(options.styled
+              ? [
+                  {
+                    id: 'styled',
+                    language: 'en',
+                    title: 'Signs',
+                    codec: 'ass',
+                    url: '/fixture/styled?grant=fixture',
+                  },
+                ]
+              : []),
+          ],
+          fonts: options.styled ? ['/fixture/font?grant=fixture'] : [],
+          selected_subtitle: input.options.subtitle ?? 'off',
           options: input.options,
           chapters: options.chapters ?? [],
           trickplay: options.trickplay
@@ -735,13 +797,27 @@ async function fixture(
     state.sheets++;
     return route.fulfill({ contentType: 'image/jpeg', body: sheet });
   });
+  await page.route('**/fixture/styled?*', (route) =>
+    new URL(route.request().url()).searchParams.get('format') === 'ass'
+      ? route.fulfill({ contentType: 'text/x-ssa', body: styledScript })
+      : route.fulfill({
+          contentType: 'text/vtt',
+          body: 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nFixture sign\n',
+        }),
+  );
+  await page.route('**/fixture/font?*', (route) =>
+    route.fulfill({
+      contentType: 'application/octet-stream',
+      body: readFileSync('frontend/node_modules/jassub/dist/default.woff2'),
+    }),
+  );
   await page.route('**/fixture/track.wav', (route) =>
     route.fulfill({ contentType: 'audio/wav', body: wav }),
   );
   await page.route('**/fixture/subtitles.vtt', (route) =>
     route.fulfill({
       contentType: 'text/vtt',
-      body: 'WEBVTT\n\n00:00:00.000 --> 00:00:59.000\nFixture subtitle\n',
+      body: 'WEBVTT\n\n00:00:00.000 --> 00:00:59.000 line:50%\nFixture subtitle\n',
     }),
   );
   await page.route('**/player-test*', (route) =>
@@ -1735,6 +1811,174 @@ test('web player supports YouTube playback shortcuts and left/right-click pause'
   expect(await video.evaluate((element) => element.playbackRate)).toBe(1.25);
   await page.keyboard.press('Shift+Comma');
   expect(await video.evaluate((element) => element.playbackRate)).toBe(1);
+  expect(state.errors).toEqual([]);
+});
+
+/** The grayscale pixels of the video area, subtitles and controls included. */
+async function videoPixels(page: Page) {
+  const video = page.locator('video');
+  const data = execFileSync(
+    'ffmpeg',
+    [
+      ...['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0'],
+      ...['-f', 'rawvideo', '-pix_fmt', 'gray', 'pipe:1'],
+    ],
+    {
+      input: await video.screenshot(),
+      windowsHide: true,
+      maxBuffer: 32 * 1024 * 1024,
+    },
+  );
+  return { data, width: Math.round((await video.boundingBox())!.width) };
+}
+/**
+ * The width of what was drawn over `from` inside the player's header,
+ * controls and focus outline: subtitle text grows with its size.
+ */
+function drawnWidth(
+  from: Awaited<ReturnType<typeof videoPixels>>,
+  to: Awaited<ReturnType<typeof videoPixels>>,
+) {
+  let left = Infinity,
+    right = -Infinity;
+  const { width } = from;
+  const height = from.data.length / width;
+  for (let y = Math.round(height * 0.2); y < height * 0.8; y++)
+    for (let x = 8; x < width - 8; x++)
+      if (Math.abs(from.data[y * width + x] - to.data[y * width + x]) > 64) {
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+      }
+  return Math.max(0, right - left);
+}
+
+test('styled subtitles load their renderer when shown, both renderers follow the offset and size, and picture subtitles convert the video', async ({
+  page,
+}, info) => {
+  const requests: string[] = [];
+  page.on('request', (request) => requests.push(request.url()));
+  const state = await fixture(page, { styled: true });
+  await decoded(page);
+  const player = page.getByRole('region', { name: 'Media player' });
+  const video = page.locator('video');
+  // The server chooses forced subtitles until the viewer picks some, and can
+  // burn picture ones in.
+  expect(state.starts[0].options).toMatchObject({
+    subtitle: null,
+    capabilities: { burn_subtitles: true },
+  });
+  const choose = async (name: string) => {
+    await page.getByRole('button', { name: 'Subtitles', exact: true }).click();
+    await page.getByRole('menuitemradio', { name, exact: true }).click();
+    await player.focus();
+  };
+  const step = async (name: string, times: number) => {
+    await page.getByRole('button', { name: 'Subtitles', exact: true }).click();
+    for (let i = 0; i < times; i++)
+      await page.getByRole('menuitem', { name, exact: true }).click();
+    await page.keyboard.press('Escape');
+    await player.focus();
+  };
+  const pauseAt = (time: number) =>
+    video.evaluate(async (element: HTMLVideoElement, time) => {
+      element.pause();
+      const seeked = new Promise((resolve) =>
+        element.addEventListener('seeked', resolve, { once: true }),
+      );
+      element.currentTime = time;
+      await seeked;
+    }, time);
+  const styledRenderer = () =>
+    requests.filter((url) => /jassub|styled-subtitles/.test(url));
+  expect(styledRenderer()).toEqual([]);
+  // Turning subtitles on prefers a text track to one that needs a conversion.
+  await player.focus();
+  await page.keyboard.press('c');
+  await expect
+    .poll(() =>
+      video.evaluate(
+        (element: HTMLVideoElement) =>
+          [...element.textTracks].find((track) => track.id === 'english')?.mode,
+      ),
+    )
+    .toBe('showing');
+  expect(state.starts).toHaveLength(1);
+
+  await choose('en Signs');
+  await expect(page.locator('canvas.styled-subtitles')).toHaveCount(1);
+  await expect.poll(() => styledRenderer().length).toBeGreaterThan(0);
+  await expect
+    .poll(() => requests.some((url) => url.includes('/fixture/font')))
+    .toBe(true);
+  // The sign shows during the first second, so only an offset shows it at 2 s.
+  await pauseAt(2);
+  await expect(page.locator('.player-controls')).toHaveCSS('opacity', '1');
+  const none = await videoPixels(page);
+  for (let i = 0; i < 15; i++) await page.keyboard.press('x');
+  let sign = 0;
+  await expect
+    .poll(async () => (sign = drawnWidth(none, await videoPixels(page))))
+    .toBeGreaterThan(100);
+  await page.screenshot({ path: info.outputPath('styled-subtitles.png') });
+  await step('Larger subtitles', 5);
+  await expect
+    .poll(async () => drawnWidth(none, await videoPixels(page)))
+    .toBeGreaterThan(sign * 1.35);
+  await page.screenshot({ path: info.outputPath('styled-larger.png') });
+  await page.getByRole('button', { name: 'Subtitles', exact: true }).click();
+  await expect(
+    page.getByRole('group', { name: 'Offset' }).getByText('+1.5 s'),
+  ).toBeVisible();
+  await page.screenshot({ path: info.outputPath('subtitle-menu.png') });
+  await page.keyboard.press('Escape');
+  await player.focus();
+  await expect
+    .poll(() => state.preferenceSaves.at(-1)?.subtitle_size)
+    .toBe(1.5);
+
+  // WebVTT keeps the playback's offset and size.
+  await choose('en English');
+  await expect(page.locator('canvas.styled-subtitles')).toHaveCount(0);
+  const cueStart = () =>
+    video.evaluate(
+      (element: HTMLVideoElement) =>
+        [...element.textTracks].find((track) => track.id === 'english')
+          ?.cues?.[0]?.startTime,
+    );
+  await expect.poll(cueStart).toBeCloseTo(1.5, 5);
+  await page.keyboard.press('z');
+  await expect.poll(cueStart).toBeCloseTo(1.4, 5);
+  let larger = 0;
+  await expect
+    .poll(async () => (larger = drawnWidth(none, await videoPixels(page))))
+    .toBeGreaterThan(100);
+  await page.screenshot({ path: info.outputPath('webvtt-larger.png') });
+  await step('Smaller subtitles', 5);
+  await expect
+    .poll(async () => drawnWidth(none, await videoPixels(page)))
+    .toBeLessThan(larger / 1.35);
+  await page.screenshot({ path: info.outputPath('webvtt.png') });
+
+  // A picture subtitle starts a conversion that burns it in, and leaving it
+  // starts one without.
+  await choose('en DVD (Forced)');
+  await expect.poll(() => state.starts.length).toBe(2);
+  expect(state.starts[1].options.subtitle).toBe('embedded-3');
+  await expect(page.locator('.playback-mode')).toHaveAttribute(
+    'title',
+    'Picture subtitles are burned into the video',
+  );
+  await page.getByRole('button', { name: 'Subtitles', exact: true }).click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'en DVD (Forced)' }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await expect(
+    page.getByRole('menuitem', { name: 'Show subtitles later' }),
+  ).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await choose('Off');
+  await expect.poll(() => state.starts.length).toBe(3);
+  expect(state.starts[2].options.subtitle).toBe('off');
   expect(state.errors).toEqual([]);
 });
 

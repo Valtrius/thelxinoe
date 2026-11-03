@@ -89,12 +89,38 @@ pub(super) async fn set_watched(
     .await
 }
 
+/// Every series' episodes in viewing order. Specials stand outside it.
+const SERIES_ORDER: &str = "SELECT e.id,s.parent_id AS show_id,ROW_NUMBER() OVER(PARTITION BY s.parent_id ORDER BY s.sort_number,e.sort_number,e.id) AS ord FROM media e JOIN media s ON s.id=e.parent_id WHERE e.kind='episode' AND s.kind='season' AND s.sort_number>0";
+
+/// The available episode that follows `media` in its series, past every episode its
+/// played file also holds (any of its files when none is named).
+pub(super) async fn next_episode(
+    media: String,
+    file: Option<String>,
+    db: &Database,
+) -> anyhow::Result<Option<Value>> {
+    db.read("user_media.next_episode", move |db| {
+        Ok(db.query_row(&format!("WITH ordered AS ({SERIES_ORDER}),
+            target AS (SELECT show_id FROM ordered WHERE id=?1),
+            covered AS (SELECT MAX(o.ord) AS ord FROM ordered o JOIN target t ON t.show_id=o.show_id
+                WHERE o.id=?1 OR o.id IN (SELECT other.media_id FROM media_sources mine JOIN media_sources other ON other.file_id=mine.file_id
+                    WHERE mine.media_id=?1 AND mine.file_id=COALESCE(?2,mine.file_id)))
+            SELECT c.id,c.title,sh.title,s.sort_number,e.sort_number FROM ordered o JOIN target t ON t.show_id=o.show_id JOIN covered a ON o.ord>a.ord
+                JOIN media_cards c ON c.id=o.id JOIN media e ON e.id=o.id JOIN media s ON s.id=e.parent_id JOIN media_cards sh ON sh.id=o.show_id
+            WHERE c.available=1 ORDER BY o.ord LIMIT 1"),
+            params![media, file],
+            |r| Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"show":r.get::<_,String>(2)?,"season":r.get::<_,i64>(3)?,"number":r.get::<_,Option<i64>>(4)?.unwrap_or(0)})),
+        ).optional()?)
+    })
+    .await
+}
+
 pub(super) async fn home_for(p: Principal, db: &Database) -> anyhow::Result<Value> {
     db.read("user_media.home_for", move |db| {
         let favorites = db.prepare("SELECT c.id,c.kind,c.title,c.available,sh.title FROM media_cards c JOIN media_state s ON s.media_id=c.id LEFT JOIN media pm ON pm.id=c.parent_id LEFT JOIN media_cards sh ON sh.id=CASE c.kind WHEN 'season' THEN c.parent_id WHEN 'episode' THEN pm.parent_id END WHERE s.user_id=?1 AND s.favorite=1 ORDER BY s.updated_at DESC,c.title LIMIT 100")?.query_map([&p.user.id],shelf_card)?.collect::<std::result::Result<Vec<_>,_>>()?;
         let later = db.prepare("SELECT c.id,c.kind,c.title,c.available,sh.title FROM media_cards c JOIN media_state s ON s.media_id=c.id LEFT JOIN media pm ON pm.id=c.parent_id LEFT JOIN media_cards sh ON sh.id=CASE c.kind WHEN 'season' THEN c.parent_id WHEN 'episode' THEN pm.parent_id END WHERE s.user_id=?1 AND s.watch_later=1 ORDER BY s.updated_at DESC,c.title LIMIT 100")?.query_map([&p.user.id],shelf_card)?.collect::<std::result::Result<Vec<_>,_>>()?;
         let resume = db.prepare("WITH latest AS (SELECT e.*,ROW_NUMBER() OVER(PARTITION BY media_id ORDER BY updated_at DESC,edition) AS rn FROM edition_progress e WHERE user_id=?1) SELECT c.id,c.kind,c.title,c.available,e.position,e.duration,e.edition,(SELECT f.id FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=c.id AND f.edition=e.edition AND f.present=1 ORDER BY f.id LIMIT 1),e.updated_at FROM latest e JOIN media_cards c ON c.id=e.media_id WHERE e.rn=1 AND EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=c.id AND f.edition=e.edition AND f.present=1) AND c.kind IN ('movie','episode') AND c.available=1 AND e.position>0 AND e.position<e.duration*0.9 ORDER BY e.updated_at DESC LIMIT 50")?.query_map([&p.user.id],|r|{let mut c=card(r)?;c["position"]=json!(r.get::<_,f64>(4)?);c["duration"]=json!(r.get::<_,f64>(5)?);c["edition"]=json!(r.get::<_,String>(6)?);c["fileId"]=json!(r.get::<_,String>(7)?);c["last_played"]=json!(r.get::<_,i64>(8)?);Ok(c)})?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let next = db.prepare("WITH ordered AS (SELECT e.id,s.parent_id AS show_id,ROW_NUMBER() OVER(PARTITION BY s.parent_id ORDER BY s.sort_number,e.sort_number,e.id) AS ord FROM media e JOIN media s ON s.id=e.parent_id WHERE e.kind='episode' AND s.kind='season' AND s.sort_number>0), anchor AS (SELECT o.show_id,MAX(o.ord) AS ord FROM ordered o JOIN media_state u ON u.media_id=o.id WHERE u.user_id=?1 AND u.watched=1 GROUP BY o.show_id), candidates AS (SELECT o.id,o.show_id,ROW_NUMBER() OVER(PARTITION BY o.show_id ORDER BY o.ord) AS rn FROM ordered o LEFT JOIN anchor a ON a.show_id=o.show_id LEFT JOIN media_state u ON u.media_id=o.id AND u.user_id=?1 LEFT JOIN media_state show_state ON show_state.media_id=o.show_id AND show_state.user_id=?1 JOIN media_cards c ON c.id=o.id WHERE c.available=1 AND COALESCE(u.watched,0)=0 AND o.ord>COALESCE(a.ord,0) AND (a.ord IS NOT NULL OR COALESCE(show_state.favorite,0)=1 OR COALESCE(show_state.watch_later,0)=1)) SELECT c.id,c.kind,c.title,c.available,sh.title FROM candidates n JOIN media_cards c ON c.id=n.id JOIN media_cards sh ON sh.id=n.show_id WHERE n.rn=1 ORDER BY sh.title LIMIT 50")?.query_map([&p.user.id],|r|{let mut c=card(r)?;c["show_title"]=json!(r.get::<_,String>(4)?);Ok(c)})?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let next = db.prepare(&format!("WITH ordered AS ({SERIES_ORDER}), anchor AS (SELECT o.show_id,MAX(o.ord) AS ord FROM ordered o JOIN media_state u ON u.media_id=o.id WHERE u.user_id=?1 AND u.watched=1 GROUP BY o.show_id), candidates AS (SELECT o.id,o.show_id,ROW_NUMBER() OVER(PARTITION BY o.show_id ORDER BY o.ord) AS rn FROM ordered o LEFT JOIN anchor a ON a.show_id=o.show_id LEFT JOIN media_state u ON u.media_id=o.id AND u.user_id=?1 LEFT JOIN media_state show_state ON show_state.media_id=o.show_id AND show_state.user_id=?1 JOIN media_cards c ON c.id=o.id WHERE c.available=1 AND COALESCE(u.watched,0)=0 AND o.ord>COALESCE(a.ord,0) AND (a.ord IS NOT NULL OR COALESCE(show_state.favorite,0)=1 OR COALESCE(show_state.watch_later,0)=1)) SELECT c.id,c.kind,c.title,c.available,sh.title FROM candidates n JOIN media_cards c ON c.id=n.id JOIN media_cards sh ON sh.id=n.show_id WHERE n.rn=1 ORDER BY sh.title LIMIT 50"))?.query_map([&p.user.id],|r|{let mut c=card(r)?;c["show_title"]=json!(r.get::<_,String>(4)?);Ok(c)})?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok(json!({"favorites":favorites,"watch_later":later,"continue_watching":resume,"next_up":next}))
     }).await
 }

@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Stdio, time::Duration};
 use thelxinoe_core::{Principal, id, now};
-use thelxinoe_playback::{Options, Preferences, Source};
+use thelxinoe_playback::{Options, Preferences, Source, Track};
 use tower::ServiceExt;
 
 pub async fn source(state: &AppState, media: &str, file: Option<&str>) -> Result<Source> {
@@ -173,6 +173,8 @@ pub(crate) async fn create_with_delivery(
         .map_err(|e| ApiError::conflict(e.to_string()))?;
     let prefs = user_preferences(state, p).await?;
     let tracks = source.tracks().await?;
+    let burn = input.options.capabilities.burn_subtitles;
+    let shown = |t: &Track| t.kind == "subtitle" && (t.supported || burn && t.picture());
     if input.options.audio.is_none() {
         input.options.audio = tracks
             .iter()
@@ -183,17 +185,26 @@ pub(crate) async fn create_with_delivery(
             })
             .and_then(|t| t.index);
     }
-    if input.options.subtitle.is_none() && prefs.subtitles {
-        input.options.subtitle = tracks
-            .iter()
-            .find(|t| t.kind == "subtitle" && t.supported && t.language == prefs.subtitle_language)
-            .map(|t| t.id.clone());
+    // Only text subtitles show by default: a picture one needs a conversion, which the viewer
+    // asks for by choosing it.
+    if input.options.subtitle.is_none() {
+        let preferred = tracks.iter().find(|t| {
+            prefs.subtitles
+                && t.kind == "subtitle"
+                && t.supported
+                && t.language == prefs.subtitle_language
+        });
+        // A client that selects embedded tracks itself also selects their forced subtitles.
+        let forced = || {
+            (!input.options.capabilities.native_tracks)
+                .then(|| thelxinoe_playback::forced_subtitle(&tracks, input.options.audio))
+                .flatten()
+        };
+        input.options.subtitle = preferred.or_else(forced).map(|t| t.id.clone());
     }
     if let Some(track) = &input.options.subtitle
         && track != "off"
-        && !tracks
-            .iter()
-            .any(|t| t.kind == "subtitle" && t.supported && &t.id == track)
+        && !tracks.iter().any(|t| shown(t) && &t.id == track)
     {
         return Err(ApiError::bad("Unsupported subtitle track"));
     }
@@ -260,10 +271,15 @@ pub(crate) async fn create_with_delivery(
             }
         }
     };
-    let subtitles:Vec<_>=tracks.iter().filter(|t|t.kind=="subtitle" && t.supported).map(|t|json!({"id":t.id,"language":t.language,"title":t.title,"url":format!("/api/v1/playback/{sid}/subtitles/{}?grant={grant}",t.id)})).collect();
+    // A picture subtitle has no file: a conversion burns it in.
+    let subtitles:Vec<_>=tracks.iter().filter(|t|shown(t)).map(|t|json!({"id":t.id,"language":t.language,"title":t.title,"codec":t.codec,"forced":t.forced,"url":t.supported.then(||format!("/api/v1/playback/{sid}/subtitles/{}?grant={grant}",t.id))})).collect();
+    let fonts: Vec<_> = thelxinoe_playback::font_attachments(&source.probe)
+        .into_iter()
+        .map(|index| format!("/api/v1/playback/{sid}/fonts/{index}?grant={grant}"))
+        .collect();
     let trickplay = crate::trickplay::web(state, p, &source).await?;
     Ok(
-        json!({"id":sid,"file_id":source.id,"generation":source.generation,"url":url,"grant":grant,"mode":mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":position,"duration":duration,"timeline_start":timeline_start,"video":source.video_codec().is_some(),"tracks":tracks,"subtitles":subtitles,"selected_subtitle":input.options.subtitle,"options":input.options,"chapters":thelxinoe_playback::chapters(&source.probe),"trickplay":trickplay,"probe":source.probe,"replay_gain":prefs.replay_gain}),
+        json!({"id":sid,"file_id":source.id,"generation":source.generation,"url":url,"grant":grant,"mode":mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":position,"duration":duration,"timeline_start":timeline_start,"video":source.video_codec().is_some(),"tracks":tracks,"subtitles":subtitles,"fonts":fonts,"selected_subtitle":input.options.subtitle,"options":input.options,"chapters":thelxinoe_playback::chapters(&source.probe),"trickplay":trickplay,"probe":source.probe,"replay_gain":prefs.replay_gain}),
     )
 }
 #[derive(Clone)]
@@ -553,11 +569,14 @@ pub async fn subtitle(
     Path((id, track)): Path<(String, String)>,
     Query(grant): Query<SubtitleQuery>,
 ) -> Result<Response> {
-    let (format, content_type) = match grant.format.as_deref().unwrap_or("vtt") {
-        "vtt" => ("webvtt", "text/vtt; charset=utf-8"),
-        "srt" => ("srt", "application/x-subrip; charset=utf-8"),
+    // A styled track also keeps its own format, for a client that renders its styles.
+    let (format, content_type, limit) = match grant.format.as_deref().unwrap_or("vtt") {
+        "vtt" => ("webvtt", "text/vtt; charset=utf-8", 8),
+        "srt" => ("srt", "application/x-subrip; charset=utf-8", 8),
+        "ass" => ("ass", "text/x-ssa; charset=utf-8", 32),
         _ => return Err(ApiError::bad("Unsupported subtitle format")),
     };
+    let limit: u64 = limit * 1024 * 1024;
     let (_, session) = from_grant(&state, &id, &grant.grant).await?;
     let source = current_source(&state, &session).await?;
     let track = source
@@ -566,6 +585,9 @@ pub async fn subtitle(
         .into_iter()
         .find(|t| t.id == track && t.kind == "subtitle" && t.supported)
         .ok_or_else(ApiError::not_found)?;
+    if format == "ass" && !["ass", "ssa"].contains(&track.codec.as_str()) {
+        return Err(ApiError::bad("The subtitle track has no styles"));
+    }
     let input = match &track.path {
         Some(path) => path.clone(),
         None => crate::subtitles::track(&state, &source, &track)
@@ -601,10 +623,10 @@ pub async fn subtitle(
             .stdout
             .take()
             .unwrap()
-            .take(8 * 1024 * 1024 + 1)
+            .take(limit + 1)
             .read_to_end(&mut bytes)
             .await?;
-        if bytes.len() > 8 * 1024 * 1024 {
+        if bytes.len() as u64 > limit {
             anyhow::bail!("Subtitle exceeds size limit");
         }
         if !child.wait().await?.success() {
@@ -615,6 +637,35 @@ pub async fn subtitle(
     .await
     .map_err(|_| ApiError::conflict("Subtitle conversion timed out"))??;
     Ok(([(header::CONTENT_TYPE, content_type)], output).into_response())
+}
+/// A font attached to the file of a play session, for its styled subtitles.
+pub async fn font(
+    State(state): State<AppState>,
+    Path((id, index)): Path<(String, i64)>,
+    Query(grant): Query<Grant>,
+    request: Request,
+) -> Result<Response> {
+    let (_, session) = from_grant(&state, &id, &grant.grant).await?;
+    let source = current_source(&state, &session).await?;
+    if !thelxinoe_playback::font_attachments(&source.probe).contains(&index) {
+        return Err(ApiError::not_found());
+    }
+    let path = crate::subtitles::font(&state, &source, index)
+        .await
+        .map_err(|error| {
+            tracing::warn!(file = %source.id, "Font extraction failed: {error:#}");
+            ApiError::conflict("The font could not be extracted")
+        })?;
+    let mut response = tower_http::services::ServeFile::new(path)
+        .oneshot(request)
+        .await
+        .unwrap()
+        .map(Body::new);
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/octet-stream"),
+    );
+    Ok(response)
 }
 pub(crate) async fn fail(state: &AppState, id: &str) -> anyhow::Result<()> {
     let id = id.to_owned();

@@ -274,6 +274,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/catalog/{id}/watched",
             axum::routing::put(user_media::set_watched),
         )
+        .route("/api/v1/catalog/{id}/next", get(user_media::next_episode))
         .route(
             "/api/v1/playlists",
             get(playlists::list).post(playlists::create),
@@ -321,6 +322,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/playback/{id}/subtitles/{track}",
             get(playback::subtitle),
         )
+        .route("/api/v1/playback/{id}/fonts/{index}", get(playback::font))
         .route("/api/v1/catalog/{id}/playback", get(playback::media_info))
         .route("/api/v1/admin/jobs", get(realtime::jobs))
         .route(

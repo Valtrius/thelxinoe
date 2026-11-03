@@ -44,6 +44,9 @@ pub struct Capabilities {
     /// Copied video loses its Dolby Vision layers, leaving the base picture the client shows.
     #[serde(default)]
     pub strip_dolby_vision: bool,
+    /// Shows an embedded picture subtitle by having a conversion burn it into the video.
+    #[serde(default)]
+    pub burn_subtitles: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Conversion {
@@ -232,6 +235,18 @@ pub struct Preferences {
     pub subtitle_language: String,
     pub subtitles: bool,
     pub replay_gain: String,
+    /// The scale of subtitle text in the web player.
+    #[serde(default = "unscaled")]
+    pub subtitle_size: f64,
+    /// Whether the next episode starts by itself when one finishes.
+    #[serde(default = "enabled")]
+    pub autoplay: bool,
+}
+fn unscaled() -> f64 {
+    1.0
+}
+fn enabled() -> bool {
+    true
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -241,6 +256,8 @@ impl Default for Preferences {
             subtitle_language: String::new(),
             subtitles: false,
             replay_gain: "track".into(),
+            subtitle_size: unscaled(),
+            autoplay: enabled(),
         }
     }
 }
@@ -250,6 +267,7 @@ impl Preferences {
         if self.audio_language.len() > 16
             || self.subtitle_language.len() > 16
             || !["off", "track", "album"].contains(&self.replay_gain.as_str())
+            || !(0.5..=2.0).contains(&self.subtitle_size)
         {
             bail!("Invalid playback preferences");
         }
@@ -258,6 +276,8 @@ impl Preferences {
 }
 /// The FFprobe codecs of the text subtitles the server converts to WebVTT and SRT.
 pub const TEXT_SUBTITLES: [&str; 6] = ["subrip", "webvtt", "ass", "ssa", "mov_text", "text"];
+/// The FFprobe codecs of the picture subtitles a conversion can burn into the video.
+pub const PICTURE_SUBTITLES: [&str; 3] = ["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"];
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Track {
     pub id: String,
@@ -272,6 +292,59 @@ pub struct Track {
     pub supported: bool,
     #[serde(skip)]
     pub path: Option<PathBuf>,
+}
+impl Track {
+    /// An embedded picture subtitle, which a conversion can burn into the video.
+    pub fn picture(&self) -> bool {
+        self.kind == "subtitle"
+            && self.index.is_some()
+            && PICTURE_SUBTITLES.contains(&self.codec.as_str())
+    }
+}
+/// The first forced text subtitle in the language of audio track `audio`, or of the first audio
+/// track when `None`. A picture subtitle needs a conversion, so it never shows by default.
+pub fn forced_subtitle(tracks: &[Track], audio: Option<i64>) -> Option<&Track> {
+    let language = tracks
+        .iter()
+        .find(|t| t.kind == "audio" && audio.is_none_or(|index| t.index == Some(index)))
+        .map_or("und", |t| t.language.as_str());
+    tracks.iter().find(|t| {
+        t.kind == "subtitle"
+            && t.forced
+            && t.supported
+            && (t.language == language || t.language == "und")
+    })
+}
+/// The attachment streams of a file that hold fonts, which styled subtitles use.
+pub fn font_attachments(probe: &Value) -> Vec<i64> {
+    probe["streams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| {
+            let mime = s["tags"]["mimetype"].as_str().unwrap_or("").to_lowercase();
+            let name = s["tags"]["filename"].as_str().unwrap_or("").to_lowercase();
+            s["codec_type"] == "attachment"
+                && (["ttf", "otf"].contains(&s["codec_name"].as_str().unwrap_or(""))
+                    || ["font", "truetype", "opentype"]
+                        .iter()
+                        .any(|kind| mime.contains(kind))
+                    || [".ttf", ".ttc", ".otf", ".otc", ".woff", ".woff2"]
+                        .iter()
+                        .any(|extension| name.ends_with(extension)))
+        })
+        .filter_map(|s| s["index"].as_i64())
+        .collect()
+}
+/// The filter graph that draws embedded picture subtitle `subtitle` of input 0 over its video
+/// once `filter` has converted it, its canvas fitted to the picture. The input starts
+/// `preroll` seconds early so that the demuxer reads a subtitle already showing at the start;
+/// the video drops them before any filtering. The graph paces itself to real time: under
+/// `-readrate`, the overlay would wait for each next subtitle.
+pub(crate) fn burn_graph(filter: &str, subtitle: i64, preroll: f64) -> String {
+    format!(
+        "[0:v:0]trim=start={preroll},{filter},split[main][reference];[0:{subtitle}][reference]scale=rw:rh:force_original_aspect_ratio=decrease[subtitle];[main][subtitle]overlay=(W-w)/2:(H-h)/2,setpts=PTS-{preroll}/TB,realtime[video]"
+    )
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Chapter {

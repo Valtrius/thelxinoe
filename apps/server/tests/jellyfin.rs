@@ -1514,6 +1514,34 @@ async fn compatibility_credentials_are_private_revocable_and_transport_scoped() 
             StatusCode::OK
         );
     }
+    // Clients autoplay the next episode as the user's first-party preference says.
+    assert_eq!(
+        login["User"]["Configuration"]["EnableNextEpisodeAutoPlay"],
+        true
+    );
+    let owner = format!("Bearer {first_party}");
+    let preferences = json!({"quality":"auto","audio_language":"","subtitle_language":"","subtitles":false,"replay_gain":"track","autoplay":false});
+    let saved = call(
+        &state,
+        "/api/v1/playback/preferences",
+        "PUT",
+        preferences,
+        &[("Authorization", &owner)],
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
+    assert_eq!(
+        call(
+            &state,
+            "/Users/Me",
+            "GET",
+            Value::Null,
+            &[("X-Emby-Token", token)]
+        )
+        .await
+        .1["Configuration"]["EnableNextEpisodeAutoPlay"],
+        false
+    );
     assert_eq!(
         call(
             &state,
