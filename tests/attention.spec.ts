@@ -628,6 +628,8 @@ for (const [section, kind] of [
                   title: 'Requested album',
                   available: true,
                   metadata: {},
+                  year: 2026,
+                  track_count: 1,
                 },
               ]
             : [
@@ -644,12 +646,23 @@ for (const [section, kind] of [
                   title: 'Requested media',
                   available: true,
                   metadata: {},
+                  ...(section === 'Music' && {
+                    album_count: 1,
+                    track_count: 1,
+                  }),
                 },
               ],
         },
       }),
     );
-    if (section === 'Music')
+    // A music card names its counts instead of its year.
+    const caption = section === 'Music' ? '1 album · 1 track' : kind;
+    if (section === 'Music') {
+      await page.route('**/api/v1/catalog/*/state', (route) =>
+        route.fulfill({
+          json: { favorite: false, watch_later: false, watched: false },
+        }),
+      );
       await page.route('**/api/v1/catalog/requested', (route) =>
         route.fulfill({
           json: {
@@ -661,6 +674,7 @@ for (const [section, kind] of [
           },
         }),
       );
+    }
     await page.goto('/');
     const menu = page
       .getByRole('complementary', { name: 'Application sidebar' })
@@ -677,7 +691,7 @@ for (const [section, kind] of [
     await expect(poster.locator('[data-attention-severity]')).toBeVisible();
     await expect(
       poster.getByRole('button', {
-        name: `Requested media ${kind}`,
+        name: `Requested media ${caption}`,
         exact: true,
       }),
     ).toHaveAccessibleDescription('Info: Requested media is available');
@@ -687,7 +701,7 @@ for (const [section, kind] of [
       await poster.locator('.tile-art').hover();
       expect(acknowledgments).toEqual([]);
       await poster.locator('.card-primary').click();
-      poster = page.locator('[data-layout-key="library:album"]');
+      poster = page.locator('[data-layout-key="artist:album"]');
       await expect(poster.locator('[data-attention-severity]')).toBeVisible();
     }
     await page.screenshot({
@@ -707,7 +721,7 @@ for (const [section, kind] of [
       poster.getByRole('button', {
         name:
           section === 'Music'
-            ? 'Requested album album'
+            ? 'Requested album 2026 · 1 track'
             : `Requested media ${kind}`,
         exact: true,
       }),

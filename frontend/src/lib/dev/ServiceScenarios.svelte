@@ -121,7 +121,7 @@
 </script>
 
 <div
-  class="fixed bottom-3 right-3 z-[200] max-w-[calc(100vw-1.5rem)] text-foreground"
+  class="fixed right-3 bottom-3 z-[200] max-w-[calc(100vw-1.5rem)] text-foreground [body:has(.music-dock)_&]:bottom-24"
 >
   {#if open}
     <section

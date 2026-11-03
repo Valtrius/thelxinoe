@@ -727,13 +727,10 @@ test('catalog detail and search URLs survive reload and history restores the sel
   });
 });
 
-test('catalog hierarchy URLs retain album context when closing a track and moving up', async ({
+test('music URLs keep the artist above an album, open a track on its album and move up', async ({
   page,
 }, testInfo) => {
   const fixture = await installUiFixture(page, { section: 'Music' });
-  await page.route('**/api/v1/playlists', (route) =>
-    route.fulfill({ json: { items: [] } }),
-  );
   const nodes = {
     artist: {
       id: 'artist',
@@ -741,40 +738,48 @@ test('catalog hierarchy URLs retain album context when closing a track and movin
       kind: 'artist',
       available: true,
       metadata: {},
+      album_count: 1,
+      track_count: 1,
     },
     album: {
       id: 'album',
       title: 'Album',
       kind: 'album',
+      parent_id: 'artist',
+      year: 2026,
       available: true,
       metadata: {},
+      track_count: 1,
     },
     track: {
       id: 'track',
       title: 'Track',
       kind: 'track',
+      parent_id: 'album',
+      sort_number: 10001,
       available: true,
       metadata: {},
+      duration: 200,
+      album: 'Album',
+      artist: 'Artist',
+      artist_id: 'artist',
       files: [],
     },
   };
   await page.route('**/api/v1/catalog**', (route) => {
     const url = new URL(route.request().url());
     const id = url.pathname.split('/').at(-1)!;
-    if (id === 'catalog')
-      return route.fulfill({
-        json: {
-          items: [
-            nodes[
-              url.searchParams.get('parent') === 'artist'
-                ? 'album'
-                : url.searchParams.get('parent') === 'album'
-                  ? 'track'
-                  : 'artist'
-            ],
-          ],
-        },
-      });
+    if (id === 'catalog') {
+      const parent = url.searchParams.get('parent');
+      const kind = url.searchParams.get('kind');
+      const items =
+        parent === 'artist' || kind === 'album'
+          ? [nodes.album]
+          : parent === 'album' || kind === 'track'
+            ? [nodes.track]
+            : [nodes.artist];
+      return route.fulfill({ json: { items, total: items.length } });
+    }
     return route.fulfill({
       json:
         id === 'state'
@@ -784,29 +789,37 @@ test('catalog hierarchy URLs retain album context when closing a track and movin
   });
   await page.goto('/#library/music');
   await page
-    .getByRole('button', { name: 'Artist artist', exact: true })
+    .getByRole('button', { name: 'Artist 1 album · 1 track', exact: true })
     .click();
-  await page.getByRole('button', { name: 'Album album', exact: true }).click();
+  await expect(page).toHaveURL(/#library\/music\/artist$/);
   await page
-    .getByRole('button', { name: 'Details Track', exact: true })
+    .getByRole('button', { name: 'Album 2026 · 1 track', exact: true })
     .click();
-  await expect(page).toHaveURL(/#library\/music\/artist\/album\/track$/);
+  await expect(page).toHaveURL(/#library\/music\/artist\/album$/);
   await page.reload();
   await expect(
-    page.getByRole('heading', { name: 'Track', exact: true, level: 2 }),
+    page.getByRole('heading', { name: 'Album', exact: true, level: 1 }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
-  await expect(page).toHaveURL(/#library\/music\/artist\/album$/);
   await expect(
-    page.getByRole('button', { name: 'Details Track', exact: true }),
+    page.getByRole('button', { name: 'Play Track', exact: true }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Album', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Back to Artist', exact: true })
+    .click();
   await expect(page).toHaveURL(/#library\/music\/artist$/);
   await expect(
-    page.getByRole('button', { name: 'Album album', exact: true }),
+    page.getByRole('heading', { name: 'Artist', exact: true, level: 1 }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Artist', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Back to Music', exact: true })
+    .click();
   await expect(page).toHaveURL(/#library\/music$/);
+  // Home and search results link a track, which opens on its album.
+  await page.goto('/#library/music/track');
+  await expect(
+    page.getByRole('heading', { name: 'Album', exact: true, level: 1 }),
+  ).toBeVisible();
+  await expect(page.locator('[data-track="track"]')).toBeVisible();
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
   await testInfo.attach('catalog-hierarchy', {

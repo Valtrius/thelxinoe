@@ -205,5 +205,14 @@ export async function playbackApi(s, c) {
       });
     return json({ saved: true });
   }
+  // The music queue keeps the sessions it has loaded ahead alive, and ends
+  // the ones it drops.
+  const session = path.match(/^\/playback\/([^/]+)(\/keepalive)?$/);
+  if (session && (session[2] ? method === 'POST' : method === 'DELETE')) {
+    if (!s.playback[session[1]]) return fail(404, 'Playback not found');
+    if (session[2]) return json({ alive: true });
+    delete s.playback[session[1]];
+    return json({ deleted: true });
+  }
   return false;
 }

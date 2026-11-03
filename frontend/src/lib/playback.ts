@@ -15,6 +15,13 @@ export type MediaChoice = {
   /** This choice's place in `queue`, or in the queue it was taken from. */
   queueIndex?: number;
   queue?: MediaChoice[];
+  /** What the music dock shows for a track. */
+  artwork_url?: string;
+  artist?: string;
+  album?: string;
+  duration?: number;
+  /** The queue starts shuffled. */
+  shuffle?: boolean;
 };
 /** Media that is playing, or still starting in a desktop MPV window. */
 export type PlayingMedia = { id: string; launching: boolean };

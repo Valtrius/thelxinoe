@@ -76,6 +76,14 @@ function pageFrame(signal: AbortSignal): Promise<void> {
   });
 }
 
+// Resolves once the next frame has gone to the screen. Work started then cannot
+// hold back the animations in that frame, which carry on off the main thread.
+export async function framePainted(signal: AbortSignal) {
+  await pageFrame(signal);
+  await new Promise((resolve) => setTimeout(resolve));
+  signal.throwIfAborted();
+}
+
 class PagePreparation {
   private pending = 0;
   private revision = 0;

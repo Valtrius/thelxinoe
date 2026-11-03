@@ -43,7 +43,7 @@
     />
   {:else if route.section === 'Statistics'}
     <ContentSkeleton label="Loading statistics" variant="statistics" />
-  {:else if (route.section === 'Discover' && route.detail) || (['Movies', 'Shows'].includes(route.section) && route.item)}
+  {:else if (route.section === 'Discover' && route.detail) || (['Movies', 'Shows', 'Music'].includes(route.section) && route.item)}
     <ContentSkeleton label="Loading details" variant="detail" />
   {:else}
     <MediaSkeleton
@@ -137,22 +137,21 @@
             go({ section: 'Discover', settings: route.settings, detail })}
         />{/key}
     {:catch error}{@render failed(error)}{/await}
-  {:else if ['Movies', 'Shows', 'Music'].includes(route.section)}
+  {:else if route.section === 'Music'}
+    {#await pages.music()}{@render loading()}{:then { default: MusicSection }}
+      <MusicSection {route} {user} {play} {go} {updateFilters} />
+    {:catch error}{@render failed(error)}{/await}
+  {:else if route.section === 'Movies' || route.section === 'Shows'}
     {#key route.section}
       {#await pages.library()}{@render loading()}{:then { default: LibraryView }}
         <LibraryView
           domain={route.section}
           admin={user.role === 'admin'}
-          userId={user.id}
-          focusId={route.item}
-          ancestors={route.ancestors}
           searchQuery={route.query}
           collectionId={route.collection}
           filtersChanged={(query, collection) =>
             updateFilters({ ...route, query, collection })}
-          selectedChanged={(item, ancestors) =>
-            go({ ...route, item, ancestors })}
-          {play}
+          opened={(item) => go({ ...route, item })}
         />
       {:catch error}{@render failed(error)}{/await}
     {/key}

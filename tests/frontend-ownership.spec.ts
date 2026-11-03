@@ -294,20 +294,15 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
     await page.route('**/api/v1/playlists', (route) =>
       route.fulfill({ json: { items: [] } }),
     );
-    // A track card opens its details, which play it with the rest of the list.
+    // A row of the Tracks list plays it with the rest of the list.
     const play = async (title: string) => {
+      const list = page
+        .getByRole('group', { name: 'Music lists' })
+        .getByRole('button', { name: /^Tracks/ });
+      if ((await list.getAttribute('aria-pressed')) !== 'true')
+        await list.click();
       await page
-        .locator('article')
-        .filter({
-          has: page.getByRole('heading', { name: title, exact: true }),
-        })
-        .locator('.card-primary')
-        .click();
-      await expect(
-        page.getByRole('heading', { level: 2, name: title, exact: true }),
-      ).toBeVisible();
-      await page
-        .getByRole('button', { name: 'Play media', exact: true })
+        .getByRole('button', { name: `Play ${title}`, exact: true })
         .click();
     };
     await page.route('**/api/v1/catalog/*/playback', (route) =>
@@ -386,10 +381,8 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
     if (exit === 'replace') {
       await play('Track B');
       await expect(
-        page
-          .getByRole('region', { name: 'Music player', exact: true })
-          .getByRole('heading', { name: 'Track B', exact: true }),
-      ).toBeVisible();
+        page.getByRole('region', { name: 'Music player', exact: true }),
+      ).toContainText('Track B');
     } else if (exit === 'close') {
       await page
         .getByRole('button', { name: 'Close player', exact: true })

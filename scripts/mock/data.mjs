@@ -117,6 +117,7 @@ export function librarySeed() {
       for (let track = 0; track < 5; track++)
         add('track', i * 10 + album * 5 + track, {
           parent_id: parent.id,
+          sort_number: 10001 + track,
           title: [
             'Daybreak',
             'Open Roads',

@@ -219,16 +219,80 @@ export async function mediaApi(s, c) {
   )
     return json(titleList(query.get('kind')));
   if (path === '/catalog') {
+    const kind = query.get('kind');
+    const parent = query.get('parent');
+    const ancestor = query.get('ancestor');
+    const byId = new Map(s.library.map((item) => [item.id, item]));
+    const under = (item) =>
+      item.parent_id === ancestor ||
+      byId.get(item.parent_id)?.parent_id === ancestor;
     let items = s.library.filter((item) =>
-      query.has('parent')
-        ? item.parent_id === query.get('parent')
-        : item.kind === (query.get('kind') ?? 'movie'),
+      parent || ancestor
+        ? (!parent || item.parent_id === parent) &&
+          (!ancestor || under(item)) &&
+          (!kind || item.kind === kind)
+        : item.kind === (kind ?? 'movie'),
     );
     if (query.get('q'))
       items = items.filter((item) =>
         item.title.toLowerCase().includes(query.get('q').toLowerCase()),
       );
-    return json({ items: page(items).map(card), total: items.length });
+    const sort = query.get('sort');
+    const desc = query.get('order') === 'desc';
+    const byTitle = (a, b) => a.title.localeCompare(b.title);
+    if (sort) {
+      const value = (item) =>
+        sort === 'year'
+          ? (item.year ?? null)
+          : sort === 'added'
+            ? s.library.indexOf(item)
+            : null;
+      items = [...items].sort((a, b) => {
+        if (sort === 'title') return desc ? -byTitle(a, b) : byTitle(a, b);
+        const [x, y] = [value(a), value(b)];
+        if ((x == null) !== (y == null)) return x == null ? 1 : -1;
+        return (x == null ? 0 : desc ? y - x : x - y) || byTitle(a, b);
+      });
+    } else if (ancestor)
+      // An artist's tracks come album by album.
+      items = [...items].sort(
+        (a, b) =>
+          byTitle(byId.get(a.parent_id) ?? a, byId.get(b.parent_id) ?? b) ||
+          (a.sort_number ?? 0) - (b.sort_number ?? 0) ||
+          byTitle(a, b),
+      );
+    // What the music pages show beside each item, as the server computes it.
+    const children = (id) =>
+      s.library.filter((entry) => entry.parent_id === id);
+    const facts = (item) => {
+      const parentItem = byId.get(item.parent_id);
+      const grandParent = byId.get(parentItem?.parent_id);
+      if (item.kind === 'track')
+        return {
+          ...item,
+          audio: { codec: 'flac', sample_rate: 44100, bit_depth: 16 },
+          album: parentItem?.title ?? null,
+          artist: grandParent?.title ?? null,
+          artist_id: grandParent?.id ?? null,
+        };
+      if (!['album', 'artist'].includes(item.kind)) return item;
+      const tracks =
+        item.kind === 'album'
+          ? children(item.id)
+          : children(item.id).flatMap((album) => children(album.id));
+      return {
+        ...item,
+        track_count: tracks.length,
+        duration: tracks.reduce((sum, track) => sum + (track.duration ?? 0), 0),
+        ...(item.kind === 'album'
+          ? { artist: parentItem?.title ?? null }
+          : { album_count: children(item.id).length }),
+      };
+    };
+    return json({
+      items: page(items).map((item) => facts(card(item))),
+      total: items.length,
+    });
   }
   if (path === '/catalog/collections')
     return json({

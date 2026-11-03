@@ -24,7 +24,7 @@
     preloadFirstPage,
     preloadPage,
   } from './lib/pages';
-  import { playerFrameReveal } from './lib/player-reveal';
+  import { dockReveal, playerFrameReveal } from './lib/player-reveal';
   import FeatureOutlet from './lib/FeatureOutlet.svelte';
   import PageLoading from './lib/ui/PageLoading.svelte';
   import { PageTransition, pageIdentity } from './lib/page-transition';
@@ -132,8 +132,8 @@
     launchingMedia,
     launchVideo,
     nativeRuns,
-    type NativeView,
   } from './lib/native-playback';
+  import { musicPlayer } from './lib/music/player.svelte';
   import { dismissToastByKey, showToast } from './lib/providers/toasts';
   import { youtubeVideoIdFromInput } from './lib/providers/youtube-video-input';
   import { captureSharedYoutubeVideo } from './lib/providers/youtube-share';
@@ -146,9 +146,12 @@
     providerEnabled,
   } from './lib/providers/availability';
   let playing = $state<MediaChoice | null>(null);
+  // The music dock's queue. It stays through page changes and, on desktop,
+  // beside MPV videos.
+  let music = $state<MediaChoice | null>(null);
   // Desktop videos play in their own MPV windows; `playing` is the page's
-  // player, or the desktop music queue.
-  const playingMedia = $derived(
+  // video player.
+  const pagePlaying = $derived(
     desktop
       ? [
           ...[...launchingMedia].map((id) => ({ id, launching: true })),
@@ -163,6 +166,12 @@
         ? [{ id: playing.id, launching: false }]
         : [],
   );
+  const playingMedia = $derived([
+    ...pagePlaying,
+    ...(musicPlayer.current
+      ? [{ id: musicPlayer.current.id, launching: false }]
+      : []),
+  ]);
   import { Menu } from '@lucide/svelte';
   import {
     api,
@@ -313,19 +322,6 @@
             loadProviders(),
           ]);
           restoreNavigation();
-          if (desktop) {
-            const music = (await invoke<NativeView[]>('mpv_sessions')).find(
-              (view) => view.music,
-            );
-            if (music)
-              playing = {
-                id: music.media_id,
-                title: music.title,
-                kind: 'track',
-                restore: true,
-                run: music.run,
-              };
-          }
         }
       } catch (e) {
         if (
@@ -493,6 +489,7 @@
     navigationReady = false;
     resetAppearance();
     playing = null;
+    music = null;
     user = null;
     events?.close();
     events = undefined;
@@ -534,15 +531,16 @@
     if (routeHref(next) === routeHref(pendingRoute ?? route)) return;
     stopScrollRestoration();
     const scroll = workspace?.scrollTop ?? 0;
-    const preserveSettingsScroll =
-      route.section === 'Settings' &&
-      next.section === 'Settings' &&
-      !next.workflow;
+    const preserveScroll =
+      (route.section === 'Settings' &&
+        next.section === 'Settings' &&
+        !next.workflow) ||
+      (musicHome(route) && musicHome(next));
     history.replaceState({ ...history.state, scroll }, '', location.href);
     writeLocation(
       next,
       replace,
-      preserveWorkspace || preserveSettingsScroll ? scroll : 0,
+      preserveWorkspace || preserveScroll ? scroll : 0,
       routeHref(route),
     );
     if (!preserveWorkspace) {
@@ -552,11 +550,12 @@
     }
     showRoute(
       next,
-      preserveWorkspace || preserveSettingsScroll ? scroll : 0,
-      !preserveWorkspace && !preserveSettingsScroll,
+      preserveWorkspace || preserveScroll ? scroll : 0,
+      !preserveWorkspace && !preserveScroll,
       !preserveWorkspace,
     );
   }
+  const musicHome = (page: AppRoute) => page.section === 'Music' && !page.item;
   function showRoute(
     next: AppRoute,
     scroll: number,
@@ -600,7 +599,9 @@
           ? route.settings === 'services' && next.settings === 'services'
             ? 'service'
             : 'settings'
-          : undefined,
+          : musicHome(route) && musicHome(next)
+            ? 'music'
+            : undefined,
       )
       .then((completed) => {
         if (completed && pendingRoute === next) pendingRoute = undefined;
@@ -741,14 +742,22 @@
   }
   async function playMedia(choice: MediaChoice, resolveYoutube = false) {
     if (!providerEnabled(choice.id)) return;
-    if (desktop && choice.kind !== 'track')
-      return launchDesktopVideo(choice, resolveYoutube);
+    if (choice.kind === 'track') {
+      // The dock slides in with its controls already there.
+      await players.music().catch(() => {});
+      // Music plays in the dock on every platform. In the browser it takes
+      // the page's video player with it; desktop videos run in MPV beside it.
+      if (!desktop) playing = null;
+      music = musicQueue(choice);
+      return;
+    }
+    if (desktop) return launchDesktopVideo(choice, resolveYoutube);
+    music = null;
     await act(async () => {
-      const next = musicQueue(choice);
-      playing = resolveYoutube ? { ...next, resolveYoutube: true } : next;
+      playing = resolveYoutube ? { ...choice, resolveYoutube: true } : choice;
       // The page's own player opens above its content. Compact layouts pin it
       // to the screen instead, so the page keeps its scroll position there.
-      if (!desktop && !(compact && next.kind !== 'track')) {
+      if (!compact) {
         await tick();
         if (workspace) scrollWithMotion(workspace, { top: 0 });
       }
@@ -793,6 +802,7 @@
   $effect(() => {
     void $providers;
     if (playing && !providerEnabled(playing.id)) playing = null;
+    if (music && !providerEnabled(music.id)) music = null;
   });
   $effect(() => {
     void $providers;
@@ -864,7 +874,6 @@
     void boot().then(async () => {
       if (!desktop) return;
       if (user) await preloadPage(route).catch(() => {});
-      if (playing) await players.native().catch(() => {});
       await tick();
       await document.fonts.ready;
       await Promise.all(
@@ -1087,25 +1096,7 @@
         {#if unsavedChanges}<Notice role="status"
             >Unsaved changes were cancelled when leaving the form.</Notice
           >{/if}
-        {#if playing && desktop}{#await players.native()}<p role="status">
-              Loading player…
-            </p>{:then { default: NativePlayer }}<NativePlayer
-              choice={playing}
-              closed={(closedChoice) => {
-                if (playing === closedChoice) playing = null;
-              }}
-            />{:catch error}<Notice role="alert" variant="error"
-              >{String(error)}</Notice
-            >{/await}{:else if playing && playing.kind === 'track'}{#await players.music()}<p
-              role="status"
-            >
-              Loading player…
-            </p>{:then { default: MusicPlayer }}<MusicPlayer
-              choice={playing}
-              closed={() => (playing = null)}
-            />{:catch error}<Notice role="alert" variant="error"
-              >{String(error)}</Notice
-            >{/await}{:else if playing}<div
+        {#if playing}<div
             use:pinnedPlayer
             transition:playerFrameReveal
             class={[
@@ -1167,6 +1158,18 @@
             viewport={workspace}
           />{/if}
       </div>
+      {#if music}<div
+          class="grid shrink-0 grid-cols-[minmax(0,1fr)] grid-rows-[1fr] items-start"
+          transition:dockReveal
+          onoutrostart={() => musicPlayer.stop?.()}
+        >
+          {#await players.music() then { default: MusicDock }}<MusicDock
+              choice={music}
+              closed={() => (music = null)}
+            />{:catch error}<Notice role="alert" variant="error"
+              >{String(error)}</Notice
+            >{/await}
+        </div>{/if}
     </main>
   </div>
 {/if}

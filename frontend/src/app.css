@@ -15,6 +15,12 @@
   }
   --animate-progress-travel: progress-travel 1.8s ease-in-out infinite;
   --animate-status-pulse: status-pulse 1.5s ease-in-out infinite;
+  --animate-music-bar: music-bar 0.9s ease-in-out infinite alternate;
+  @keyframes music-bar {
+    from {
+      transform: scaleY(0.35);
+    }
+  }
   @keyframes progress-travel {
     to {
       left: 100%;

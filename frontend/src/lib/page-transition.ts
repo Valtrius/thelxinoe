@@ -5,7 +5,7 @@ import {
   animationsDisabled,
   type AnimationPlan,
 } from './layout-animation';
-import { preparePage } from './page-readiness';
+import { framePainted, preparePage } from './page-readiness';
 import type { AppRoute } from './navigation';
 
 export function pageIdentity(route: AppRoute): string {
@@ -18,6 +18,7 @@ export function pageIdentity(route: AppRoute): string {
     route.requests,
     route.item,
     route.ancestors,
+    route.view,
     route.playlist,
     route.watchlist,
   ]);
@@ -133,11 +134,13 @@ function depart(source: HTMLElement): Departure {
   source.querySelectorAll('select').forEach((select, index) => {
     selects[index].selectedIndex = select.selectedIndex;
   });
-  // Cards well outside the viewport never show while the copy leaves. Empty
-  // stand-ins of their size keep its layout without laying out their content.
+  // Cards and track rows well outside the viewport never show while the copy
+  // leaves. Empty stand-ins of their size keep its layout without laying out
+  // their content.
   const margin = bounds.height / 4;
-  const cards = copy.querySelectorAll<HTMLElement>('[data-layout-key]');
-  source.querySelectorAll('[data-layout-key]').forEach((card, index) => {
+  const offscreen = '[data-layout-key], [data-track]';
+  const cards = copy.querySelectorAll<HTMLElement>(offscreen);
+  source.querySelectorAll(offscreen).forEach((card, index) => {
     const box = card.getBoundingClientRect();
     if (
       box.bottom >= bounds.top - margin &&
@@ -333,7 +336,7 @@ export class PageTransition {
   async change(
     update: () => Promise<void>,
     restore: () => Promise<void>,
-    region?: 'settings' | 'service',
+    region?: 'settings' | 'service' | 'music',
   ) {
     const root = this.root;
     const content = () =>
@@ -399,10 +402,13 @@ export class PageTransition {
         surface.inert = true;
       }
       if (previous && previous !== this.departure) previous.frame.remove();
-      // The incoming page mounts now, hidden, so its requests run during the
-      // leave animation instead of after it.
+      // The incoming page mounts hidden, as soon as the leave animation is on
+      // screen: its requests run during the animation, and however long the
+      // mount takes cannot hold the animation back.
       preparation = preparePage();
-      const mounted = update().then(() => {
+      const mounted = (
+        this.departure ? framePainted(signal).then(update) : update()
+      ).then(() => {
         signal.throwIfAborted();
         const incoming = content();
         if (incoming && incoming !== surface) {
