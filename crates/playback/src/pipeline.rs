@@ -1,4 +1,7 @@
-use crate::{Options, RemoteSource, Source};
+use crate::{
+    Options, RemoteSource, Source,
+    hardware::{PROGRESS, Watch},
+};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -18,6 +21,10 @@ struct Running {
     _tools: MediaTools,
     _slot: OwnedSemaphorePermit,
     child: Child,
+    watch: Watch,
+    hardware: bool,
+    /// A live stream, whose session ends with its conversion.
+    live: bool,
     directory: PathBuf,
     revision: String,
 }
@@ -31,6 +38,8 @@ pub struct RunHandle {
 pub enum CleanupReason {
     Inactive,
     ProcessFailed,
+    /// The GPU failed; the session converts in software from its next start.
+    HardwareFailed,
     CacheUnreadable,
     CacheLimit,
 }
@@ -53,6 +62,7 @@ pub struct Pipelines {
     running: Mutex<HashMap<String, Running>>,
     slots: Arc<Semaphore>,
     vod: crate::vod::VodCache,
+    pub(crate) hardware: Arc<crate::hardware::Hardware>,
 }
 impl Pipelines {
     pub async fn open(cache: &Path, tools: Runtime) -> Result<Self> {
@@ -64,8 +74,15 @@ impl Pipelines {
         tokio::fs::create_dir_all(&root).await?;
         let slots = Arc::new(Semaphore::new(4));
         let scanner = Arc::new(crate::cache::Scanner::default());
-        let vod = crate::vod::VodCache::open(&root, slots.clone(), tools.clone(), scanner.clone())
-            .await?;
+        let hardware = Arc::new(crate::hardware::Hardware::default());
+        let vod = crate::vod::VodCache::open(
+            &root,
+            slots.clone(),
+            tools.clone(),
+            scanner.clone(),
+            hardware.clone(),
+        )
+        .await?;
         Ok(Self {
             scanner,
             tools,
@@ -73,7 +90,21 @@ impl Pipelines {
             running: Mutex::new(HashMap::new()),
             slots,
             vod,
+            hardware,
         })
+    }
+    /// Whether new video conversions may use the probed GPU.
+    pub fn use_hardware(&self, enabled: bool) {
+        self.hardware.enable(enabled);
+    }
+    pub fn hardware(&self) -> crate::HardwareStatus {
+        self.hardware.status()
+    }
+    /// Finds the GPU conversions use, replacing the previous finding.
+    pub async fn probe_hardware(&self) -> crate::HardwareStatus {
+        self.hardware
+            .probe(self.tools.media(), &self.root.join("hardware-probe"))
+            .await
     }
     pub async fn start(
         &self,
@@ -98,6 +129,7 @@ impl Pipelines {
             encoding,
             timeline_start,
             tools,
+            true,
         )
         .await
     }
@@ -126,9 +158,11 @@ impl Pipelines {
             decision.encoding,
             0.0,
             tools,
+            true,
         )
         .await
     }
+    #[allow(clippy::too_many_arguments)]
     async fn start_input(
         &self,
         id: &str,
@@ -137,12 +171,27 @@ impl Pipelines {
         encoding: crate::Encoding,
         timeline_start: f64,
         tools: MediaTools,
+        gpu: bool,
     ) -> Result<(String, f64)> {
         let mut running = self.running.lock().await;
         if let Some(mut old) = running.remove(id) {
+            // A seek can come before maintenance notices the failed GPU.
+            let failed = old
+                .child
+                .try_wait()
+                .ok()
+                .flatten()
+                .is_some_and(|s| !s.success());
+            if old.hardware && failed && old.watch.gpu_failed(true).await {
+                self.hardware.failed(id, &old.watch.cause().await);
+            }
             let _ = old.child.kill().await;
             let _ = tokio::fs::remove_dir_all(old.directory).await;
         }
+        let hardware = gpu
+            .then(|| self.hardware.accelerator(id))
+            .flatten()
+            .filter(|_| encoding.video && encoding.subtitle.is_none());
         if running.len() >= 4 {
             bail!(
                 "All four conversion slots are busy; try direct playback or wait for a session to finish"
@@ -163,11 +212,37 @@ impl Pipelines {
         let online = matches!(input, Input::Remote { .. });
         let segment_seconds = if online { "2" } else { "6" };
         tools.ffmpeg.verify_unchanged().await?;
+        let probe = match &input {
+            Input::Local(source) => &source.probe,
+            Input::Remote { probe, .. } => *probe,
+        };
+        let mut args = encoding.args(options, probe, hardware.as_ref())?;
+        if let (Input::Local(_), Some(subtitle)) = (&input, encoding.subtitle) {
+            let filter = args
+                .output
+                .iter()
+                .position(|arg| arg == "-vf")
+                .context("Burning a subtitle requires a video conversion")?;
+            args.output[filter] = "-filter_complex".into();
+            args.output[filter + 1] = crate::burn_graph(
+                &args.output[filter + 1],
+                subtitle,
+                burn_preroll(timeline_start),
+            );
+        }
         let mut command = Command::new(&tools.ffmpeg.path);
         if let Input::Remote { source, .. } = &input {
             // FFREPORT may otherwise write signed upstream addresses to disk.
             command.env_remove("FFREPORT");
-            command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
+            command.args([
+                "-hide_banner",
+                "-loglevel",
+                "level+warning",
+                "-nostdin",
+                "-y",
+            ]);
+            command.args(PROGRESS);
+            command.args(&args.input);
             for address in std::iter::once(&source.video).chain(source.audio.iter()) {
                 command.args(source.network_args()).args([
                     "-rw_timeout",
@@ -187,7 +262,14 @@ impl Pipelines {
                 },
             ]);
         } else if let Input::Local(source) = &input {
-            command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
+            command.args([
+                "-hide_banner",
+                "-loglevel",
+                "level+warning",
+                "-nostdin",
+                "-y",
+            ]);
+            command.args(PROGRESS);
             let audio = if encoding.subtitle.is_some() {
                 // The burn graph paces itself. Its input starts earlier to read a subtitle that
                 // already shows at the start; the audio comes from an exact seek, which copied
@@ -195,7 +277,9 @@ impl Pipelines {
                 command
                     .args(["-ss"])
                     .arg((timeline_start - burn_preroll(timeline_start)).to_string())
-                    .args(["-seek_timestamp", "1", "-i"])
+                    .args(["-seek_timestamp", "1"])
+                    .args(&args.input)
+                    .arg("-i")
                     .arg(&source.path)
                     .args(["-readrate", "1", "-ss", &timeline_start.to_string()])
                     .args(["-seek_timestamp", "1", "-i"])
@@ -211,8 +295,9 @@ impl Pipelines {
                         &timeline_start.to_string(),
                         "-seek_timestamp",
                         "1",
-                        "-i",
                     ])
+                    .args(&args.input)
+                    .arg("-i")
                     .arg(&source.path);
                 if source.video_codec().is_some() {
                     command.args(["-map", "0:v:0"]);
@@ -227,21 +312,7 @@ impl Pipelines {
             );
         }
         command.args(["-sn", "-dn", "-map_metadata", "-1"]);
-        let probe = match &input {
-            Input::Local(source) => &source.probe,
-            Input::Remote { probe, .. } => *probe,
-        };
-        let mut args = encoding.args(options, probe)?;
-        if let (Input::Local(_), Some(subtitle)) = (&input, encoding.subtitle) {
-            let filter = args
-                .iter()
-                .position(|arg| arg == "-vf")
-                .context("Burning a subtitle requires a video conversion")?;
-            args[filter] = "-filter_complex".into();
-            args[filter + 1] =
-                crate::burn_graph(&args[filter + 1], subtitle, burn_preroll(timeline_start));
-        }
-        command.args(args);
+        command.args(&args.output);
         if encoding.video {
             command.args([
                 "-force_key_frames",
@@ -308,26 +379,31 @@ impl Pipelines {
             }))
             .arg(directory.join("index.m3u8"))
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
-        let child = command
+        let mut child = command
             .spawn()
             .context("Start FFmpeg playback conversion")?;
+        let watch = Watch::new(&mut child);
         running.insert(
             id.to_owned(),
             Running {
                 encoding,
-                _tools: tools,
+                _tools: tools.clone(),
                 _slot: slot,
                 child,
+                watch: watch.clone(),
+                hardware: hardware.is_some(),
+                live: online,
                 directory: directory.clone(),
                 revision: revision.clone(),
             },
         );
         drop(running);
+        let mut exited = None;
         for _ in 0..200 {
             if tokio::fs::try_exists(directory.join("index.m3u8")).await? {
                 return Ok((revision, timeline_start));
@@ -340,7 +416,8 @@ impl Pipelines {
                 if run.revision != revision {
                     bail!("Playback was superseded");
                 }
-                if run.child.try_wait()?.is_some() {
+                exited = run.child.try_wait()?;
+                if exited.is_some() {
                     break;
                 }
             }
@@ -351,6 +428,26 @@ impl Pipelines {
             revision,
         })
         .await;
+        if hardware.is_some() && watch.gpu_failed(exited.is_some()).await {
+            self.hardware.failed(
+                id,
+                &if exited.is_some() {
+                    watch.cause().await
+                } else {
+                    "No frame within 20 seconds".into()
+                },
+            );
+            return Box::pin(self.start_input(
+                id,
+                input,
+                options,
+                encoding,
+                timeline_start,
+                tools,
+                false,
+            ))
+            .await;
+        }
         bail!("FFmpeg could not prepare playback within 20 seconds")
     }
     pub async fn start_vod(
@@ -404,6 +501,7 @@ impl Pipelines {
             .map(|run| run.directory.join(name)))
     }
     pub async fn stop(&self, id: &str) {
+        self.hardware.forget(id);
         self.vod.stop(id).await;
         if let Some(mut run) = self.running.lock().await.remove(id) {
             let _ = run.child.kill().await;
@@ -503,8 +601,13 @@ impl Pipelines {
                 || size > 768 * 1024 * 1024
                 || total > 2 * 1024 * 1024 * 1024
             {
+                // A live stream can't restart where it stopped, so its session ends either way.
                 let reason = if !active.contains(id) {
+                    self.hardware.forget(id);
                     CleanupReason::Inactive
+                } else if failed && run.hardware && !run.live && run.watch.gpu_failed(true).await {
+                    self.hardware.failed(id, &run.watch.cause().await);
+                    CleanupReason::HardwareFailed
                 } else if failed {
                     CleanupReason::ProcessFailed
                 } else {
@@ -538,6 +641,21 @@ impl Pipelines {
 /// still showing, is never read.
 fn burn_preroll(start: f64) -> f64 {
     start.min(10.0)
+}
+
+#[cfg(test)]
+impl Pipelines {
+    /// Ends a session's conversion as if the GPU ran it and FFmpeg logged `error` first.
+    pub(crate) async fn end_gpu_run(&self, id: &str, error: &str) {
+        let mut runs = self.running.lock().await;
+        let run = runs.get_mut(id).unwrap();
+        run.hardware = true;
+        run.watch.feed(error);
+        run.child.kill().await.unwrap();
+    }
+    pub(crate) async fn uses_gpu(&self, id: &str) -> Option<bool> {
+        self.running.lock().await.get(id).map(|run| run.hardware)
+    }
 }
 
 async fn keyframe_start(source: &Source, position: f64, tools: &MediaTools) -> Result<f64> {

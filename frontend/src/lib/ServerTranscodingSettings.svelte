@@ -11,15 +11,53 @@
   import Notice from './ui/Notice.svelte';
   import Button from './ui/Button.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
+  import StatusChip from './ui/StatusChip.svelte';
   import { cardBlockClass } from './ui/styles';
 
-  type Policy = { video_transcoding: boolean; audio_transcoding: boolean };
+  type Policy = {
+    video_transcoding: boolean;
+    audio_transcoding: boolean;
+    hardware_conversion: boolean;
+  };
+  type Hardware =
+    | { state: 'unprobed' | 'probing' }
+    | { state: 'unavailable'; reason: string }
+    | {
+        state: 'ready';
+        device: string;
+        description: string;
+        scale: boolean;
+        h264: boolean;
+        hevc: boolean;
+        hevc_10bit: boolean;
+        tone_map: boolean;
+        deinterlace: boolean;
+      };
   const ids = $props.id();
   let confirmed = $state<Policy | null>(null);
   let draft = $state<Policy>({
     video_transcoding: true,
     audio_transcoding: true,
+    hardware_conversion: false,
   });
+  let hardware = $state<Hardware | null>(null);
+  const detected = $derived(
+    hardware?.state === 'ready'
+      ? `${hardware.description} on ${hardware.device}: ${[
+          'H.264 encoding',
+          hardware.h264 && 'H.264 decoding',
+          hardware.hevc && 'HEVC decoding',
+          hardware.hevc_10bit && 'HEVC 10-bit decoding',
+          hardware.scale && 'scaling',
+          hardware.tone_map && 'tone mapping',
+          hardware.deinterlace && 'deinterlacing',
+        ]
+          .filter(Boolean)
+          .join(', ')}`
+      : hardware?.state === 'unavailable'
+        ? hardware.reason
+        : undefined,
+  );
   let saving = $state(false),
     refreshPending = $state(false),
     error = $state('');
@@ -46,8 +84,11 @@
     const previous = JSON.stringify(draft);
     error = '';
     try {
-      const value = await api<Policy>('/admin/settings');
+      const value = await api<Policy & { hardware?: Hardware }>(
+        '/admin/settings',
+      );
       if (!current()) return;
+      hardware = value.hardware ?? null;
       if (
         confirmed &&
         (saving ||
@@ -61,6 +102,7 @@
       confirmed = {
         video_transcoding: value.video_transcoding,
         audio_transcoding: value.audio_transcoding,
+        hardware_conversion: value.hardware_conversion === true,
       };
       draft = { ...confirmed };
     } catch (caught) {
@@ -100,13 +142,34 @@
       <SettingRow label="Allow audio transcoding" for={`${ids}-audio`}>
         <Switch id={`${ids}-audio`} bind:checked={draft.audio_transcoding} />
       </SettingRow>
+      <SettingRow
+        label="Hardware video transcoding"
+        for={`${ids}-hardware`}
+        description={detected}
+        dimmed={!draft.video_transcoding}
+      >
+        {#snippet badge()}
+          {#if hardware?.state === 'ready'}
+            <StatusChip tone="ok">Detected</StatusChip>
+          {:else if hardware?.state === 'unavailable'}
+            <StatusChip>Unavailable</StatusChip>
+          {:else if hardware}
+            <StatusChip>Detecting</StatusChip>
+          {/if}
+        {/snippet}
+        <Switch
+          id={`${ids}-hardware`}
+          disabled={!draft.video_transcoding}
+          bind:checked={draft.hardware_conversion}
+        />
+      </SettingRow>
     </AutoSaveForm>
   {:else if !error}
     <div class={cardBlockClass}>
       <ContentSkeleton
         label="Loading transcoding settings"
         variant="settings"
-        count={2}
+        count={3}
       />
     </div>
   {/if}

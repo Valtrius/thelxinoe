@@ -36,6 +36,17 @@ Thelxinoe is in **alpha**: expect bugs, and an alpha may occasionally ask you to
 3. Create `server` and `cache` under the state root, the backup directory, and `movies`, `tv`, `music` and `downloads` under the media root. Grant the account read/write access; UID/GID settings do not change existing ownership. Keep state/backups outside media. For existing services, keep their paths and prepare shared network access below.
 4. Run `docker compose up -d --wait`. Open `http://<server-IP>:8484` and create the administrator right away: the first account created on a new server is the administrator.
 
+To transcode video on an Intel GPU, give the server its render node and the node's group, `<RENDER_GID>` from `stat -c %g /dev/dri/renderD128`, in `compose.override.yaml` beside `compose.yaml`, run `docker compose up -d`, then turn on **Settings → Server → Hardware video transcoding**:
+
+```yaml
+services:
+  server:
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
+    group_add:
+      - '<RENDER_GID>'
+```
+
 Thelxinoe updates itself: **Settings → Server** installs new releases automatically in a nightly maintenance window, or on request. The window's hours follow the server default timezone, UTC until you change it. Keep `THELXINOE_SERVER_IMAGE` and `THELXINOE_CONTROLLER_IMAGE` unset: updates rely on the `latest` tags, and a pinned version comes back with the next `docker compose up -d`. To update by hand, or to repair an installation that missed updates, run `docker compose pull && docker compose up -d`; it always installs the latest release. After editing `.env` or `compose.override.yaml`, run `docker compose up -d`. The controller adopts recreated containers as the same deployment; pointing Thelxinoe at a different state folder starts a different deployment.
 
 The Windows app is on the [releases page](https://github.com/Valtrius/thelxinoe/releases/latest). It is not code-signed, so Windows SmartScreen asks first: choose **More info → Run anyway**. The app keeps itself up to date.
@@ -142,7 +153,7 @@ Code and tests define behavior. Keep docs to commands, operational prerequisites
 
 ## Limits
 
-Supported targets: Linux x86-64 server, Windows x64 desktop and Chromium web/PWA. Transcoding uses software. Provider playback is public media only; account linking does not grant restricted playback. Offline media, casting, background Web Push, remote API-only media managers and full Jellyfin server compatibility are outside scope.
+Supported targets: Linux x86-64 server, Windows x64 desktop and Chromium web/PWA. Hardware transcoding supports Intel GPUs only. Provider playback is public media only; account linking does not grant restricted playback. Offline media, casting, background Web Push, remote API-only media managers and full Jellyfin server compatibility are outside scope.
 
 Wholphin 1.0.8 and Jellyfin Android TV 0.19.10 were locally checked for local media; online libraries were checked in Wholphin only. Wholphin can lose a long active subtitle cue after seeking. Universal audio conversion without playback-info is unsupported. LAN broadcast discovery still needs testing on a real LAN. Repeat client checks before claiming support for newer versions.
 

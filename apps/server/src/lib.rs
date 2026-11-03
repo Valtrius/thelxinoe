@@ -41,7 +41,7 @@ mod statistics;
 pub mod subtitles;
 mod timezones;
 pub mod tools;
-mod transcoding;
+pub mod transcoding;
 pub mod trickplay;
 pub mod user_media;
 pub mod validation;
@@ -139,12 +139,13 @@ impl AppState {
         let secrets = SecretStore::open(&config.state.join("secrets"))?;
         let release_pending = product::maintenance_pending(&db).await?;
         let tools = Arc::new(tools::Manager::new(&config.state));
+        let playback =
+            thelxinoe_playback::Pipelines::open(&config.cache, tools.runtime.clone()).await?;
+        playback.use_hardware(transcoding.hardware_conversion);
         Ok(Self {
             server_id: Arc::new(server_id),
             event_epoch: Arc::new(thelxinoe_core::id()),
-            playback: Arc::new(
-                thelxinoe_playback::Pipelines::open(&config.cache, tools.runtime.clone()).await?,
-            ),
+            playback: Arc::new(playback),
             tools,
             transcoding: Arc::new(tokio::sync::RwLock::new(transcoding)),
             subtitle_slots: Arc::new(tokio::sync::Semaphore::new(2)),

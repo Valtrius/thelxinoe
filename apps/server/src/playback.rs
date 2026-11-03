@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Stdio, time::Duration};
 use thelxinoe_core::{Principal, id, now};
-use thelxinoe_playback::{Options, Preferences, Source, Track};
+use thelxinoe_playback::{CleanupReason, Options, Preferences, Source, Track};
 use tower::ServiceExt;
 
 pub async fn source(state: &AppState, media: &str, file: Option<&str>) -> Result<Source> {
@@ -691,6 +691,10 @@ async fn maintain_once(state: &AppState) -> anyhow::Result<()> {
     let ids = active.keys().cloned().collect::<Vec<_>>();
     for stopped in state.playback.maintain(&candidates, &ids).await? {
         let handle = &stopped.handle;
+        // The session restarts in software when the player seeks.
+        if matches!(stopped.reason, CleanupReason::HardwareFailed) {
+            continue;
+        }
         let _lifecycle = state.playback_lifecycle.write(&[&handle.session]).await;
         if !state.playback.has_newer_run(handle).await
             && let Some(generation) = active.get(&handle.session)

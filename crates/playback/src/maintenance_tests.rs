@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use tokio::sync::oneshot;
 
 #[path = "../../../tests/helpers/tool-runtime.rs"]
-mod tool_runtime;
+pub(crate) mod tool_runtime;
 
 async fn fixture(root: &Path) -> (Arc<Pipelines>, Source, Options) {
     let tools = thelxinoe_tools::Runtime::new(root.to_path_buf());
@@ -350,6 +350,7 @@ async fn a_keyframe_index_is_built_once_per_file_generation() {
         Arc::new(tokio::sync::Semaphore::new(4)),
         tools.clone(),
         Arc::new(crate::cache::Scanner::default()),
+        Arc::default(),
     )
     .await
     .unwrap();

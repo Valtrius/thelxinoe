@@ -770,6 +770,7 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
     *state.transcoding.write().await = crate::transcoding::Policy {
         video_transcoding: false,
         audio_transcoding: false,
+        hardware_conversion: false,
     };
     let path = format!("/Items/{item}/PlaybackInfo");
     for (profile, selected, delivered) in [

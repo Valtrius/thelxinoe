@@ -291,6 +291,8 @@ async function fixture(
     autoQuality?: string;
     local?: boolean;
     stalled?: boolean;
+    // The conversion's playlist is gone: until a seek restarts it, or for good.
+    lost?: 'once' | 'always';
     tools?: 'metadata' | 'playback';
     music?: boolean;
     gapless?: boolean;
@@ -776,6 +778,12 @@ async function fixture(
           body: mp4.subarray(start, end + 1),
         });
       }
+      if (
+        url.pathname.endsWith('.m3u8') &&
+        (options.lost === 'always' ||
+          (options.lost === 'once' && !url.searchParams.has('at')))
+      )
+        return route.fulfill({ status: 404, body: '' });
       if (url.pathname.endsWith('.m3u8'))
         return route.fulfill({
           contentType: 'application/vnd.apple.mpegurl',
@@ -2476,6 +2484,20 @@ test('failed streams can retry and closing during preparation stops a late sessi
     .poll(() => pending.progress.some((p) => p.state === 'stopped'))
     .toBe(true);
   expect(pending.errors).toEqual([]);
+});
+
+test('a conversion that dies restarts once where it stopped', async ({
+  page,
+}) => {
+  const restarted = await fixture(page, { mode: 'remux', lost: 'once' });
+  await decoded(page);
+  expect(restarted.seeks).toEqual([0]);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  const lost = await fixture(page, { mode: 'remux', lost: 'always' });
+  await expect(page.getByRole('alert')).toContainText('Playback interrupted');
+  expect(lost.seeks).toEqual([0]);
+  expect(lost.errors).toEqual([]);
 });
 
 test('buffered HLS resumes without rebuilding its pipeline and quality changes preserve pause and position', async ({

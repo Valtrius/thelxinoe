@@ -224,6 +224,7 @@ fn settings_view(db: &rusqlite::Connection) -> anyhow::Result<SettingsView> {
         transcoding: crate::transcoding::Policy {
             video_transcoding: setting("video_transcoding", "true")? == "true",
             audio_transcoding: setting("audio_transcoding", "true")? == "true",
+            hardware_conversion: setting("hardware_conversion", "false")? == "true",
         },
     })
 }
@@ -246,7 +247,7 @@ pub(super) async fn save_settings(
         if let Some(format)=settings.time_format {
             tx.execute("INSERT INTO settings VALUES ('time_format',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[format])?;
         }
-        for (key, value) in [("video_transcoding", settings.video_transcoding), ("audio_transcoding", settings.audio_transcoding)] {
+        for (key, value) in [("video_transcoding", settings.video_transcoding), ("audio_transcoding", settings.audio_transcoding), ("hardware_conversion", settings.hardware_conversion)] {
             if let Some(value) = value {
                 tx.execute("INSERT INTO settings VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value.to_string()])?;
             }
