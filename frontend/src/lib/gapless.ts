@@ -701,8 +701,9 @@ export class GaplessQueue {
       e.activity.setActive(false);
       this.release(e);
     }
-    this.closing = (async () => {
-      await this.context.close();
+    // The audio is freed once the context closes; a queue replacing this one
+    // waits for that, not for the server to answer the reports.
+    void (async () => {
       for (const [i, e] of entries.entries()) {
         if (!this.ownsSession()) break;
         if (i === 0 && playing[i])
@@ -710,6 +711,7 @@ export class GaplessQueue {
         else await api(`/playback/${e.playback.id}`, 'DELETE').catch(() => {});
       }
     })();
+    this.closing = this.context.close();
     return this.closing;
   }
 }

@@ -228,7 +228,7 @@ test('server-setting events cannot invalidate a save acknowledgement or block la
 });
 
 for (const exit of ['replace', 'close', 'revoke'] as const) {
-  test(`music teardown owns pending queue replacement on ${exit}`, async ({
+  test(`a held stopped report neither delays the next music queue nor outlives ${exit}`, async ({
     page,
   }, testInfo) => {
     const fixture = await installUiFixture(page, { section: 'Music' });
@@ -378,6 +378,12 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
     await expect.poll(() => prepared.length).toBe(2);
     await play('Track A');
     await expect.poll(() => heldStop).toBe(true);
+    // The next queue starts, and reads the track after it, while the old
+    // one's report waits on the server.
+    await expect.poll(() => prepared.slice(2)).toEqual(['A', 'B']);
+    await expect(
+      page.getByRole('region', { name: 'Music player', exact: true }),
+    ).toContainText('Track A');
     if (exit === 'replace') {
       await play('Track B');
       await expect(
@@ -409,6 +415,8 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
         page.getByRole('button', { name: 'Sign out', exact: true }),
       ).toBeVisible();
     }
+    // Nothing prepares after the dock closes or the session ends.
+    const settled = prepared.length;
     const response = page.waitForResponse(
       (response) =>
         response.url().includes('/progress') &&
@@ -420,7 +428,7 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
       await expect(
         page.getByLabel('Music position', { exact: true }),
       ).toBeVisible();
-      await expect.poll(() => prepared).toEqual(['Q0', 'A', 'B']);
+      await expect.poll(() => prepared.at(-1)).toBe('B');
     } else
       await expect(
         page.getByRole('region', { name: 'Music player' }),
@@ -436,9 +444,7 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
         }),
       )
       .toBe(exit === 'replace' ? 1 : 0);
-    expect(prepared).toEqual(
-      exit === 'replace' ? ['Q0', 'A', 'B'] : ['Q0', 'A'],
-    );
+    if (exit !== 'replace') expect(prepared).toHaveLength(settled);
     expect(fixture.errors).toEqual([]);
     expect(fixture.unexpected).toEqual([]);
     await testInfo.attach('music-lifetime', {

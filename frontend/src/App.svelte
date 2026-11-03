@@ -149,6 +149,8 @@
   // The music dock's queue. It stays through page changes and, on desktop,
   // beside MPV videos.
   let music = $state<MediaChoice | null>(null);
+  // Counts music launches, so one still loading the dock can be superseded.
+  let musicLaunch = 0;
   // Desktop videos play in their own MPV windows; `playing` is the page's
   // video player.
   const pagePlaying = $derived(
@@ -743,8 +745,12 @@
   async function playMedia(choice: MediaChoice, resolveYoutube = false) {
     if (!providerEnabled(choice.id)) return;
     if (choice.kind === 'track') {
+      const launch = ++musicLaunch;
+      const owned = captureSession();
       // The dock slides in with its controls already there.
       await players.music().catch(() => {});
+      // A browser video, a later track or a new session came first.
+      if (launch !== musicLaunch || !owned()) return;
       // Music plays in the dock on every platform. In the browser it takes
       // the page's video player with it; desktop videos run in MPV beside it.
       if (!desktop) playing = null;
@@ -752,6 +758,7 @@
       return;
     }
     if (desktop) return launchDesktopVideo(choice, resolveYoutube);
+    musicLaunch++;
     music = null;
     await act(async () => {
       playing = resolveYoutube ? { ...choice, resolveYoutube: true } : choice;
