@@ -11,6 +11,7 @@ mod playback;
 mod profile;
 pub(crate) mod quick_connect;
 pub(crate) mod stills;
+mod trickplay;
 mod user_data;
 pub(crate) const API_VERSION: &str = "12.1.0";
 use crate::{
@@ -151,6 +152,8 @@ fn safe_route(path: &str) -> String {
         "Filters2",
         "Collections",
         "Playlists",
+        "Trickplay",
+        "tiles.m3u8",
     ];
     path.split('/')
         .filter(|s| !s.is_empty())
@@ -454,6 +457,14 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
     {
         let media = canonical(parts[1]);
         return playback::stream(state, &p, &media, &query, request).await;
+    }
+    if parts.len() == 5
+        && parts[0] == "Videos"
+        && parts[2] == "Trickplay"
+        && (method == "GET" || method == "HEAD")
+    {
+        let (item, width, name) = (parts[1], parts[3], parts[4]);
+        return trickplay::serve(&state, &query, item, width, name, request).await;
     }
     if method == "GET" && (lower == "/userviews" || lower.ends_with("/views")) {
         return Ok(axum::Json(catalog::views(&state).await?).into_response());

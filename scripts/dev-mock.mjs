@@ -5,7 +5,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { artwork } from './density-fixtures.mjs';
 import { createMockState, installMockApi } from './mock/api.mjs';
 import { archiveMovies } from './mock/data.mjs';
-import { prepareSample, samplePath } from './mock/playback.mjs';
+import { prepareSample, samplePath, sheetPath } from './mock/playback.mjs';
 import { mockUiPlugin } from './mock/build.mjs';
 import { freePort } from './ci-resources.mjs';
 import { controlScenario, scenarioView } from './mock/scenarios.mjs';
@@ -96,6 +96,13 @@ const server = await preview({
               return res.end(
                 'WEBVTT\n\n00:00:00.000 --> 00:00:45.000\nLocal preview media\n\n00:00:45.000 --> 00:01:30.000\nThelxinoe playback preview\n',
               );
+            }
+            if (
+              req.url === '/mock-media/trickplay-0.jpg' &&
+              existsSync(sheetPath)
+            ) {
+              res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+              return createReadStream(sheetPath).pipe(res);
             }
             if (req.url !== '/mock-media/sample.mp4') {
               res.writeHead(404);

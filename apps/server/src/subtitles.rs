@@ -23,8 +23,9 @@ use thelxinoe_core::resource_locks::ResourceLocks;
 use thelxinoe_playback::{Source, Track};
 use tokio::sync::Semaphore;
 
-/// Whole files read at once, by requests and the worker together.
-static PASSES: Semaphore = Semaphore::const_new(2);
+/// Whole media files read at once: subtitle extractions, by requests and the worker, and
+/// trickplay sheets.
+pub(crate) static READS: Semaphore = Semaphore::const_new(2);
 /// One extraction per file version.
 static LOCKS: LazyLock<ResourceLocks> = LazyLock::new(ResourceLocks::default);
 const COMPLETE: &str = "complete";
@@ -211,7 +212,7 @@ async fn ensure(
         Some(false) => anyhow::bail!("The last extraction of this file failed less than a day ago"),
         None => {}
     }
-    let _pass = PASSES.acquire().await?;
+    let _pass = READS.acquire().await?;
     let tools = state.tools.runtime.media()?;
     let root = root(state);
     tokio::fs::create_dir_all(&root).await?;
@@ -366,7 +367,11 @@ pub async fn prune(state: &AppState) -> anyhow::Result<()> {
     sweep(&root(state), &keep, DAY).await?;
     expire_fonts(&fonts(state), DAY).await
 }
-async fn sweep(root: &Path, keep: &HashSet<String>, age: Duration) -> anyhow::Result<()> {
+pub(crate) async fn sweep(
+    root: &Path,
+    keep: &HashSet<String>,
+    age: Duration,
+) -> anyhow::Result<()> {
     let mut entries = match tokio::fs::read_dir(root).await {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),

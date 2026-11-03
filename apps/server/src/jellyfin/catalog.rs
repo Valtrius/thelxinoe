@@ -177,6 +177,31 @@ async fn browse_media(
         },
     )
     .await?;
+    // As with chapters, a single item has its trickplay and lists have it only when asked.
+    if single
+        || query.get("fields").is_some_and(|fields| {
+            fields
+                .split(',')
+                .any(|f| f.eq_ignore_ascii_case("Trickplay"))
+        })
+    {
+        let video =
+            |item: &Value| ["Movie", "Episode"].contains(&item["Type"].as_str().unwrap_or(""));
+        let ids = items
+            .iter()
+            .filter(|item| video(item))
+            .filter_map(|item| item["Id"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        if !ids.is_empty() {
+            let mut trickplay = crate::trickplay::jellyfin(state, ids).await?;
+            for item in items.iter_mut().filter(|item| video(item)) {
+                item["Trickplay"] = item["Id"]
+                    .as_str()
+                    .and_then(|id| trickplay.remove(id))
+                    .unwrap_or_else(|| json!({}));
+            }
+        }
+    }
     let art = crate::managers::status::title_art(
         state,
         items

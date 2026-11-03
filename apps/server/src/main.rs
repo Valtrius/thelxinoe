@@ -119,6 +119,11 @@ async fn main() -> Result<()> {
         thelxinoe_server::subtitles::run,
     ));
     workers.spawn(supervise(
+        "trickplay",
+        state.clone(),
+        thelxinoe_server::trickplay::run,
+    ));
+    workers.spawn(supervise(
         "operations",
         state.clone(),
         thelxinoe_server::operations::run,
