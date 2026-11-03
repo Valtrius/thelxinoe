@@ -47,47 +47,9 @@ pub(super) async fn browse_media(
         });
     db.read("jellyfin.catalog.browse_media", move |db| {
         let (args, filter) = media_filter(db, &q, uid, id, parent)?;
-        let directions = q
-            .get("sortorder")
-            .map(String::as_str)
-            .unwrap_or("Ascending")
-            .split(',')
-            .collect::<Vec<_>>();
-        let sort = q
-            .get("sortby")
-            .map(String::as_str)
-            .unwrap_or("SortName")
-            .split(',')
-            .take(8)
-            .enumerate()
-            .map(|(index, key)| {
-                let column = match key.to_ascii_lowercase().as_str() {
-                    "datecreated" => "m.created_at",
-                    "dateplayed" => "ep.updated_at",
-                    "random" => "random()",
-                    "premieredate" | "productionyear" => "m.year",
-                    "indexnumber" => "m.sort_number",
-                    "parentindexnumber" => {
-                        "CASE WHEN m.kind='track' THEN m.sort_number/10000 ELSE p.sort_number END"
-                    }
-                    "communityrating" => "json_extract(m.metadata,'$.vote_average')",
-                    _ => "c.title COLLATE NOCASE",
-                };
-                let direction = if directions
-                    .get(index)
-                    .or(directions.first())
-                    .is_some_and(|s| s.eq_ignore_ascii_case("Descending"))
-                {
-                    "DESC"
-                } else {
-                    "ASC"
-                };
-                format!("{column} {direction}")
-            })
-            .collect::<Vec<_>>()
-            .join(",");
         let sql = format!(
-            "{SELECT} {FROM} {filter} ORDER BY {sort},m.id LIMIT {} OFFSET {start}",
+            "{SELECT} {FROM} {filter} ORDER BY {} LIMIT {} OFFSET {start}",
+            order(&q),
             crate::jellyfin::storage::sql_limit(limit)
         );
         let rows = db
@@ -108,6 +70,68 @@ pub(super) async fn browse_media(
         Ok((rows.into_iter().map(|v| v.0).collect::<Vec<_>>(), total))
     })
     .await
+}
+
+/// The IDs of every item `browse_media` lists for a query, in its order.
+pub(super) async fn media_ids(db: &Database, uid: String, q: Query) -> anyhow::Result<Vec<String>> {
+    db.read("jellyfin.catalog.media_ids", move |db| {
+        let parent = q.get("parentid").map(|s| canonical(s));
+        let (args, filter) = media_filter(db, &q, uid, None, parent)?;
+        let sql = format!("SELECT m.id {FROM} {filter} ORDER BY {}", order(&q));
+        Ok(db
+            .prepare(&sql)?
+            .query_map(rusqlite::params_from_iter(&args), |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+    .await
+}
+
+fn order(q: &Query) -> String {
+    let directions = q
+        .get("sortorder")
+        .map(String::as_str)
+        .unwrap_or("Ascending")
+        .split(',')
+        .collect::<Vec<_>>();
+    let mut sort = q
+        .get("sortby")
+        .map(String::as_str)
+        .unwrap_or("SortName")
+        .split(',')
+        .take(8)
+        .enumerate()
+        .map(|(index, key)| {
+            let column = match key.to_ascii_lowercase().as_str() {
+                "datecreated" => "m.created_at",
+                "dateplayed" => "ep.updated_at",
+                "random" => "random()",
+                "premieredate" | "productionyear" => "m.year",
+                "indexnumber" => "m.sort_number",
+                "parentindexnumber" => {
+                    "CASE WHEN m.kind='track' THEN m.sort_number/10000 ELSE p.sort_number END"
+                }
+                "communityrating" => "json_extract(m.metadata,'$.vote_average')",
+                // Jellyfin's episode sort name: `001 - 0002 - Title` for S01E02.
+                "sortname" => {
+                    "(CASE WHEN m.kind='episode' THEN CASE WHEN p.sort_number IS NULL THEN '' ELSE printf('%03d - ',p.sort_number) END||CASE WHEN m.sort_number IS NULL THEN '' ELSE printf('%04d - ',m.sort_number) END||c.title ELSE c.title END) COLLATE NOCASE"
+                }
+                _ => "c.title COLLATE NOCASE",
+            };
+            let direction = if directions
+                .get(index)
+                .or(directions.first())
+                .is_some_and(|s| s.eq_ignore_ascii_case("Descending"))
+            {
+                "DESC"
+            } else {
+                "ASC"
+            };
+            format!("{column} {direction}")
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    sort.push_str(",m.id");
+    sort
 }
 
 fn media_filter(

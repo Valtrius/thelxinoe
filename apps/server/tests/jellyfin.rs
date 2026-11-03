@@ -1493,6 +1493,411 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(data["IsFavorite"], false);
 }
+/// The item IDs and total of a Jellyfin list.
+async fn list(state: &AppState, path: &str, headers: &[(&str, &str)]) -> (Vec<String>, u64) {
+    let (status, page) = call(state, path, "GET", Value::Null, headers).await;
+    assert_eq!(status, StatusCode::OK, "{path}: {page}");
+    let ids = page["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].as_str().unwrap().to_owned())
+        .collect();
+    (ids, page["TotalRecordCount"].as_u64().unwrap())
+}
+/// Episodes of the given show, season and number, each with its own present file unless
+/// `file` names another episode's.
+async fn insert_episodes(state: &AppState, episodes: &[(&str, &str, i64, &str, Option<&str>)]) {
+    let episodes = episodes
+        .iter()
+        .map(|(id, season, number, title, file)| {
+            (
+                id.to_string(),
+                season.to_string(),
+                *number,
+                title.to_string(),
+                file.unwrap_or(id).to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    state.db.write("test.fixture", move |db| {
+        let tx = db.transaction()?;
+        for (id, season, number, title, file) in episodes {
+            tx.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) SELECT ?1,root_id,'episode',?2,?1,?3,?4,1 FROM media WHERE id=?2", rusqlite::params![id, season, title, number])?;
+            tx.execute("INSERT OR IGNORE INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) SELECT ?1,root_id,?1,'generation',10,'mtime',?1,'{}',1 FROM media WHERE id=?2", rusqlite::params![file, season])?;
+            tx.execute("INSERT INTO media_sources VALUES (?1,?2)", rusqlite::params![id, file])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }).await.unwrap();
+}
+/// When the user last watched each episode.
+async fn watched_at(state: &AppState, user: &str, episodes: &[(&str, i64)]) {
+    let (user, episodes) = (
+        user.to_owned(),
+        episodes
+            .iter()
+            .map(|(id, at)| (id.to_string(), *at))
+            .collect::<Vec<_>>(),
+    );
+    state.db.write("test.fixture", move |db| {
+        for (id, at) in episodes {
+            db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,1,?3) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=1,updated_at=?3", rusqlite::params![user, id, at])?;
+        }
+        Ok(())
+    }).await.unwrap();
+}
+#[tokio::test]
+async fn next_up_and_episode_lists_follow_jellyfin_series_order() {
+    let (_temp, state, _) = fixture().await;
+    state.db.write("test.fixture", |db| {
+        for (id, path) in [("shows", "/shows"), ("anime", "/anime")] {
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES (?1,?1,'shows',?2)", [id, path])?;
+        }
+        for (id, root, kind, parent, number) in [
+            ("alpha", "shows", "show", None, None),
+            ("alpha-0", "shows", "season", Some("alpha"), Some(0)),
+            ("alpha-1", "shows", "season", Some("alpha"), Some(1)),
+            ("alpha-2", "shows", "season", Some("alpha"), Some(2)),
+            ("beta", "anime", "show", None, None),
+            ("beta-1", "anime", "season", Some("beta"), Some(1)),
+        ] {
+            db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,?2,?3,?4,?1,?1,?5,1)", rusqlite::params![id, root, kind, parent, number])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    // Titles sort against their numbers, and one file holds S02E02 and S02E03.
+    insert_episodes(
+        &state,
+        &[
+            ("special", "alpha-0", 1, "Aardvark", None),
+            ("a1e1", "alpha-1", 1, "Zulu", None),
+            ("a1e2", "alpha-1", 2, "Yankee", None),
+            ("a1e3", "alpha-1", 3, "X-ray", None),
+            ("a2e1", "alpha-2", 1, "Whiskey", None),
+            ("a2e2", "alpha-2", 2, "Victor", None),
+            ("a2e3", "alpha-2", 3, "Uniform", Some("a2e2")),
+            ("a2e4", "alpha-2", 4, "Tango", None),
+            ("b1e1", "beta-1", 1, "Charlie", None),
+            ("b1e2", "beta-1", 2, "Bravo", None),
+            ("b1e3", "beta-1", 3, "Alpha", None),
+        ],
+    )
+    .await;
+    let token = login(&state, "alice", DEVICE).await;
+    let alice = [("X-Emby-Token", token.as_str())];
+    let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+
+    // A season lists by episode number unless the client sorts otherwise; Android TV
+    // reads the rest of a season from an episode's index.
+    for (path, expected) in [
+        (
+            "/Items?ParentId=alpha-1",
+            ["a1e1", "a1e2", "a1e3"].as_slice(),
+        ),
+        (
+            "/Items?ParentId=alpha-1&SortBy=SortName",
+            &["a1e1", "a1e2", "a1e3"],
+        ),
+        (
+            "/Items?ParentId=alpha-1&SortBy=SortName&SortOrder=Descending",
+            &["a1e3", "a1e2", "a1e1"],
+        ),
+        ("/Items?ParentId=alpha-1&StartIndex=1", &["a1e2", "a1e3"]),
+        (
+            "/Items?ParentId=alpha-1&SortBy=Name",
+            &["a1e3", "a1e2", "a1e1"],
+        ),
+    ] {
+        assert_eq!(list(&state, path, &alice).await.0, ids(expected), "{path}");
+    }
+    // A series lists season by season, Specials first, whatever the client sorts by.
+    let series = [
+        "special", "a1e1", "a1e2", "a1e3", "a2e1", "a2e2", "a2e3", "a2e4",
+    ];
+    for path in [
+        "/Shows/alpha/Episodes",
+        "/Shows/alpha/Episodes?SortBy=SortName&SortOrder=Descending",
+    ] {
+        assert_eq!(
+            list(&state, path, &alice).await,
+            (ids(&series), 8),
+            "{path}"
+        );
+    }
+    // AdjacentTo and StartItemId apply before paging, and to nothing outside the list.
+    for (path, expected, total) in [
+        (
+            "/Shows/alpha/Episodes?AdjacentTo=a2e1",
+            ["a1e3", "a2e1", "a2e2"].as_slice(),
+            3,
+        ),
+        (
+            "/Shows/alpha/Episodes?AdjacentTo=special",
+            &["special", "a1e1"],
+            2,
+        ),
+        (
+            "/Shows/alpha/Episodes?AdjacentTo=a2e4",
+            &["a2e3", "a2e4"],
+            2,
+        ),
+        ("/Shows/alpha/Episodes?AdjacentTo=b1e1", &[], 0),
+        (
+            "/Shows/alpha/Episodes?AdjacentTo=a2e1&Limit=1",
+            &["a1e3"],
+            3,
+        ),
+        (
+            "/Shows/alpha/Episodes?StartItemId=a1e3",
+            &["a1e3", "a2e1", "a2e2", "a2e3", "a2e4"],
+            5,
+        ),
+        (
+            "/Shows/alpha/Episodes?StartItemId=a1e3&StartIndex=1&Limit=2",
+            &["a2e1", "a2e2"],
+            5,
+        ),
+        (
+            "/Shows/alpha/Episodes?SeasonId=alpha-2&StartItemId=a2e3",
+            &["a2e3", "a2e4"],
+            2,
+        ),
+        (
+            "/Shows/alpha/Episodes?SeasonId=alpha-2&StartItemId=a1e3",
+            &[],
+            0,
+        ),
+        (
+            "/Shows/alpha/Episodes?StartItemId=a2e2&AdjacentTo=a2e2",
+            &["a2e2", "a2e3"],
+            2,
+        ),
+    ] {
+        assert_eq!(
+            list(&state, path, &alice).await,
+            (ids(expected), total),
+            "{path}"
+        );
+    }
+
+    // A series offers its first episode until one is watched; the list holds only the
+    // series that were.
+    for (path, expected) in [
+        ("/Shows/NextUp?SeriesId=alpha", ["a1e1"].as_slice()),
+        ("/Shows/NextUp?SeriesId=beta", &["b1e1"]),
+        ("/Shows/NextUp", &[]),
+    ] {
+        assert_eq!(list(&state, path, &alice).await.0, ids(expected), "{path}");
+    }
+    for id in ["a1e1", "b1e1"] {
+        let (status, data) = call(
+            &state,
+            &format!("/UserPlayedItems/{id}"),
+            "POST",
+            Value::Null,
+            &alice,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{data}");
+    }
+    // 2023-11-14T22:13:20Z and 2023-11-16T02:00:00Z.
+    watched_at(
+        &state,
+        "alice",
+        &[("a1e1", 1_700_000_000), ("b1e1", 1_700_100_000)],
+    )
+    .await;
+    for (path, expected) in [
+        ("/Shows/NextUp?SeriesId=alpha", ["a1e2"].as_slice()),
+        ("/Shows/NextUp?SeriesId=beta", &["b1e2"]),
+        ("/Shows/NextUp", &["b1e2", "a1e2"]),
+        ("/Shows/NextUp?StartIndex=1&Limit=1", &["a1e2"]),
+        ("/Shows/NextUp?ParentId=shows", &["a1e2"]),
+        ("/Shows/NextUp?ParentId=anime", &["b1e2"]),
+        (
+            "/Shows/NextUp?NextUpDateCutoff=2023-11-15T00:00:00.0000000",
+            &["b1e2"],
+        ),
+        (
+            "/Shows/NextUp?NextUpDateCutoff=2023-11-15T00:00:00Z",
+            &["b1e2"],
+        ),
+        ("/Shows/NextUp?NextUpDateCutoff=2023-11-15", &["b1e2"]),
+        (
+            "/Shows/NextUp?SeriesId=alpha&ParentId=anime&NextUpDateCutoff=2023-11-15T00:00",
+            &["a1e2"],
+        ),
+    ] {
+        assert_eq!(list(&state, path, &alice).await.0, ids(expected), "{path}");
+    }
+    let bob = login(&state, "bob", DEVICE).await;
+    assert_eq!(
+        list(
+            &state,
+            "/Shows/NextUp?SeriesId=alpha",
+            &[("X-Emby-Token", &bob)]
+        )
+        .await
+        .0,
+        ids(&["a1e1"])
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/Shows/NextUp?NextUpDateCutoff=yesterday",
+            "GET",
+            Value::Null,
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    // A next episode with a resume position stays unless the client leaves those to
+    // Continue watching.
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute(
+                "INSERT INTO edition_progress VALUES ('alice','a1e2','',30,100,1700200000)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        list(&state, "/Shows/NextUp?SeriesId=alpha", &alice).await.0,
+        ids(&["a1e2"])
+    );
+    assert_eq!(
+        list(&state, "/Shows/NextUp?EnableResumable=false", &alice)
+            .await
+            .0,
+        ids(&["b1e2"])
+    );
+    // Each episode of a file is its own: watching one of them by hand offers the other,
+    // and watching both moves past the file.
+    for id in ["a1e2", "a1e3", "a2e1", "a2e2"] {
+        call(
+            &state,
+            &format!("/UserPlayedItems/{id}"),
+            "POST",
+            Value::Null,
+            &alice,
+        )
+        .await;
+    }
+    assert_eq!(
+        list(&state, "/Shows/NextUp?SeriesId=alpha", &alice).await.0,
+        ids(&["a2e3"])
+    );
+    call(&state, "/UserPlayedItems/a2e3", "POST", Value::Null, &alice).await;
+    assert_eq!(
+        list(&state, "/Shows/NextUp?SeriesId=alpha", &alice).await.0,
+        ids(&["a2e4"])
+    );
+    // Rewatching offers the watched episode after the one played last.
+    watched_at(
+        &state,
+        "alice",
+        &[
+            ("b1e2", 1_700_000_001),
+            ("b1e3", 1_700_000_002),
+            ("b1e1", 1_700_300_000),
+        ],
+    )
+    .await;
+    for (path, expected) in [
+        ("/Shows/NextUp?SeriesId=beta", [].as_slice()),
+        (
+            "/Shows/NextUp?SeriesId=beta&EnableRewatching=true",
+            &["b1e2"],
+        ),
+        ("/Shows/NextUp", &["a2e4"]),
+        ("/Shows/NextUp?EnableRewatching=true", &["a2e4", "b1e2"]),
+    ] {
+        assert_eq!(list(&state, path, &alice).await.0, ids(expected), "{path}");
+    }
+}
+#[tokio::test]
+async fn next_up_lists_every_series_most_recently_watched_first() {
+    let (_temp, state, first_party) = fixture().await;
+    state.db.write("test.fixture", |db| {
+        let tx = db.transaction()?;
+        tx.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('shows','Shows','shows','/shows')", [])?;
+        for number in 1..=60 {
+            tx.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES (?1,'shows','show',?1,?2,1)", rusqlite::params![format!("show-{number}"), format!("Show {number:02}")])?;
+            tx.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'shows','season',?2,?1,'Season 1',1,1)", rusqlite::params![format!("season-{number}"), format!("show-{number}")])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }).await.unwrap();
+    let episodes = (1..=60)
+        .flat_map(|number| {
+            [1, 2].map(|episode| {
+                (
+                    format!("show-{number}-e{episode}"),
+                    format!("season-{number}"),
+                    episode,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    insert_episodes(
+        &state,
+        &episodes
+            .iter()
+            .map(|(id, season, episode)| (id.as_str(), season.as_str(), *episode, "Episode", None))
+            .collect::<Vec<_>>(),
+    )
+    .await;
+    let watched = (1..=60)
+        .map(|number| (format!("show-{number}-e1"), 1_700_000_000 + number))
+        .collect::<Vec<_>>();
+    watched_at(
+        &state,
+        "alice",
+        &watched
+            .iter()
+            .map(|(id, at)| (id.as_str(), *at))
+            .collect::<Vec<_>>(),
+    )
+    .await;
+    let token = login(&state, "alice", DEVICE).await;
+    let alice = [("X-Emby-Token", token.as_str())];
+    let next = |numbers: std::ops::RangeInclusive<i64>| {
+        numbers
+            .rev()
+            .map(|number| format!("show-{number}-e2"))
+            .collect::<Vec<_>>()
+    };
+    for (path, expected) in [
+        ("/Shows/NextUp", next(1..=60)),
+        ("/Shows/NextUp?Limit=0", next(1..=60)),
+        ("/Shows/NextUp?StartIndex=50&Limit=5", next(6..=10)),
+        ("/Shows/NextUp?StartIndex=55", next(1..=5)),
+    ] {
+        assert_eq!(list(&state, path, &alice).await, (expected, 60), "{path}");
+    }
+    // Home's own Next up keeps its order and length.
+    let (status, home) = call(
+        &state,
+        "/api/v1/me/home",
+        "GET",
+        Value::Null,
+        &[("Authorization", &format!("Bearer {first_party}"))],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{home}");
+    let shelf = home["next_up"].as_array().unwrap();
+    assert_eq!(shelf.len(), 50);
+    assert_eq!(
+        (&shelf[0]["id"], &shelf[49]["id"]),
+        (&json!("show-1-e2"), &json!("show-50-e2"))
+    );
+}
 #[tokio::test]
 async fn compatibility_credentials_are_private_revocable_and_transport_scoped() {
     let (_temp, state, first_party) = fixture().await;
