@@ -15,9 +15,11 @@ import {
   exerciseConfiguration,
   exerciseConfigurationUpgrades,
 } from './recyclarr-configuration-fixture.mjs';
+import { guideRevision, mirrorGuides } from './recyclarr-guide-mirror.mjs';
 
 const project = fixtureId('recyclarr');
 const root = resolve(`.local/${project}`);
+const liveGuides = !!process.env.THELXINOE_RECYCLARR_LIVE_GUIDES;
 const docker = (...args) => {
   try {
     return execFileSync('docker', args, {
@@ -346,6 +348,10 @@ async function waitUpdate(id, stage) {
   );
 }
 try {
+  if (!liveGuides)
+    process.env.THELXINOE_RECYCLARR_GUIDE_MIRROR = mirrorGuides(
+      `${root}/guide-mirror`,
+    );
   browser = await launchBrowser();
   context = await browser.newContext({
     ignoreHTTPSErrors: true,
@@ -419,6 +425,7 @@ try {
     );
     const catalog = await api(`/admin/recyclarr/catalog/${kind}`);
     expect(catalog.items.length).toBeGreaterThan(10);
+    if (!liveGuides) expect(catalog.resources).toBe(guideRevision);
   }
   const preview = await api('/admin/recyclarr/preview', 'POST', {});
   await waitRun(preview.id, 'previewed');

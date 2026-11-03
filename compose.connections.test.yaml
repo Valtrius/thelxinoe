@@ -2,6 +2,8 @@ services:
   controller:
     image: ${THELXINOE_CONTROLLER_IMAGE:-thelxinoe-service-controller:local}
     network_mode: none
+    environment:
+      THELXINOE_RECYCLARR_GUIDE_MIRROR: ${THELXINOE_RECYCLARR_GUIDE_MIRROR:-}
     volumes:
       - runtime:/run/thelxinoe
       - deployment:/var/lib/thelxinoe/deployment
