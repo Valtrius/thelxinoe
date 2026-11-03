@@ -1375,6 +1375,67 @@ test('backup restore selects every Owned service and explains held services', as
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('backup archives fit the settings column and keep Restore on screen at every width', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'backups',
+  });
+  await page.route('**/api/v1/admin/backups**', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: '33333333-3333-3333-3333-333333333333',
+            stage: 'complete',
+            created_at: 1760000000,
+            error: null,
+            archive: '33333333-3333-3333-3333-333333333333.age',
+            automatic: true,
+          },
+        ],
+        destination: '/backups',
+        policy: { policy: 'manual', retain: 7 },
+        passphrase_saved: false,
+        automatic: null,
+        window: { start: 3, end: 5 },
+        timezone: 'UTC',
+      },
+    }),
+  );
+  await page.goto('/');
+  const card = page.getByRole('region', { name: 'Backup archives' });
+  const restore = card.getByRole('button', { name: 'Restore this backup' });
+  // Below the width every column needs, each archive stacks without headers.
+  for (const [width, stacked] of [
+    [390, true],
+    [1024, true],
+    [1440, false],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await restore.scrollIntoViewIfNeeded();
+    await expect(
+      card.getByRole('columnheader', { name: 'File', exact: true }),
+    ).toBeVisible({ visible: !stacked });
+    expect(
+      await card.evaluate(
+        (node) =>
+          node.querySelector('table')!.getBoundingClientRect().right <=
+          node.getBoundingClientRect().right,
+      ),
+    ).toBe(true);
+    const bounds = (await restore.boundingBox())!;
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+    await testInfo.attach(`backup-archives-${width}`, {
+      body: await card.screenshot(),
+      contentType: 'image/png',
+    });
+  }
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('a started backup keeps its guidance while the server restarts', async ({
   page,
 }) => {
