@@ -304,6 +304,7 @@ fn album_ready(album: &Value) -> bool {
         })
     })
 }
+/// Monitors an artist for one requested album without taking on its future albums.
 async fn monitor_artist(c: &Connection<'_>, mut artist: Value) -> Result<Value> {
     if artist["monitored"] == true {
         return Ok(artist);
@@ -313,6 +314,7 @@ async fn monitor_artist(c: &Connection<'_>, mut artist: Value) -> Result<Value> 
         .filter(|v| *v > 0)
         .ok_or_else(unavailable)?;
     artist["monitored"] = json!(true);
+    artist["monitorNewItems"] = json!("none");
     c.call(
         reqwest::Method::PUT,
         &format!("artist/{id}"),
@@ -397,6 +399,7 @@ async fn perform(state: &AppState, key: &str, wait: bool) -> Result<bool> {
                     artist["qualityProfileId"] = json!(defaults.quality_profile);
                     artist["metadataProfileId"] = json!(defaults.metadata_profile);
                     artist["monitored"] = json!(defaults.monitored);
+                    artist["monitorNewItems"] = json!("none");
                     // Lidarr applies these after its first scan of the artist. "none" also
                     // unmonitors the artist and every album, the requested one included.
                     artist["addOptions"] = if defaults.monitored {

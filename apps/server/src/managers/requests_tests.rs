@@ -145,7 +145,7 @@ async fn progress(state: &AppState, job: &str) -> (String, Option<i64>, bool) {
 
 #[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
-async fn a_new_artist_keeps_the_album_monitored_and_waits_for_its_tracks_before_searching() {
+async fn a_new_artist_monitors_only_the_requested_album_and_waits_for_its_tracks() {
     let lidarr = Shared::default();
     let (_temp, state, server, job) = requested(lidarr.clone()).await;
     assert!(
@@ -156,6 +156,7 @@ async fn a_new_artist_keeps_the_album_monitored_and_waits_for_its_tracks_before_
         let l = lidarr.lock().unwrap();
         let artist = &l.added.as_ref().unwrap()["artist"];
         assert_eq!(artist["monitored"], true);
+        assert_eq!(artist["monitorNewItems"], "none");
         assert_eq!(
             artist["addOptions"],
             json!({"albumsToMonitor":[ALBUM],"searchForMissingAlbums":false})
@@ -196,6 +197,7 @@ async fn an_unmonitored_artist_is_monitored_before_the_add_and_a_slow_album_is_s
         // The refresh that the add starts writes back the artist it read.
         assert_eq!(l.calls, ["monitor artist", "add album", "AlbumSearch [7]"]);
         assert_eq!(l.added.as_ref().unwrap()["artist"]["monitored"], true);
+        assert_eq!(l.artists[0]["monitorNewItems"], "none");
     }
     assert_eq!(progress(&state, &job.id).await.0, "requested");
     server.abort();
