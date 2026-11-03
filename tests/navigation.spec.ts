@@ -828,6 +828,53 @@ test('music URLs keep the artist above an album, open a track on its album and m
   });
 });
 
+test('a music list keeps paging after a search replaces it while a page loads', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, { section: 'Music' });
+  const held = responseGate();
+  const pages: string[] = [];
+  await page.route('**/api/v1/catalog?**', async (route) => {
+    const url = new URL(route.request().url());
+    const q = url.searchParams.get('q') ?? '';
+    const offset = Number(url.searchParams.get('offset') ?? 0);
+    const limit = Number(url.searchParams.get('limit') ?? 500);
+    if (offset) pages.push(`${q}:${offset}`);
+    // The first list's second page answers only after the search.
+    if (!q && offset) await held.promise;
+    const items = Array.from(
+      { length: Math.min(limit, 300 - offset) },
+      (_, i) => ({
+        id: `${q}track-${offset + i}`,
+        title: `${q}Track ${offset + i}`,
+        kind: 'track',
+        available: true,
+        metadata: {},
+      }),
+    );
+    return route.fulfill({ json: { items, total: 300 } });
+  });
+  const scrollToEnd = () =>
+    page
+      .locator('.workspace-scroll')
+      .evaluate((element) => element.scrollTo(0, element.scrollHeight));
+  await page.goto('/#library/music?view=tracks');
+  await expect(
+    page.getByRole('button', { name: 'Play Track 0', exact: true }),
+  ).toBeVisible();
+  await scrollToEnd();
+  await expect.poll(() => pages).toContain(':120');
+  await page.getByLabel('Search tracks', { exact: true }).fill('x');
+  await expect(
+    page.getByRole('button', { name: 'Play xTrack 0', exact: true }),
+  ).toBeVisible();
+  await scrollToEnd();
+  await expect.poll(() => pages).toContain('x:120');
+  held.release();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('playlist drafts survive leaving the editor and can be discarded explicitly', async ({
   page,
 }, testInfo) => {

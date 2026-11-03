@@ -46,7 +46,8 @@ export async function listAll(path: string, pageSize = 500) {
       `${path}&offset=${items.length}&limit=${pageSize}`,
     );
     items.push(...page.items);
-    if (!page.items.length || items.length >= page.total) return items;
+    // A list without a total is not paged.
+    if (!page.items.length || !(items.length < page.total)) return items;
   }
 }
 export const albumTracks = (album: string) =>

@@ -3,7 +3,6 @@
   import { Play, Shuffle } from '@lucide/svelte';
   import { revisions } from '../server-events.svelte';
   import { navigationCache } from '../navigation-cache';
-  import { api } from '../api';
   import { activity, byMedia } from '../activity';
   import {
     attention,
@@ -28,10 +27,10 @@
     artwork,
     catalogQuery,
     length,
+    listAll,
     plural,
     trackQueue,
     type MusicItem,
-    type MusicPage,
   } from './library';
 
   let { artist, admin, play, openAlbum, backLabel, back } = $props<{
@@ -51,7 +50,6 @@
       parent: artist.id,
       sort: 'year',
       order: newest ? 'desc' : 'asc',
-      limit: 500,
     }),
   );
   function load() {
@@ -61,9 +59,9 @@
       .read(
         'catalog',
         current,
-        () => api<MusicPage>(current),
-        (page) => {
-          if (path === current) albums = page.items;
+        () => listAll(current),
+        (items) => {
+          if (path === current) albums = items;
         },
       )
       .catch((e) => {

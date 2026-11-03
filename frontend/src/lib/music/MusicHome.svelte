@@ -169,6 +169,8 @@
       listing = kind,
       q = query || undefined;
     busy = true;
+    // A page still loading for the previous list is dropped with it.
+    extending = false;
     error = '';
     pageError = '';
     try {
