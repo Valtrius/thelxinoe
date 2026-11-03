@@ -1265,6 +1265,7 @@
         step="0.1"
         {position}
         bind:scrub
+        preview={active?.trickplay}
         disabled={busy || !active}
         onseek={(to) => void seek(to)}
       />

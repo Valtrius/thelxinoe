@@ -33,6 +33,10 @@ pub async fn source(state: &AppState, media: &str, file: Option<&str>) -> Result
 pub(crate) async fn idle(state: &AppState) -> anyhow::Result<bool> {
     storage::idle(&state.db).await
 }
+/// Whether something played in the last two minutes.
+pub(crate) async fn playing(state: &AppState) -> anyhow::Result<bool> {
+    storage::playing(&state.db).await
+}
 async fn user_preferences(state: &AppState, p: &Principal) -> Result<Preferences> {
     let user = p.user.id.clone();
     Ok(storage::user_preferences(user, &state.db)
@@ -273,8 +277,9 @@ pub(crate) async fn create_with_delivery(
         .into_iter()
         .map(|index| format!("/api/v1/playback/{sid}/fonts/{index}?grant={grant}"))
         .collect();
+    let trickplay = crate::trickplay::web(state, p, &source).await?;
     Ok(
-        json!({"id":sid,"file_id":source.id,"generation":source.generation,"url":url,"grant":grant,"mode":mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":position,"duration":duration,"timeline_start":timeline_start,"video":source.video_codec().is_some(),"tracks":tracks,"subtitles":subtitles,"fonts":fonts,"selected_subtitle":input.options.subtitle,"options":input.options,"chapters":thelxinoe_playback::chapters(&source.probe),"probe":source.probe,"replay_gain":prefs.replay_gain}),
+        json!({"id":sid,"file_id":source.id,"generation":source.generation,"url":url,"grant":grant,"mode":mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":position,"duration":duration,"timeline_start":timeline_start,"video":source.video_codec().is_some(),"tracks":tracks,"subtitles":subtitles,"fonts":fonts,"selected_subtitle":input.options.subtitle,"options":input.options,"chapters":thelxinoe_playback::chapters(&source.probe),"trickplay":trickplay,"probe":source.probe,"replay_gain":prefs.replay_gain}),
     )
 }
 #[derive(Clone)]
