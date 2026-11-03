@@ -7,6 +7,7 @@ export const budgets = {
   provision: 300000,
   stateCopy: 300000,
   transfer: 900000,
+  liveGuides: 120000,
 };
 export const requestBudget = (path) =>
   /^\/admin\/services\/[^/]+\/transfer$/.test(path) ||
@@ -18,7 +19,12 @@ export const requestBudget = (path) =>
       // connection check (20 s per service call), and stop/restart give Docker 30 s.
       /^\/admin\/stack\/[^/]+\/action$/.test(path)
       ? budgets.restart
-      : budgets.request;
+      : // A GitHub fetch has been seen taking 43 s, and a preview or sync can make
+        // one for each service kind before it responds.
+        process.env.THELXINOE_RECYCLARR_LIVE_GUIDES &&
+          /^\/admin\/recyclarr\/(catalog\/|preview$|sync$)/.test(path)
+        ? budgets.liveGuides
+        : budgets.request;
 
 export async function waitForState(
   label,

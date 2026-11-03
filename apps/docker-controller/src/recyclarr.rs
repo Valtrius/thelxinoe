@@ -164,6 +164,18 @@ pub(super) async fn cleanup(d: &Deployment, key: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Fixtures name a directory from `scripts/recyclarr-guide-mirror.mjs` so Recyclarr's
+/// GitHub fetches read their pinned guide commits instead.
+fn mirror_guides(env: &mut Vec<String>, mounts: &mut Vec<Value>) {
+    if let Some(source) = std::env::var("THELXINOE_RECYCLARR_GUIDE_MIRROR")
+        .ok()
+        .filter(|source| !source.is_empty())
+    {
+        mounts
+            .push(json!({"Type":"bind","Source":source,"Target":"/guide-mirror","ReadOnly":true}));
+        env.push("GIT_CONFIG_SYSTEM=/guide-mirror/gitconfig".into());
+    }
+}
 async fn command_in(
     d: &Deployment,
     s: &Managed,
@@ -194,7 +206,9 @@ async fn command_in(
             json!({"Type":"bind","Source":format!("{runtime}/logs"),"Target":"/config/logs"}),
         );
     }
-    let spec = json!({"Image":s.image,"User":identity.user(),"Cmd":args,"Tty":true,"Env":["TZ=UTC","TERM=dumb"],"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.deployment":d.id,"app.thelxinoe.recyclarr-service":s.id,"app.thelxinoe.recyclarr-run":operation},"HostConfig":{"NetworkMode":d.network,"RestartPolicy":{"Name":"no"},"Mounts":mounts,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824u64,"PidsLimit":128}});
+    let mut env = vec!["TZ=UTC".to_owned(), "TERM=dumb".to_owned()];
+    mirror_guides(&mut env, &mut mounts);
+    let spec = json!({"Image":s.image,"User":identity.user(),"Cmd":args,"Tty":true,"Env":env,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.deployment":d.id,"app.thelxinoe.recyclarr-service":s.id,"app.thelxinoe.recyclarr-run":operation},"HostConfig":{"NetworkMode":d.network,"RestartPolicy":{"Name":"no"},"Mounts":mounts,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824u64,"PidsLimit":128}});
     let container = request(
         Method::POST,
         &format!(
@@ -724,7 +738,11 @@ pub(super) async fn qualify(
             )
             .map_err(Into::into),
         )?;
-        let fetch=request(Method::POST,"/containers/create",Some(json!({"Image":image,"User":identity.user(),"Cmd":["list","quality-profiles","radarr","--raw"],"Tty":true,"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":d.network,"ReadonlyRootfs":true,"Tmpfs":{"/tmp":"rw,nosuid,nodev,size=256m"},"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Mounts":[{"Type":"bind","Source":format!("{host}/config"),"Target":"/config"}]}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
+        let mut env = Vec::new();
+        let mut mounts =
+            vec![json!({"Type":"bind","Source":format!("{host}/config"),"Target":"/config"})];
+        mirror_guides(&mut env, &mut mounts);
+        let fetch=request(Method::POST,"/containers/create",Some(json!({"Image":image,"User":identity.user(),"Cmd":["list","quality-profiles","radarr","--raw"],"Tty":true,"Env":env,"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":d.network,"ReadonlyRootfs":true,"Tmpfs":{"/tmp":"rw,nosuid,nodev,size=256m"},"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Mounts":mounts}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
         let result = async {
             updates::start(&fetch).await?;
             updates::wait(&fetch, 200).await
