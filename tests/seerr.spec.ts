@@ -561,6 +561,32 @@ test('posters align at the top of discovery rows and search rows with wrapped ti
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('discovery rows fit a phone while a later row is still loading', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const fixture = await discoverFixture(page);
+  await page.route('**/api/v1/seerr/discover/upcoming-tv', () => {});
+  await page.goto('/');
+  await expect(
+    page.getByRole('status', { name: 'Loading Upcoming series' }),
+  ).toBeVisible();
+  const rail = page
+    .getByRole('region', { name: 'Trending', exact: true })
+    .locator('.media-row-rail');
+  await expect(rail).toBeVisible();
+  // The rail ends at the page's edge, so scrolling it reaches its last poster.
+  expect(
+    await rail.evaluate(
+      (node) =>
+        node.getBoundingClientRect().right <=
+        node.closest('[data-page-content]')!.getBoundingClientRect().right,
+    ),
+  ).toBe(true);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('search opens dedicated details, requests once, and returns to the search', async ({
   page,
 }) => {
