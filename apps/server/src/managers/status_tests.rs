@@ -800,6 +800,73 @@ fn references_and_fingerprints() {
     assert_ne!(one.fingerprint(), Snapshot::default().fingerprint());
 }
 
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
+#[tokio::test]
+async fn recyclarr_work_pauses_polling_of_the_managers_it_writes_to() {
+    let (temp, state, _) = fixture().await;
+    let media = temp.path().join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    let media = media.canonicalize().unwrap();
+    let (queues, titles) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (queue_calls, title_calls) = (queues.clone(), titles.clone());
+    let stub = Router::new()
+        .route(
+            "/api/v3/queue",
+            get(move || {
+                queue_calls.fetch_add(1, Ordering::SeqCst);
+                async { Json(json!({"totalRecords":0,"records":[]})) }
+            }),
+        )
+        .route(
+            "/api/v3/movie",
+            get(move || {
+                title_calls.fetch_add(1, Ordering::SeqCst);
+                async { Json(json!([])) }
+            }),
+        );
+    let server = bindings::tests::manager(&state, &media, "radarr", stub).await;
+    let mut trackers = HashMap::new();
+    refresh(&state, &mut trackers, false, 0).await;
+    assert_eq!(
+        (queues.load(Ordering::SeqCst), titles.load(Ordering::SeqCst)),
+        (1, 1)
+    );
+
+    // Neither a tick nor an explicit refresh reads the manager during Recyclarr work.
+    let recyclarr = state.managers.guard.service("recyclarr").await;
+    refresh(&state, &mut trackers, false, 0).await;
+    refresh(&state, &mut trackers, true, 0).await;
+    assert_eq!(
+        (queues.load(Ordering::SeqCst), titles.load(Ordering::SeqCst)),
+        (1, 1)
+    );
+    assert!(super::snapshot(&state).services.contains_key("radarr"));
+
+    // The next tick makes up for the refresh that was held back, and only once.
+    drop(recyclarr);
+    refresh(&state, &mut trackers, false, 0).await;
+    assert_eq!(
+        (queues.load(Ordering::SeqCst), titles.load(Ordering::SeqCst)),
+        (2, 2)
+    );
+    refresh(&state, &mut trackers, false, 0).await;
+    assert_eq!(
+        (queues.load(Ordering::SeqCst), titles.load(Ordering::SeqCst)),
+        (3, 2)
+    );
+
+    // Other work on the service or the whole deployment doesn't pause status.
+    let radarr = state.managers.guard.service("radarr").await;
+    refresh(&state, &mut trackers, false, 0).await;
+    assert_eq!(queues.load(Ordering::SeqCst), 4);
+    drop(radarr);
+    let deployment = state.managers.guard.lock().await;
+    refresh(&state, &mut trackers, false, 0).await;
+    assert_eq!(queues.load(Ordering::SeqCst), 5);
+    drop(deployment);
+    server.abort();
+}
+
 #[tokio::test]
 async fn polling_reads_queue_pages_and_only_changed_series_episodes() {
     let (_temp, state, _) = fixture().await;

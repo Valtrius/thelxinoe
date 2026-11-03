@@ -440,6 +440,8 @@ struct Tracker {
     failures: u32,
     retry_at: Option<std::time::Instant>,
     failing_since: Option<std::time::Instant>,
+    /// An explicit refresh arrived while this manager couldn't be read.
+    refresh_owed: bool,
 }
 impl Tracker {
     fn failed(&mut self) {
@@ -528,6 +530,16 @@ async fn refresh(
     }
     for (id, kind) in services {
         let tracker = trackers.entry(id.clone()).or_default();
+        // Creating a custom format clears Radarr's or Sonarr's format cache and reads the
+        // new one back. A read refilling that cache at that moment, which any queue request
+        // can do, fails the creation with an HTTP 500. Recyclarr creates them under this lock.
+        if matches!(kind.as_str(), "radarr" | "sonarr")
+            && state.managers.guard.service_busy("recyclarr")
+        {
+            tracker.refresh_owed |= force;
+            continue;
+        }
+        let force = force || std::mem::take(&mut tracker.refresh_owed);
         // A failing manager waits out its backoff; an explicit refresh tries it now.
         if !force
             && tracker

@@ -64,6 +64,11 @@ impl OperationLocks {
             _all: all,
         })
     }
+
+    /// Whether an operation holds this service. Deployment-wide work doesn't count.
+    pub fn service_busy(&self, kind: &str) -> bool {
+        self.mutex(kind).try_lock().is_err()
+    }
 }
 
 #[cfg(test)]
