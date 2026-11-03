@@ -532,8 +532,16 @@ async fn render(
 pub async fn run(state: AppState) -> anyhow::Result<()> {
     state.tools.wait_ready().await;
     loop {
-        let more = next(&state).await?;
-        tokio::time::sleep(Duration::from_secs(if more { 5 } else { 60 })).await;
+        let pause = if !next(&state).await? {
+            60
+        } else if crate::playback::idle(&state).await? {
+            // A sheet was taken or skipped: the next one follows straight away, so a library
+            // of short videos isn't paced by the wait.
+            0
+        } else {
+            5
+        };
+        tokio::time::sleep(Duration::from_secs(pause)).await;
     }
 }
 
