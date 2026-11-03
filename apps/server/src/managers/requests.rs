@@ -1,5 +1,8 @@
 #[path = "../storage/managers/requests.rs"]
 mod storage;
+#[cfg(test)]
+#[path = "requests_tests.rs"]
+mod tests;
 
 use super::domain::{CreateAcquisition, DecideAcquisition, RequestAction, RequestState};
 use super::*;
@@ -261,24 +264,67 @@ async fn update(
     storage::update(key, status, &state.db, manager).await?;
     Ok(())
 }
-pub(crate) async fn acquire(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<()> {
+/// Seconds between checks for an album Lidarr is still loading.
+const ALBUM_WAIT: i64 = 15;
+/// Runs after which an album is searched for even without a known length, about ten minutes.
+const ALBUM_WAIT_RUNS: i64 = 40;
+
+/// Returns false when the job queued itself again to wait for Lidarr to load an album.
+pub(crate) async fn acquire(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<bool> {
     let key = job.payload["request_id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Invalid acquisition job"))?
         .to_owned();
     let _lease = state.media_operations.write().await;
     let _guard = state.managers.guard.lock().await;
-    let result = perform(state, &key).await;
+    let result = perform(state, &key, job.attempts < ALBUM_WAIT_RUNS).await;
     // An added title appears in browse lists as soon as its manager reports it.
     super::status::refresh_soon(state);
-    if let Err(error) = result {
-        let message = error.2;
-        storage::acquire(key, message, &state.db).await?;
-        anyhow::bail!("Acquisition needs attention; review its request status")
+    match result {
+        Ok(true) => Ok(true),
+        Ok(false) => {
+            storage::wait(job.id.clone(), ALBUM_WAIT, &state.db).await?;
+            Ok(false)
+        }
+        Err(error) => {
+            let message = error.2;
+            storage::acquire(key, message, &state.db).await?;
+            anyhow::bail!("Acquisition needs attention; review its request status")
+        }
     }
-    Ok(())
 }
-async fn perform(state: &AppState, key: &str) -> Result<()> {
+/// Whether Lidarr knows how long the album runs. Its size check rejects every release of an
+/// album without a length, and a newly added album only gets its tracks in the refresh
+/// Lidarr runs after the add.
+fn album_ready(album: &Value) -> bool {
+    let any = album["anyReleaseOk"].as_bool().unwrap_or(false);
+    album["releases"].as_array().is_some_and(|releases| {
+        releases.iter().any(|release| {
+            (any || release["monitored"] == true) && release["duration"].as_i64() > Some(0)
+        })
+    })
+}
+/// Monitors an artist for one requested album without taking on its future albums.
+async fn monitor_artist(c: &Connection<'_>, mut artist: Value) -> Result<Value> {
+    if artist["monitored"] == true {
+        return Ok(artist);
+    }
+    let id = artist["id"]
+        .as_i64()
+        .filter(|v| *v > 0)
+        .ok_or_else(unavailable)?;
+    artist["monitored"] = json!(true);
+    artist["monitorNewItems"] = json!("none");
+    c.call(
+        reqwest::Method::PUT,
+        &format!("artist/{id}"),
+        &[],
+        Some(artist),
+    )
+    .await
+}
+/// Returns false when `wait` allows it and Lidarr is still loading the album.
+async fn perform(state: &AppState, key: &str, wait: bool) -> Result<bool> {
     let request_id = key.to_owned();
     let row = storage::perform(request_id, &state.db)
         .await?
@@ -290,7 +336,7 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
             | RequestState::Denied
             | RequestState::Cancelled
     ) {
-        return Ok(());
+        return Ok(true);
     }
     if row.state == RequestState::Searching {
         return Err(ApiError::conflict(
@@ -342,16 +388,27 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
                 .await?
                 .into_iter()
                 .find(|a| a["foreignArtistId"] == artist_id);
-            let artist = if let Some(a) = existing {
-                a
-            } else {
-                let mut artist = item["artist"].clone();
-                artist["rootFolderPath"] = json!(defaults.root_folder);
-                artist["qualityProfileId"] = json!(defaults.quality_profile);
-                artist["metadataProfileId"] = json!(defaults.metadata_profile);
-                artist["monitored"] = json!(true);
-                artist["addOptions"] = json!({"monitor":"none","searchForMissingAlbums":false});
-                artist
+            let artist = match existing {
+                // Before the add: the refresh the add starts writes the artist back as it
+                // read it.
+                Some(a) if defaults.monitored => monitor_artist(&c, a).await?,
+                Some(a) => a,
+                None => {
+                    let mut artist = item["artist"].clone();
+                    artist["rootFolderPath"] = json!(defaults.root_folder);
+                    artist["qualityProfileId"] = json!(defaults.quality_profile);
+                    artist["metadataProfileId"] = json!(defaults.metadata_profile);
+                    artist["monitored"] = json!(defaults.monitored);
+                    artist["monitorNewItems"] = json!("none");
+                    // Lidarr applies these after its first scan of the artist. "none" also
+                    // unmonitors the artist and every album, the requested one included.
+                    artist["addOptions"] = if defaults.monitored {
+                        json!({"albumsToMonitor":[row.external_id],"searchForMissingAlbums":false})
+                    } else {
+                        json!({"monitor":"none","searchForMissingAlbums":false})
+                    };
+                    artist
+                }
             };
             item["artistId"] = json!(artist["id"].as_i64().unwrap_or(0));
             item["artist"] = artist;
@@ -379,23 +436,14 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
         .as_i64()
         .filter(|v| *v > 0)
         .ok_or_else(unavailable)?;
+    let ready = s.kind != "lidarr" || album_ready(&item);
     if s.kind == "lidarr" && defaults.monitored {
         let artist_id = item["artistId"]
             .as_i64()
             .or_else(|| item["artist"]["id"].as_i64())
             .filter(|v| *v > 0)
             .ok_or_else(unavailable)?;
-        let mut artist = c.get(&format!("artist/{artist_id}")).await?;
-        if artist["monitored"] != true {
-            artist["monitored"] = json!(true);
-            c.call(
-                reqwest::Method::PUT,
-                &format!("artist/{artist_id}"),
-                &[],
-                Some(artist),
-            )
-            .await?;
-        }
+        monitor_artist(&c, c.get(&format!("artist/{artist_id}")).await?).await?;
     }
     if defaults.monitored && item["monitored"] != true {
         item["monitored"] = json!(true);
@@ -409,7 +457,12 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
     }
     if !defaults.monitored {
         update(state, key, RequestState::Requested, Some(manager)).await?;
-        return Ok(());
+        return Ok(true);
+    }
+    if !ready && wait {
+        // The next run finds the album already added and checks it again.
+        update(state, key, RequestState::Adding, Some(manager)).await?;
+        return Ok(false);
     }
     super::retention::reacquire(state, &s, &c, &row.external_id, manager).await?;
     update(state, key, RequestState::Searching, Some(manager)).await?;
@@ -421,5 +474,5 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
     c.call(reqwest::Method::POST, "command", &[], Some(command))
         .await?;
     update(state, key, RequestState::Requested, Some(manager)).await?;
-    Ok(())
+    Ok(true)
 }

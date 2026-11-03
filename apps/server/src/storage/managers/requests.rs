@@ -126,6 +126,17 @@ pub(super) async fn acquire(key: String, message: String, db: &Database) -> anyh
     db.write("managers.requests.acquire", move|db|{db.execute("UPDATE acquisition_requests SET state=CASE WHEN state IN ('searching','uncertain') THEN 'uncertain' ELSE 'failed' END,error=?1,updated_at=?2 WHERE id=?3",params![message,now(),key])?;Ok(())}).await
 }
 
+pub(super) async fn wait(job: String, seconds: i64, db: &Database) -> anyhow::Result<()> {
+    db.write("managers.requests.wait", move |db| {
+        anyhow::ensure!(
+            thelxinoe_jobs::retry(db, &job, seconds)?,
+            "Acquisition job disappeared"
+        );
+        Ok(())
+    })
+    .await
+}
+
 pub(super) async fn perform(
     request_id: String,
     db: &Database,
