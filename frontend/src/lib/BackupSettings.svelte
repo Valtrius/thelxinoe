@@ -413,27 +413,34 @@
     >
   {/snippet}
   {#if items.length}
-    <table class={cardTableClass}>
-      <thead
+    <!-- Where the columns don't fit, each archive stacks under its date and status. -->
+    <table
+      class="{cardTableClass} @max-[48rem]/settings:block @max-[48rem]/settings:[&_td]:border-0 @max-[48rem]/settings:[&_td]:py-0"
+    >
+      <thead class="@max-[48rem]/settings:hidden"
         ><tr
           ><th>Created</th><th>Type</th><th>Status</th><th>File</th><th
             class="text-right"><span class="sr-only">Actions</span></th
           ></tr
         ></thead
       >
-      <tbody>
+      <tbody class="@max-[48rem]/settings:block">
         {#each items as item (item.id)}
-          <tr>
+          <tr
+            class="@max-[48rem]/settings:grid @max-[48rem]/settings:grid-cols-[minmax(0,1fr)_auto] @max-[48rem]/settings:items-center @max-[48rem]/settings:gap-y-1.5 @max-[48rem]/settings:border-b @max-[48rem]/settings:border-line @max-[48rem]/settings:py-3 @max-[48rem]/settings:last:border-b-0"
+          >
             <td class="font-[550] whitespace-nowrap">{time(item.created_at)}</td
             >
-            <td class="whitespace-nowrap"
+            <td
+              class="whitespace-nowrap @max-[48rem]/settings:order-1 @max-[48rem]/settings:col-span-2 @max-[48rem]/settings:text-muted"
               >{item.automatic ? 'Automatic' : 'Manual'}</td
             >
             <td
               ><StatusChip tone={stageTone(item.stage)}>{item.stage}</StatusChip
               ></td
             >
-            <td class="min-w-0"
+            <td
+              class="min-w-0 @max-[48rem]/settings:order-1 @max-[48rem]/settings:col-span-2"
               ><span
                 class="block font-mono text-[11px] wrap-anywhere text-muted"
                 >{item.archive}</span
@@ -444,7 +451,9 @@
                   >Not included: {label(skipped)}. {skipped.reason}</small
                 >{/each}</td
             >
-            <td class="text-right whitespace-nowrap">
+            <td
+              class="text-right whitespace-nowrap @max-[48rem]/settings:order-1 @max-[48rem]/settings:col-span-2 @max-[48rem]/settings:text-left @max-[48rem]/settings:empty:hidden"
+            >
               {#if ['complete', 'restored', 'restore-failed', 'imported'].includes(item.stage)}<Button
                   variant="secondary"
                   size="sm"
