@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { DropdownMenu } from 'bits-ui';
-  import { Check } from '@lucide/svelte';
+  import { Check, Minus, Plus } from '@lucide/svelte';
   import Button from './ui/Button.svelte';
   import MenuBackdrop, { ignoreBackdrop } from './ui/MenuBackdrop.svelte';
   import { eyebrowTextClass } from './ui/styles';
@@ -11,6 +11,7 @@
     icon,
     value,
     options,
+    steppers = [],
     disabled,
     open,
     setOpen,
@@ -20,6 +21,14 @@
     icon: Snippet;
     value: string;
     options: { value: string; label: string }[];
+    /** Settings below the options that step a value down or up. */
+    steppers?: {
+      label: string;
+      value: string;
+      less: string;
+      more: string;
+      step: (direction: -1 | 1) => void;
+    }[];
     disabled: boolean;
     open: boolean;
     setOpen: (open: boolean) => void;
@@ -28,6 +37,8 @@
   const current = $derived(
     options.find((option) => option.value === value)?.label,
   );
+  const stepClass =
+    'option-step grid size-7 shrink-0 cursor-pointer place-items-center outline-none data-[highlighted]:bg-accent-soft data-[highlighted]:text-accent';
 </script>
 
 <div class="player-option relative">
@@ -75,6 +86,36 @@
           </DropdownMenu.RadioItem>
         {/each}
       </DropdownMenu.RadioGroup>
+      {#if steppers.length}
+        <DropdownMenu.Separator class="mx-1 my-1 h-px bg-line" />
+        {#each steppers as stepper (stepper.label)}
+          <DropdownMenu.Group
+            class="option-stepper flex min-h-8 items-center gap-1 pl-2.5 text-xs"
+            aria-label={stepper.label}
+          >
+            <span class="min-w-0 flex-1 text-muted">{stepper.label}</span>
+            <DropdownMenu.Item
+              class={stepClass}
+              aria-label={stepper.less}
+              title={stepper.less}
+              closeOnSelect={false}
+              onSelect={() => stepper.step(-1)}
+            >
+              <Minus size={14} />
+            </DropdownMenu.Item>
+            <span class="w-12 text-center tabular-nums">{stepper.value}</span>
+            <DropdownMenu.Item
+              class={stepClass}
+              aria-label={stepper.more}
+              title={stepper.more}
+              closeOnSelect={false}
+              onSelect={() => stepper.step(1)}
+            >
+              <Plus size={14} />
+            </DropdownMenu.Item>
+          </DropdownMenu.Group>
+        {/each}
+      {/if}
     </DropdownMenu.ContentStatic>
   </DropdownMenu.Root>
 </div>

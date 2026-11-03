@@ -226,6 +226,7 @@ export function settingsSeed() {
       subtitle_language: 'eng',
       subtitles: false,
       replay_gain: 'track',
+      subtitle_size: 1,
       autoplay: true,
     },
     segments: {

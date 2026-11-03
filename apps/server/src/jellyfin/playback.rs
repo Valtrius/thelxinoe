@@ -132,25 +132,11 @@ pub(super) async fn info_source(
         .or_else(|| dto["DefaultAudioStreamIndex"].as_i64());
     let sub = field("SubtitleStreamIndex").and_then(|v| v.as_i64());
     let subtitle = match sub {
-        Some(-3) => {
-            let language = tracks
-                .iter()
-                .find(|t| t.kind == "audio" && t.index == audio)
-                .map(|t| t.language.as_str())
-                .unwrap_or("und");
-            Some(
-                tracks
-                    .iter()
-                    .find(|t| {
-                        t.kind == "subtitle"
-                            && t.forced
-                            && t.supported
-                            && (t.language == language || t.language == "und")
-                    })
-                    .map(|t| t.id.clone())
-                    .unwrap_or_else(|| "off".into()),
-            )
-        }
+        Some(-3) => Some(
+            thelxinoe_playback::forced_subtitle(&tracks, audio)
+                .map(|t| t.id.clone())
+                .unwrap_or_else(|| "off".into()),
+        ),
         Some(-2..=-1) => Some("off".into()),
         Some(index) => Some(
             tracks
