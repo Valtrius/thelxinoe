@@ -42,6 +42,9 @@ impl Encoding {
         probe: &Value,
         hardware: Option<&Accelerator>,
     ) -> Result<Args> {
+        // A burned subtitle is drawn over the picture by a software overlay, which takes no GPU
+        // frames.
+        let hardware = hardware.filter(|_| self.subtitle.is_none());
         let mut args = if self.video {
             crate::video_conversion_args(options, probe, hardware)?
         } else {

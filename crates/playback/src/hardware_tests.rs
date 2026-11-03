@@ -1,6 +1,6 @@
 use super::*;
 use crate::maintenance_tests::tool_runtime;
-use crate::{CleanupReason, Pipelines, RunHandle, Source, StoppedRun};
+use crate::{CleanupReason, Encoding, Pipelines, RunHandle, Source, StoppedRun};
 use std::time::UNIX_EPOCH;
 
 fn run(program: &str, args: &[&str]) -> std::process::Output {
@@ -189,6 +189,36 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
     assert!(
         crate::video_conversion_args(&hd, &json!({ "streams": [dovi] }), Some(&gpu())).is_err()
     );
+}
+
+#[test]
+fn a_burned_subtitle_converts_in_software() {
+    let probe = json!({"streams":[
+        {"codec_type":"video","codec_name":"h264","pix_fmt":"yuv420p","width":1920,"height":1080},
+        {"index":3,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle"}]});
+    let options = quality("720p");
+    let burn = Encoding {
+        video: true,
+        audio: false,
+        subtitle: Some(3),
+    };
+    // No GPU device or decoding: the burn graph's overlay draws on software frames.
+    let args = burn.args(&options, &probe, Some(&gpu())).unwrap();
+    assert!(args.input.is_empty(), "{:?}", args.input);
+    let filter = &args.output[args.output.iter().position(|a| a == "-vf").unwrap() + 1];
+    let graph = crate::burn_graph(filter, 3, 2.0);
+    assert!(
+        !graph.contains("vaapi") && !graph.contains("hwupload"),
+        "{graph}"
+    );
+    assert!(args.output.windows(2).any(|w| w == ["-c:v", "libx264"]));
+    // Without the subtitle, the same conversion runs on the GPU.
+    let plain = Encoding {
+        subtitle: None,
+        ..burn
+    };
+    let args = plain.args(&options, &probe, Some(&gpu())).unwrap();
+    assert!(args.input.contains(&"-hwaccel".to_owned()));
 }
 
 /// Pipelines and a 12 s H.264 clip, for a browser without H.264 so the video converts.

@@ -168,7 +168,7 @@ impl Pipelines {
         tools: MediaTools,
         hardware: Option<Accelerator>,
     ) -> Result<(String, f64)> {
-        let hardware = hardware.filter(|_| encoding.video);
+        let hardware = hardware.filter(|_| encoding.video && encoding.subtitle.is_none());
         let mut running = self.running.lock().await;
         if let Some(mut old) = running.remove(id) {
             // A seek can come before maintenance notices the failed GPU.

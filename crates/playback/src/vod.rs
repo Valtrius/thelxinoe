@@ -354,7 +354,10 @@ impl VodCache {
         let start = run.boundaries[index];
         let duration = run.boundaries[index + 1] - start;
         let remux_video = !run.encoding.video && run.source.video_codec().is_some();
-        let hardware = self.hardware.accelerator(id).filter(|_| run.encoding.video);
+        let hardware = self
+            .hardware
+            .accelerator(id)
+            .filter(|_| run.encoding.video && run.encoding.subtitle.is_none());
         let args = run
             .encoding
             .args(&run.options, &run.source.probe, hardware.as_ref())?;
