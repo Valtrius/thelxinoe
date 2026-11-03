@@ -2,7 +2,8 @@
 //! Segments are generated on demand and may be evicted and regenerated.
 use crate::{
     Accelerator, CleanupReason, Decision, Encoding, Options, RemoteSource, RunHandle, Source,
-    StoppedRun, hardware::FirstError,
+    StoppedRun,
+    hardware::{PROGRESS, Watch},
 };
 use anyhow::{Context, Result, bail};
 use std::{
@@ -35,9 +36,14 @@ struct Run {
 struct RemoteWork {
     first: usize,
     end: usize,
-    hardware: bool,
-    /// Hands its conversion slot back, for the software conversion replacing a failed GPU.
-    task: tokio::task::JoinHandle<(Result<()>, OwnedSemaphorePermit)>,
+    task: tokio::task::JoinHandle<WindowEnd>,
+}
+/// How a window's conversion ended. It hands its slot back to the software conversion that
+/// replaces a failed GPU.
+struct WindowEnd {
+    result: Result<()>,
+    gpu_failed: bool,
+    slot: OwnedSemaphorePermit,
 }
 impl Drop for RemoteWork {
     fn drop(&mut self) {
@@ -365,12 +371,13 @@ impl VodCache {
         command.args([
             "-hide_banner",
             "-loglevel",
-            "level+error",
+            "level+warning",
             "-nostdin",
             "-y",
             "-fflags",
             "+genpts",
         ]);
+        command.args(PROGRESS);
         // Some AVI indexes skip the first GOP even for an explicit -ss 0.
         if start > 0.0 && run.remote.is_none() {
             command.args(["-ss", &start.to_string()]);
@@ -472,7 +479,7 @@ impl VodCache {
         }
         command
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         #[cfg(windows)]
@@ -482,7 +489,7 @@ impl VodCache {
             bail!("Playback was stopped");
         }
         let mut child = command.spawn()?;
-        let errors = FirstError::watch(&mut child);
+        let watch = Watch::new(&mut child);
         let status = tokio::select! {
             result=tokio::time::timeout(Duration::from_secs(40),child.wait()) =>
                 result.context("Segment conversion timed out").and_then(|r|r.map_err(Into::into)),
@@ -492,10 +499,14 @@ impl VodCache {
         if status.is_err() {
             let _ = child.kill().await;
         }
-        if hardware.is_some() && !matches!(&status, Ok(s) if s.success()) && !*canceled.borrow() {
+        if hardware.is_some()
+            && !matches!(&status, Ok(s) if s.success())
+            && !*canceled.borrow()
+            && watch.gpu_failed(status.is_ok()).await
+        {
             // The session's later segments skip the GPU too.
             let cause = match &status {
-                Ok(_) => errors.cause().await,
+                Ok(_) => watch.cause().await,
                 Err(error) => format!("{error:#}"),
             };
             self.hardware.failed(id, &cause);
@@ -673,18 +684,18 @@ impl VodCache {
                 }
                 if work.as_ref().unwrap().task.is_finished() {
                     let mut finished = work.take().unwrap();
-                    let (result, slot) = (&mut finished.task).await?;
+                    let end = (&mut finished.task).await?;
                     publish_initializations(run, &finished).await?;
                     // A successful muxer must have published the requested segment.
                     if tokio::fs::try_exists(&path).await? {
                         return Ok(path);
                     }
-                    match result {
+                    match end.result {
                         // Software converts from the requested segment on, leaving what the
                         // GPU published with its own initialization.
-                        Err(error) if finished.hardware && !*run.canceled.borrow() => {
+                        Err(error) if end.gpu_failed => {
                             self.hardware.failed(id, &format!("{error:#}"));
-                            *work = Some(self.window(id, run, index, Some(slot))?);
+                            *work = Some(self.window(id, run, index, Some(end.slot))?);
                         }
                         Err(error) => return Err(error),
                         Ok(()) => bail!("Public video segment is unavailable"),
@@ -721,11 +732,15 @@ impl VodCache {
         let end = (index + 8).min(run.boundaries.len() - 1);
         let start = run.boundaries[index];
         let duration = run.boundaries[end] - start;
-        let hardware = self.hardware.accelerator(id);
+        let hardware = self
+            .hardware
+            .accelerator(id)
+            .filter(|_| run.encoding.subtitle.is_none());
+        let gpu = hardware.is_some();
         let mut child = window_command(run, remote, index, start, duration, hardware.as_ref())?
             .spawn()
             .context("Start public video conversion")?;
-        let errors = FirstError::watch(&mut child);
+        let watch = Watch::new(&mut child);
         let mut canceled = run.canceled.subscribe();
         let directory = run.directory.clone();
         let task = tokio::spawn(async move {
@@ -736,28 +751,39 @@ impl VodCache {
                 directory: directory.clone(),
                 work: false,
             };
+            let mut stopped = false;
             let result = tokio::select! {
                 result = tokio::time::timeout(Duration::from_secs(60), child.wait()) =>
                     result.context("Public video conversion timed out").and_then(|r| r.map_err(Into::into)),
-                _ = canceled.changed() => Err(anyhow::anyhow!("Playback was stopped")),
+                _ = canceled.changed() => {
+                    stopped = true;
+                    Err(anyhow::anyhow!("Playback was stopped"))
+                }
                 result = monitor_work(&directory) => Err(result),
             };
             if result.is_err() {
                 let _ = child.kill().await;
             }
+            let gpu_failed = gpu
+                && !stopped
+                && !matches!(&result, Ok(s) if s.success())
+                && watch.gpu_failed(result.is_ok()).await;
             let result = match result {
                 Ok(status) if !status.success() => Err(anyhow::anyhow!(
                     "Unable to prepare public video segments: {}",
-                    errors.cause().await
+                    watch.cause().await
                 )),
                 result => result.map(|_| ()),
             };
-            (result, slot)
+            WindowEnd {
+                result,
+                gpu_failed,
+                slot,
+            }
         });
         Ok(RemoteWork {
             first: index,
             end,
-            hardware: hardware.is_some(),
             task,
         })
     }
@@ -799,6 +825,7 @@ impl VodCache {
             total += size;
             if !active.contains(&id) || low || total > budget || size > 288 * 1024 * 1024 {
                 let reason = if !active.contains(&id) {
+                    self.hardware.forget(&id);
                     CleanupReason::Inactive
                 } else {
                     CleanupReason::CacheLimit
@@ -835,7 +862,14 @@ fn window_command(
             command.env(name, value);
         }
     }
-    command.args(["-hide_banner", "-loglevel", "level+error", "-nostdin", "-y"]);
+    command.args([
+        "-hide_banner",
+        "-loglevel",
+        "level+warning",
+        "-nostdin",
+        "-y",
+    ]);
+    command.args(PROGRESS);
     command.args(&args.input);
     for address in std::iter::once(&remote.video).chain(remote.audio.iter()) {
         command
@@ -897,7 +931,7 @@ fn window_command(
         }))
         .arg(run.directory.join("work.m3u8"))
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     #[cfg(windows)]

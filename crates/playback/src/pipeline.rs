@@ -1,4 +1,7 @@
-use crate::{Accelerator, Options, RemoteSource, Source, hardware::FirstError};
+use crate::{
+    Options, RemoteSource, Source,
+    hardware::{PROGRESS, Watch},
+};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -18,8 +21,10 @@ struct Running {
     _tools: MediaTools,
     _slot: OwnedSemaphorePermit,
     child: Child,
-    errors: FirstError,
+    watch: Watch,
     hardware: bool,
+    /// A live stream, whose session ends with its conversion.
+    live: bool,
     directory: PathBuf,
     revision: String,
 }
@@ -124,7 +129,7 @@ impl Pipelines {
             encoding,
             timeline_start,
             tools,
-            self.hardware.accelerator(id),
+            true,
         )
         .await
     }
@@ -153,7 +158,7 @@ impl Pipelines {
             decision.encoding,
             0.0,
             tools,
-            self.hardware.accelerator(id),
+            true,
         )
         .await
     }
@@ -166,18 +171,27 @@ impl Pipelines {
         encoding: crate::Encoding,
         timeline_start: f64,
         tools: MediaTools,
-        hardware: Option<Accelerator>,
+        gpu: bool,
     ) -> Result<(String, f64)> {
-        let hardware = hardware.filter(|_| encoding.video && encoding.subtitle.is_none());
         let mut running = self.running.lock().await;
         if let Some(mut old) = running.remove(id) {
             // A seek can come before maintenance notices the failed GPU.
-            if old.hardware && old.child.try_wait()?.is_some_and(|s| !s.success()) {
-                self.hardware.failed(id, &old.errors.cause().await);
+            let failed = old
+                .child
+                .try_wait()
+                .ok()
+                .flatten()
+                .is_some_and(|s| !s.success());
+            if old.hardware && failed && old.watch.gpu_failed(true).await {
+                self.hardware.failed(id, &old.watch.cause().await);
             }
             let _ = old.child.kill().await;
             let _ = tokio::fs::remove_dir_all(old.directory).await;
         }
+        let hardware = gpu
+            .then(|| self.hardware.accelerator(id))
+            .flatten()
+            .filter(|_| encoding.video && encoding.subtitle.is_none());
         if running.len() >= 4 {
             bail!(
                 "All four conversion slots are busy; try direct playback or wait for a session to finish"
@@ -220,7 +234,14 @@ impl Pipelines {
         if let Input::Remote { source, .. } = &input {
             // FFREPORT may otherwise write signed upstream addresses to disk.
             command.env_remove("FFREPORT");
-            command.args(["-hide_banner", "-loglevel", "level+error", "-nostdin", "-y"]);
+            command.args([
+                "-hide_banner",
+                "-loglevel",
+                "level+warning",
+                "-nostdin",
+                "-y",
+            ]);
+            command.args(PROGRESS);
             command.args(&args.input);
             for address in std::iter::once(&source.video).chain(source.audio.iter()) {
                 command.args(source.network_args()).args([
@@ -241,7 +262,14 @@ impl Pipelines {
                 },
             ]);
         } else if let Input::Local(source) = &input {
-            command.args(["-hide_banner", "-loglevel", "level+error", "-nostdin", "-y"]);
+            command.args([
+                "-hide_banner",
+                "-loglevel",
+                "level+warning",
+                "-nostdin",
+                "-y",
+            ]);
+            command.args(PROGRESS);
             let audio = if encoding.subtitle.is_some() {
                 // The burn graph paces itself. Its input starts earlier to read a subtitle that
                 // already shows at the start; the audio comes from an exact seek, which copied
@@ -351,7 +379,7 @@ impl Pipelines {
             }))
             .arg(directory.join("index.m3u8"))
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         #[cfg(windows)]
@@ -359,7 +387,7 @@ impl Pipelines {
         let mut child = command
             .spawn()
             .context("Start FFmpeg playback conversion")?;
-        let errors = FirstError::watch(&mut child);
+        let watch = Watch::new(&mut child);
         running.insert(
             id.to_owned(),
             Running {
@@ -367,17 +395,16 @@ impl Pipelines {
                 _tools: tools.clone(),
                 _slot: slot,
                 child,
-                errors: errors.clone(),
+                watch: watch.clone(),
                 hardware: hardware.is_some(),
+                live: online,
                 directory: directory.clone(),
                 revision: revision.clone(),
             },
         );
         drop(running);
         let mut exited = None;
-        // A GPU that hangs gets 10 of the 20 seconds; software then gets its own 20.
-        let polls = if hardware.is_some() { 100 } else { 200 };
-        for _ in 0..polls {
+        for _ in 0..200 {
             if tokio::fs::try_exists(directory.join("index.m3u8")).await? {
                 return Ok((revision, timeline_start));
             }
@@ -401,13 +428,13 @@ impl Pipelines {
             revision,
         })
         .await;
-        if hardware.is_some() {
+        if hardware.is_some() && watch.gpu_failed(exited.is_some()).await {
             self.hardware.failed(
                 id,
                 &if exited.is_some() {
-                    errors.cause().await
+                    watch.cause().await
                 } else {
-                    "No playlist within 10 seconds".into()
+                    "No frame within 20 seconds".into()
                 },
             );
             return Box::pin(self.start_input(
@@ -417,7 +444,7 @@ impl Pipelines {
                 encoding,
                 timeline_start,
                 tools,
-                None,
+                false,
             ))
             .await;
         }
@@ -574,10 +601,12 @@ impl Pipelines {
                 || size > 768 * 1024 * 1024
                 || total > 2 * 1024 * 1024 * 1024
             {
+                // A live stream can't restart where it stopped, so its session ends either way.
                 let reason = if !active.contains(id) {
+                    self.hardware.forget(id);
                     CleanupReason::Inactive
-                } else if failed && run.hardware {
-                    self.hardware.failed(id, &run.errors.cause().await);
+                } else if failed && run.hardware && !run.live && run.watch.gpu_failed(true).await {
+                    self.hardware.failed(id, &run.watch.cause().await);
                     CleanupReason::HardwareFailed
                 } else if failed {
                     CleanupReason::ProcessFailed
@@ -616,11 +645,12 @@ fn burn_preroll(start: f64) -> f64 {
 
 #[cfg(test)]
 impl Pipelines {
-    /// Ends a session's conversion as a GPU failure would, as if the GPU ran it.
-    pub(crate) async fn fail_gpu(&self, id: &str) {
+    /// Ends a session's conversion as if the GPU ran it and FFmpeg logged `error` first.
+    pub(crate) async fn end_gpu_run(&self, id: &str, error: &str) {
         let mut runs = self.running.lock().await;
         let run = runs.get_mut(id).unwrap();
         run.hardware = true;
+        run.watch.feed(error);
         run.child.kill().await.unwrap();
     }
     pub(crate) async fn uses_gpu(&self, id: &str) -> Option<bool> {

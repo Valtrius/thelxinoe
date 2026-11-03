@@ -11,7 +11,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -239,43 +239,125 @@ fn error_line(line: &str) -> Option<&str> {
         .find_map(|level| line.split_once(level))
         .map(|(_, message)| message.trim())
 }
-/// The first error a running FFmpeg logs, usually the cause of its failure. Its log is read
-/// as it runs, so the pipe never fills.
+/// FFmpeg options that report a conversion's progress to `Watch`.
+pub(crate) const PROGRESS: [&str; 2] = ["-progress", "pipe:1"];
+/// Words in FFmpeg's log that put a failure on the GPU: its device, driver, decoder and filters.
+const GPU_WORDS: [&str; 10] = [
+    "vaapi",
+    "libva",
+    "hwaccel",
+    "hw_device",
+    "hwupload",
+    "hwdownload",
+    "hw_frames",
+    "hardware",
+    "/dev/dri",
+    "drm",
+];
+/// What a running FFmpeg reports: the first error it logs at `-loglevel level+warning`, usually
+/// the cause of its failure, whether that cause is the GPU, and the frames it has made
+/// (`PROGRESS`). Both outputs are read as it runs, so their pipes never fill.
 #[derive(Clone)]
-pub(crate) struct FirstError {
+pub(crate) struct Watch {
     first: Arc<Mutex<Option<String>>>,
+    gpu: Arc<AtomicBool>,
+    frames: Arc<AtomicU64>,
     /// Closes when the log ends.
     ended: tokio::sync::watch::Receiver<()>,
 }
-impl FirstError {
-    pub(crate) fn watch(child: &mut tokio::process::Child) -> Self {
+impl Watch {
+    pub(crate) fn new(child: &mut tokio::process::Child) -> Self {
         let (reading, ended) = tokio::sync::watch::channel(());
-        let first = Arc::new(Mutex::new(None));
+        let watch = Self {
+            first: Arc::default(),
+            gpu: Arc::default(),
+            frames: Arc::default(),
+            ended,
+        };
         if let Some(stderr) = child.stderr.take() {
-            let slot = first.clone();
+            let log = watch.clone();
             tokio::spawn(async move {
                 let _reading = reading;
                 let mut lines = tokio::io::BufReader::new(stderr).split(b'\n');
                 while let Ok(Some(line)) = lines.next_segment().await {
-                    if let Some(message) = error_line(&String::from_utf8_lossy(&line)) {
-                        slot.lock()
-                            .unwrap()
-                            .get_or_insert_with(|| message.chars().take(200).collect::<String>());
-                    }
+                    log.log(&String::from_utf8_lossy(&line));
                 }
             });
         }
-        Self { first, ended }
+        if let Some(stdout) = child.stdout.take() {
+            let progress = watch.clone();
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(stdout).split(b'\n');
+                while let Ok(Some(line)) = lines.next_segment().await {
+                    progress.progress(&String::from_utf8_lossy(&line));
+                }
+            });
+        }
+        watch
     }
-    /// The error, once the log of an FFmpeg that ended has been read.
-    pub(crate) async fn cause(&self) -> String {
+    /// One line of FFmpeg's log. Only what comes before the first error counts: an input that
+    /// fails takes the encoder down with it. Of the warnings, only a decoder giving up on the
+    /// GPU does: the VAAPI encoder warns about headers it can't write on healthy runs.
+    fn log(&self, line: &str) {
+        let mut first = self.first.lock().unwrap();
+        if first.is_some() {
+            return;
+        }
+        let lower = line.to_ascii_lowercase();
+        if let Some(message) = error_line(line) {
+            if GPU_WORDS.iter().any(|word| lower.contains(word)) {
+                self.gpu.store(true, Ordering::Relaxed);
+            }
+            *first = Some(message.chars().take(200).collect());
+        } else if line.contains("[warning] ") && lower.contains("hwaccel") {
+            self.gpu.store(true, Ordering::Relaxed);
+        }
+    }
+    fn progress(&self, line: &str) {
+        if let Some(frames) = line
+            .strip_prefix("frame=")
+            .and_then(|n| n.trim().parse().ok())
+        {
+            self.frames.fetch_max(frames, Ordering::Relaxed);
+        }
+    }
+    /// The log of an FFmpeg that ended, once read.
+    async fn ended(&self) {
         let mut ended = self.ended.clone();
         let _ = tokio::time::timeout(Duration::from_secs(1), ended.changed()).await;
+    }
+    pub(crate) async fn cause(&self) -> String {
+        self.ended().await;
         self.first
             .lock()
             .unwrap()
             .clone()
             .unwrap_or_else(|| "FFmpeg logged no error".into())
+    }
+    /// Whether the GPU ended a conversion that FFmpeg gave up (`exited`) or that ran out of
+    /// time: FFmpeg blamed it, or a conversion out of time had not made a single frame, as on
+    /// a hung GPU. A slow start or a failing input is not the GPU's.
+    pub(crate) async fn gpu_failed(&self, exited: bool) -> bool {
+        self.ended().await;
+        self.gpu.load(Ordering::Relaxed) || (!exited && self.frames.load(Ordering::Relaxed) == 0)
+    }
+}
+#[cfg(test)]
+impl Watch {
+    /// A watch fed by hand, of an FFmpeg that ended.
+    pub(crate) fn of(log: &[&str], progress: &[&str]) -> Self {
+        let watch = Self {
+            first: Arc::default(),
+            gpu: Arc::default(),
+            frames: Arc::default(),
+            ended: tokio::sync::watch::channel(()).1,
+        };
+        log.iter().for_each(|line| watch.log(line));
+        progress.iter().for_each(|line| watch.progress(line));
+        watch
+    }
+    pub(crate) fn feed(&self, line: &str) {
+        self.log(line);
     }
 }
 

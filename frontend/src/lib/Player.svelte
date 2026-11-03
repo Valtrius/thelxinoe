@@ -821,9 +821,8 @@
           !busy
         ) {
           restarted = session.id;
-          void seek(position).then(() => {
-            if (error && active?.id === session.id) error = interrupted;
-          });
+          // A failed restart reports its own error.
+          void seek(position);
           return;
         }
         error = interrupted;

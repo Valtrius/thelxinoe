@@ -329,45 +329,281 @@ async fn a_failing_gpu_leaves_conversions_to_software() {
 async fn a_gpu_failing_mid_playback_leaves_the_session_to_software() {
     let temp = tempfile::tempdir().unwrap();
     let (pipelines, source, options) = clip(temp.path()).await;
-    let (revision, _) = pipelines
-        .start("live", &source, &options, "transcode", 0.0)
+    // Each run ends after its first segment as if the GPU ran it: one on the GPU, the other
+    // on its input.
+    let mut handles = Vec::new();
+    for (session, error) in [
+        (
+            "gpu",
+            "[h264_vaapi @ 0x1] [error] Failed to sync surface 0x2: 1 (operation failed).",
+        ),
+        (
+            "input",
+            "[in#0/matroska,webm @ 0x1] [error] Error during demuxing: Input/output error",
+        ),
+    ] {
+        let (revision, _) = pipelines
+            .start(session, &source, &options, "transcode", 0.0)
+            .await
+            .unwrap();
+        pipelines.end_gpu_run(session, error).await;
+        handles.push(RunHandle {
+            session: session.into(),
+            revision,
+        });
+    }
+    *pipelines.hardware.status.lock().unwrap() = HardwareStatus::Ready(gpu());
+    pipelines.use_hardware(true);
+    let stopped = pipelines
+        .maintain(&handles, &["gpu".to_owned(), "input".to_owned()])
         .await
         .unwrap();
-    // Its first segments are out when the GPU fails.
-    pipelines.fail_gpu("live").await;
-    let handle = RunHandle {
-        session: "live".into(),
-        revision,
+    let reason = |session: &str| {
+        stopped
+            .iter()
+            .find(|run| run.handle.session == session)
+            .map(|run| run.reason)
     };
+    assert!(matches!(reason("gpu"), Some(CleanupReason::HardwareFailed)));
+    assert!(matches!(
+        reason("input"),
+        Some(CleanupReason::ProcessFailed)
+    ));
+    // Only the session the GPU failed loses it.
+    assert!(pipelines.hardware.accelerator("gpu").is_none());
+    assert!(pipelines.hardware.accelerator("input").is_some());
+    // Its next start, a seek, converts in software.
+    let (revision, _) = pipelines
+        .start("gpu", &source, &options, "transcode", 6.0)
+        .await
+        .unwrap();
+    assert_eq!(pipelines.uses_gpu("gpu").await, Some(false));
+    assert!(
+        pipelines
+            .file("gpu", &revision, "index.m3u8")
+            .await
+            .unwrap()
+            .is_some_and(|path| path.is_file())
+    );
+    // An expired session is forgotten.
     let stopped = pipelines
-        .maintain(&[handle], &["live".to_owned()])
+        .maintain(
+            &[RunHandle {
+                session: "gpu".into(),
+                revision,
+            }],
+            &[],
+        )
         .await
         .unwrap();
     assert!(matches!(
         stopped[..],
         [StoppedRun {
-            reason: CleanupReason::HardwareFailed,
+            reason: CleanupReason::Inactive,
             ..
         }]
     ));
-    // A verified GPU is enabled, yet the session's next start converts in software.
-    *pipelines.hardware.status.lock().unwrap() = HardwareStatus::Ready(gpu());
+    assert!(pipelines.hardware.accelerator("gpu").is_some());
+}
+
+#[tokio::test]
+async fn only_failures_ffmpeg_puts_on_the_gpu_or_a_run_without_frames_count_against_it() {
+    let ended = |log: &[&str]| Watch::of(log, &["frame=48"]);
+    // FFmpeg blames the device, a decoder that fell back to software, or a VAAPI filter.
+    for log in [
+        &["[VAAPI @ 0x1] [error] Failed to open /dev/dri/renderD128 as DRM device node."][..],
+        &[
+            "[error] Failed to set value 'vaapi=va:/dev/dri/renderD128,driver=iHD,connection_type=drm' for option 'init_hw_device': Invalid argument",
+        ],
+        &[
+            "[hevc @ 0x1] [warning] Failed setup for format vaapi: hwaccel initialisation returned error.",
+            "[vf#0:0 @ 0x2] [error] Impossible to convert between the formats supported by the filter 'graph 0 input from stream 0:0' and the filter 'auto_scale_0'",
+        ],
+        &["[Parsed_tonemap_vaapi_1 @ 0x1] [error] VAAPI driver doesn't support HDR"],
+    ] {
+        assert!(ended(log).gpu_failed(true).await, "{log:?}");
+    }
+    // A failing input takes the GPU encoder down with it, which also warns on healthy runs.
+    for log in [
+        &[
+            "[in#0/matroska,webm @ 0x1] [error] Error during demuxing: Input/output error",
+            "[vost#0:0/h264_vaapi @ 0x2] [error] Error submitting a packet to the muxer",
+        ][..],
+        &[
+            "[h264_vaapi @ 0x1] [warning] Driver does not support some wanted packed headers (wanted 0xd, found 0x1).",
+            "[https @ 0x2] [error] HTTP error 403 Forbidden",
+        ],
+    ] {
+        let watch = ended(log);
+        assert!(!watch.gpu_failed(true).await, "{log:?}");
+        let first = log
+            .iter()
+            .find_map(|line| line.split_once("[error] "))
+            .unwrap()
+            .1;
+        assert_eq!(watch.cause().await, first);
+    }
+    // A run out of time hung on the GPU only if it made no frame: a slow start is no fault.
+    assert!(
+        Watch::of(&[], &["frame=0", "progress=continue"])
+            .gpu_failed(false)
+            .await
+    );
+    assert!(
+        !Watch::of(&[], &["frame=0", "frame=12", "progress=continue"])
+            .gpu_failed(false)
+            .await
+    );
+}
+
+/// A public video served as HLS over the fixture CDN, with its keyframe index.
+#[cfg(unix)]
+async fn public_video(root: &Path) -> (tokio::process::Child, crate::RemoteSource, Source) {
+    let media = root.join("source.mp4");
+    run(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=24:d=18",
+            "-c:v",
+            "libx264",
+            "-g",
+            "48",
+            media.to_str().unwrap(),
+        ],
+    );
+    run(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            media.to_str().unwrap(),
+            "-c",
+            "copy",
+            "-f",
+            "hls",
+            "-hls_time",
+            "2",
+            "-hls_list_size",
+            "0",
+            root.join("live.m3u8").to_str().unwrap(),
+        ],
+    );
+    let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/helpers/online-cdn.py");
+    let mut cdn = tokio::process::Command::new("python3")
+        .arg(helper)
+        .arg(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    tokio::io::AsyncBufReadExt::read_line(
+        &mut tokio::io::BufReader::new(cdn.stdout.take().unwrap()),
+        &mut line,
+    )
+    .await
+    .unwrap();
+    let proxy: Value = serde_json::from_str(&line).unwrap();
+    let remote = crate::RemoteSource {
+        video: "https://fixture.googlevideo.com/live.m3u8".into(),
+        audio: None,
+        live: false,
+        proxy: Some(proxy["proxy"].as_str().unwrap().into()),
+        segments: (0..9).map(|index| f64::from(index) * 2.0).collect(),
+    };
+    let tools = thelxinoe_tools::Runtime::new(root.join("probe-tools"));
+    tool_runtime::install(&tools, &root.join("probe-tools"));
+    let mut probe = remote.probe(&tools.media().unwrap()).await.unwrap();
+    probe["format"]["duration"] = json!("18");
+    let source = Source {
+        id: "source".into(),
+        media_id: "media".into(),
+        generation: "fixture".into(),
+        edition: "public".into(),
+        path: "source.ts".into(),
+        root: root.into(),
+        size: 0,
+        modified: String::new(),
+        probe,
+    };
+    (cdn, remote, source)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_public_video_window_the_gpu_fails_resumes_in_software() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_cdn, remote, source) = public_video(temp.path()).await;
+    let (pipelines, _, _) = clip(temp.path()).await;
+    // A browser without H.264 that takes fragmented MP4.
+    let options = Options {
+        capabilities: Capabilities {
+            containers: vec!["mp4".into()],
+            hls: true,
+            hls_container: Some("mp4".into()),
+            ..Capabilities::default()
+        },
+        ..quality("auto")
+    };
+    let planned = crate::decision(&source, &options).unwrap();
+    assert!(planned.encoding.video);
+    *pipelines.hardware.status.lock().unwrap() = HardwareStatus::Ready(Accelerator {
+        device: "/dev/dri/renderD200".into(),
+        ..gpu()
+    });
     pipelines.use_hardware(true);
-    assert!(pipelines.hardware.accelerator("other").is_some());
     let (revision, _) = pipelines
-        .start("live", &source, &options, "transcode", 6.0)
+        .start_remote_vod("stream", &remote, &source, &options, &planned)
         .await
         .unwrap();
-    assert_eq!(pipelines.uses_gpu("live").await, Some(false));
-    assert!(
-        pipelines
-            .file("live", &revision, "index.m3u8")
-            .await
-            .unwrap()
-            .is_some_and(|path| path.is_file())
+    // The GPU window fails; software converts from the requested segment, with its own
+    // initialization.
+    let init = pipelines
+        .file("stream", &revision, "init-000002.mp4")
+        .await
+        .unwrap()
+        .unwrap();
+    let segment = pipelines
+        .file("stream", &revision, "segment-000002.m4s")
+        .await
+        .unwrap()
+        .unwrap();
+    let joined = temp.path().join("joined.mp4");
+    std::fs::write(
+        &joined,
+        [
+            std::fs::read(init).unwrap(),
+            std::fs::read(segment).unwrap(),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    run(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-xerror",
+            "-i",
+            joined.to_str().unwrap(),
+            "-f",
+            "null",
+            "-",
+        ],
     );
-    pipelines.stop("live").await;
-    assert!(pipelines.hardware.accelerator("live").is_some());
+    assert_eq!(probe(&joined)["streams"][0]["codec_name"], "h264");
+    assert!(pipelines.hardware.accelerator("stream").is_none());
+    pipelines.stop("stream").await;
 }
 
 #[tokio::test]
