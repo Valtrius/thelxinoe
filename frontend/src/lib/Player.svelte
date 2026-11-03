@@ -232,10 +232,7 @@
   async function enterFullscreen(rotated = false) {
     const revision = ++fullscreenRevision;
     rotationFullscreen = rotated;
-    if (
-      rotated &&
-      (!navigator.userActivation?.isActive || !document.fullscreenEnabled)
-    ) {
+    if (rotated && !document.fullscreenEnabled) {
       viewportFullscreen = true;
       return;
     }
@@ -299,13 +296,15 @@
       event.stopImmediatePropagation();
       void exitFullscreen();
     };
-    screen.orientation?.addEventListener('change', rotate);
-    window.addEventListener('orientationchange', rotate);
+    // Chromium lets only the Screen Orientation change event enter fullscreen
+    // without a tap; the legacy orientationchange fires before it without that.
+    const rotation: EventTarget = screen.orientation ?? window;
+    const rotationEvent = screen.orientation ? 'change' : 'orientationchange';
+    rotation.addEventListener(rotationEvent, rotate);
     window.addEventListener('keydown', escape, true);
     return () => {
       fullscreenRevision++;
-      screen.orientation?.removeEventListener('change', rotate);
-      window.removeEventListener('orientationchange', rotate);
+      rotation.removeEventListener(rotationEvent, rotate);
       window.removeEventListener('keydown', escape, true);
     };
   });
