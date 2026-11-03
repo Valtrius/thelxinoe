@@ -171,7 +171,7 @@ export class GaplessQueue {
       if (stale()) return;
       const buffer =
         memory && playback.mode === 'direct'
-          ? await this.decode(playback)
+          ? await this.decode(playback, stale)
           : undefined;
       if (stale()) return;
       entry = {
@@ -188,7 +188,13 @@ export class GaplessQueue {
       };
       if (!buffer) {
         entry.stream = this.element();
-        await this.attach(entry, playback.url, playback.position);
+        try {
+          await this.attach(entry, playback.url, playback.position);
+        } catch (e) {
+          this.release(entry);
+          entry = undefined;
+          throw e;
+        }
         if (stale()) {
           this.release(entry);
           entry = undefined;
@@ -202,11 +208,13 @@ export class GaplessQueue {
     }
   }
   /** The track decoded in memory, or nothing when it is too large for that. */
-  private async decode(playback: Playback) {
-    const response = await fetch(mediaUrl(playback.url));
+  private async decode(playback: Playback, stale: () => boolean) {
+    const response = await fetch(mediaUrl(playback.url), {
+      signal: this.preparation.signal,
+    });
     if (!response.ok) throw new Error('Unable to load music');
     const bytes = await response.arrayBuffer();
-    if (bytes.byteLength > 64 * 1024 * 1024) return undefined;
+    if (stale() || bytes.byteLength > 64 * 1024 * 1024) return undefined;
     const buffer = await this.context.decodeAudioData(bytes);
     return buffer.length * buffer.numberOfChannels * 4 > 128 * 1024 * 1024
       ? undefined
@@ -503,13 +511,14 @@ export class GaplessQueue {
     this.schedule(this.context.currentTime + 0.02);
     this.update();
   }
-  /** Report the playing track stopped and silence it. */
-  private async stopCurrent() {
+  /** Silence the playing track at once and report it stopped. */
+  private stopCurrent() {
     const current = this.entries[0];
     if (!current) return;
+    const position = this.position(current);
     current.activity.setActive(false);
-    await this.report(current, 'stopped', this.position(current));
     this.release(current);
+    void this.report(current, 'stopped', position);
   }
   /** Silence entries and end their sessions. */
   private discard(entries: Entry[]) {
@@ -534,8 +543,7 @@ export class GaplessQueue {
   /** Play the choice at `at` from its start. */
   async jump(at: number) {
     if (this.closed || at < 0 || at >= this.choices.length) return;
-    await this.stopCurrent();
-    if (this.closed) return;
+    this.stopCurrent();
     this.discard(this.entries.slice(1));
     this.entries = [];
     this.lastCurrent = undefined;
@@ -559,8 +567,7 @@ export class GaplessQueue {
       return this.entries[1]?.at === target
         ? this.jumpAhead()
         : this.jump(target);
-    await this.stopCurrent();
-    if (this.closed) return;
+    this.stopCurrent();
     this.discard(this.entries.slice(1));
     this.entries = [];
     this.index = this.choices.length;
@@ -571,8 +578,7 @@ export class GaplessQueue {
   /** Move to what is loaded next, keeping it instead of reading it again. */
   private async jumpAhead() {
     const current = this.entries[0]!;
-    await this.stopCurrent();
-    if (this.closed || this.entries[0] !== current) return;
+    this.stopCurrent();
     this.entries.shift();
     this.lastCurrent = undefined;
     this.index = this.entries[0]?.at ?? this.advance(current.at);
@@ -636,8 +642,7 @@ export class GaplessQueue {
     this.order = this.order.filter((choice) => choice !== removed);
     if (at === this.index) {
       if (at < this.choices.length) return this.jump(at);
-      await this.stopCurrent();
-      if (this.closed) return;
+      this.stopCurrent();
       this.discard(this.entries.slice(1));
       this.entries = [];
       this.index = this.choices.length;

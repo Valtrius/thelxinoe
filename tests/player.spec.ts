@@ -1094,6 +1094,35 @@ test('failed progress reports keep the gapless music queue playing until the ser
   expect(state.errors).toEqual([]);
 });
 
+test('moving to the next track silences the playing one without waiting for its report', async ({
+  page,
+}) => {
+  const state = await fixture(page, { music: true, gapless: true });
+  const music = page.getByRole('region', { name: 'Music player' });
+  const position = () =>
+    music
+      .getByLabel('Music position')
+      .evaluate((input: HTMLInputElement) => Number(input.value));
+  // Repeating the queue makes its only track the next one.
+  await music.getByRole('button', { name: 'Repeat off', exact: true }).click();
+  await expect.poll(position).toBeGreaterThan(2);
+  let held = 0;
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/api/v1/playback/*/progress', async (route) => {
+    if (route.request().postDataJSON()?.state === 'stopped') {
+      held++;
+      await answered;
+    }
+    return route.fallback();
+  });
+  await music.getByRole('button', { name: 'Next track', exact: true }).click();
+  await expect.poll(() => held).toBe(1);
+  await expect.poll(position).toBeLessThan(1);
+  release();
+  expect(state.errors).toEqual([]);
+});
+
 test('web playback records active time but excludes paused time and seeking', async ({
   page,
 }) => {

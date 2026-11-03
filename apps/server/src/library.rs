@@ -795,7 +795,8 @@ mod presentation_tests {
             ] {
                 db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'root',?2,?3,?1,?1,?4,?5)",rusqlite::params![id,kind,parent,sort,created])?;
             }
-            for (file, media, duration) in [("f1", "t1", "200.5"), ("f2", "t2", "100"), ("f3", "t3", "60")] {
+            // A second edition of t1 counts once in the totals, as its row does.
+            for (file, media, duration) in [("f1", "t1", "200.5"), ("f1b", "t1", "300"), ("f2", "t2", "100"), ("f3", "t3", "60")] {
                 let probe = serde_json::json!({"format":{"duration":duration},"streams":[{"codec_type":"audio","codec_name":"flac","sample_rate":"44100","bits_per_raw_sample":"16"}]}).to_string();
                 db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,'root',?1,'g',1,'m',?1,?2,1)",rusqlite::params![file,probe])?;
                 db.execute("INSERT INTO media_sources(media_id,file_id) VALUES (?1,?2)",rusqlite::params![media,file])?;
