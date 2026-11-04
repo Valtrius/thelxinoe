@@ -126,13 +126,64 @@ pub(super) async fn browse(
     limit: u32,
 ) -> anyhow::Result<(Vec<Value>, u32)> {
     db.read("library.browse", move|db|{
-        const MATCHING: &str = "FROM media m WHERE (?1 IS NULL OR m.kind=?1) AND (?2 IS NULL OR m.parent_id=?2) AND (?3 IS NULL OR COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) LIKE '%'||?3||'%') AND (?4 IS NULL OR json_extract(m.metadata,'$.belongs_to_collection.id')=?4)";
-        let filter = params![input.kind,input.parent,input.q,input.collection];
+        const TITLE: &str = "COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title)";
+        const MATCHING: &str = "FROM media m WHERE (?1 IS NULL OR m.kind=?1) AND (?2 IS NULL OR m.parent_id=?2) AND (?3 IS NULL OR COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) LIKE '%'||?3||'%') AND (?4 IS NULL OR json_extract(m.metadata,'$.belongs_to_collection.id')=?4) AND (?5 IS NULL OR m.parent_id=?5 OR m.parent_id IN (SELECT id FROM media WHERE parent_id=?5))";
+        // What a music page shows beside each item: a track's length, format, album and
+        // artist; an album's track count and length; an artist's album and track counts.
+        const MUSIC: &str = "CASE m.kind WHEN 'track' THEN (SELECT CAST(json_extract(f.probe,'$.format.duration') AS REAL) FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.id LIMIT 1)
+                WHEN 'album' THEN (SELECT SUM((SELECT CAST(json_extract(f.probe,'$.format.duration') AS REAL) FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=t.id AND f.present=1 ORDER BY f.id LIMIT 1)) FROM media t WHERE t.parent_id=m.id)
+                WHEN 'artist' THEN (SELECT SUM((SELECT CAST(json_extract(f.probe,'$.format.duration') AS REAL) FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=t.id AND f.present=1 ORDER BY f.id LIMIT 1)) FROM media a JOIN media t ON t.parent_id=a.id WHERE a.parent_id=m.id) END,
+            CASE m.kind WHEN 'album' THEN (SELECT COUNT(*) FROM media t WHERE t.parent_id=m.id) WHEN 'artist' THEN (SELECT COUNT(*) FROM media t JOIN media a ON t.parent_id=a.id WHERE a.parent_id=m.id) END,
+            CASE m.kind WHEN 'artist' THEN (SELECT COUNT(*) FROM media a WHERE a.parent_id=m.id) END,
+            CASE m.kind WHEN 'track' THEN (SELECT json_object('codec',json_extract(st.value,'$.codec_name'),'sample_rate',CAST(json_extract(st.value,'$.sample_rate') AS INTEGER),'bit_depth',NULLIF(COALESCE(CAST(json_extract(st.value,'$.bits_per_raw_sample') AS INTEGER),CAST(json_extract(st.value,'$.bits_per_sample') AS INTEGER),0),0)) FROM media_sources s JOIN media_files f ON f.id=s.file_id, json_each(f.probe,'$.streams') st WHERE s.media_id=m.id AND f.present=1 AND json_extract(st.value,'$.codec_type')='audio' ORDER BY f.id LIMIT 1) END,
+            CASE WHEN m.kind IN ('track','album') THEN (SELECT COALESCE(json_extract(p.metadata,'$.title'),json_extract(p.metadata,'$.name'),p.title) FROM media p WHERE p.id=m.parent_id) END,
+            CASE WHEN m.kind='track' THEN (SELECT COALESCE(json_extract(g.metadata,'$.title'),json_extract(g.metadata,'$.name'),g.title) FROM media p JOIN media g ON g.id=p.parent_id WHERE p.id=m.parent_id) END,
+            CASE WHEN m.kind='track' THEN (SELECT p.parent_id FROM media p WHERE p.id=m.parent_id) END";
+        let filter = params![input.kind,input.parent,input.q,input.collection,input.ancestor];
         let total = db.query_row(&format!("SELECT COUNT(*) {MATCHING}"), filter, |r| r.get(0))?;
-        let mut query=db.prepare(&format!("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) {MATCHING} ORDER BY m.sort_number,COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) COLLATE NOCASE,m.id LIMIT ?5 OFFSET ?6"))?;
-        let items = query.query_map(params![input.kind,input.parent,input.q,input.collection,limit,input.offset],media_row)?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let direction = match input.order { Order::Asc => "ASC", Order::Desc => "DESC" };
+        let order_by = match input.sort {
+            Some(Sort::Year) => format!("m.year {direction} NULLS LAST,{TITLE} COLLATE NOCASE,m.id"),
+            Some(Sort::Added) => format!("m.created_at {direction},{TITLE} COLLATE NOCASE,m.id"),
+            Some(_) => format!("{TITLE} COLLATE NOCASE {direction},m.id"),
+            // An artist's tracks come album by album.
+            None if input.ancestor.is_some() => format!("(SELECT p.year FROM media p WHERE p.id=m.parent_id) NULLS LAST,(SELECT COALESCE(json_extract(p.metadata,'$.title'),json_extract(p.metadata,'$.name'),p.title) FROM media p WHERE p.id=m.parent_id) COLLATE NOCASE,m.sort_number,{TITLE} COLLATE NOCASE,m.id"),
+            None => format!("m.sort_number,{TITLE} COLLATE NOCASE,m.id"),
+        };
+        let mut query=db.prepare(&format!("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1),{MUSIC} {MATCHING} ORDER BY {order_by} LIMIT ?6 OFFSET ?7"))?;
+        let items = query.query_map(params![input.kind,input.parent,input.q,input.collection,input.ancestor,limit,input.offset],music_row)?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok((items, total))
     }).await
+}
+
+/// A browsed row with the music facts its kind carries, read after `media_row`'s columns.
+fn music_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let mut item = media_row(r)?;
+    let kind = item["kind"].as_str().unwrap_or_default().to_owned();
+    if !["artist", "album", "track"].contains(&kind.as_str()) {
+        return Ok(item);
+    }
+    item["duration"] = json!(r.get::<_, Option<f64>>(8)?);
+    match kind.as_str() {
+        "track" => {
+            item["audio"] = r
+                .get::<_, Option<String>>(11)?
+                .and_then(|audio| serde_json::from_str::<Value>(&audio).ok())
+                .unwrap_or(Value::Null);
+            item["album"] = json!(r.get::<_, Option<String>>(12)?);
+            item["artist"] = json!(r.get::<_, Option<String>>(13)?);
+            item["artist_id"] = json!(r.get::<_, Option<String>>(14)?);
+        }
+        "album" => {
+            item["track_count"] = json!(r.get::<_, Option<i64>>(9)?.unwrap_or(0));
+            item["artist"] = json!(r.get::<_, Option<String>>(12)?);
+        }
+        _ => {
+            item["track_count"] = json!(r.get::<_, Option<i64>>(9)?.unwrap_or(0));
+            item["album_count"] = json!(r.get::<_, Option<i64>>(10)?.unwrap_or(0));
+        }
+    }
+    Ok(item)
 }
 
 /// Every top-level movie or show in a fixed order, with when it joined the library and

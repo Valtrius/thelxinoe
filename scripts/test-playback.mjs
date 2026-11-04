@@ -1,4 +1,4 @@
-import { request } from '@playwright/test';
+import { expect, request } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { launchBrowser } from './ci-browser.mjs';
@@ -327,19 +327,33 @@ try {
   }
   console.log('Real Chromium HLS remux/transcode decoding and seeks passed.');
   await page.getByRole('link', { name: 'Music', exact: true }).click();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await page
-    .getByRole('button', { name: 'Gapless Artist artist', exact: true })
+    .locator('article.library-tile')
+    .filter({ hasText: 'Gapless Artist' })
+    .locator('.card-primary')
     .click();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await page
-    .getByRole('button', { name: 'Gapless Album album', exact: true })
+    .locator('article.library-tile')
+    .filter({ hasText: 'Gapless Album' })
+    .locator('.card-primary')
     .click();
-  await page
-    .getByRole('button', { name: 'Gapless 1 track', exact: true })
-    .click();
-  await page.getByRole('button', { name: 'Play media', exact: true }).click();
-  await page
-    .getByRole('heading', { name: 'Queue finished', exact: true })
-    .waitFor({ timeout: 20000 });
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  const music = page.getByRole('region', { name: 'Music player', exact: true });
+  await expect(music.getByRole('status')).toHaveText('Queue finished', {
+    timeout: 20000,
+  });
   const audioProof = await page.evaluate(async () => {
     const scheduled = window.__audioProbe.slice(0, 2);
     if (scheduled.length !== 2)
@@ -383,7 +397,9 @@ try {
   assert.equal(audioProof.rate, 48000);
   assert.ok(Math.abs(audioProof.gain - 0.5) < 0.00001);
   assert.ok(audioProof.min > 0.249 && audioProof.max < 0.251);
-  await page.getByRole('button', { name: 'Close player', exact: true }).click();
+  await music
+    .getByRole('button', { name: 'Close player', exact: true })
+    .click();
   console.log(
     'Real browser FLAC sequencing at 48 kHz has a sample-continuous seam with ReplayGain applied (-6.02 dB).',
   );

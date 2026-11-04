@@ -33,6 +33,16 @@ export function playerHandleReveal(node: HTMLElement): TransitionConfig {
 }
 
 /**
+ * The music dock rises from the bottom edge while the page gives up its height.
+ * Its content overflows the growing row, so the edge clips it, not the node.
+ */
+export const dockReveal: (node: HTMLElement) => TransitionConfig = () => ({
+  duration: getAnimationDuration(),
+  easing: cubicOut,
+  css: (t) => `grid-template-rows: ${t}fr;`,
+});
+
+/**
  * A frame that pulls the player over the page padding returns that padding
  * gradually, while the player itself stays against the top edge.
  */

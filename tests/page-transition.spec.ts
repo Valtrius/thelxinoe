@@ -268,3 +268,220 @@ test('the latest navigation wins during loading and error pages still reveal wit
     movies.release();
   }
 });
+
+test('the music lists change under a toolbar that stays, requesting the next list at the click', async ({
+  page,
+}, info) => {
+  await page.goto('/#library/music');
+  await ready(page);
+  await page.evaluate(() => {
+    const phases: (string | undefined)[] = [];
+    (window as unknown as { listPhases: typeof phases }).listPhases = phases;
+    const original = window.fetch;
+    window.fetch = (input, init) => {
+      const url = String(input);
+      if (url.includes('kind=album') && !url.includes('limit=0'))
+        phases.push(
+          document.querySelector<HTMLElement>('[data-page-content]')?.dataset
+            .pagePhase,
+        );
+      return original(input, init);
+    };
+    // Hold the outgoing copy until its assertions finish, even when the
+    // runner takes longer than the animation to return from the click.
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (keyframes, options) {
+      const animation = animate.call(this, keyframes, options);
+      const root = this.getRootNode();
+      if (
+        root instanceof ShadowRoot &&
+        root.host.hasAttribute('data-page-leaving')
+      ) {
+        animation.pause();
+        (window as unknown as { musicLeave: Animation }).musicLeave = animation;
+        Element.prototype.animate = animate;
+      }
+      return animation;
+    };
+  });
+  const lists = page.getByRole('group', { name: 'Music lists' });
+  const albums = lists.getByRole('button', { name: /^Albums/ });
+  const artists = lists.getByRole('button', { name: /^Artists/ });
+  await expect(artists).toHaveAttribute('aria-pressed', 'true');
+  await albums.click();
+  const outgoing = page.locator('[data-page-leaving][aria-hidden="true"]');
+  await expect(outgoing).toHaveCount(1);
+  await expect(page.locator('[data-page-region="music"]')).toHaveCSS(
+    'opacity',
+    '0',
+  );
+  await expect(lists).toBeVisible();
+  await expect(pageContent(page)).toHaveCSS('opacity', '1');
+  await page.screenshot({ path: info.outputPath('music-list-leaving.png') });
+  await page.evaluate(() =>
+    (window as unknown as { musicLeave: Animation }).musicLeave.play(),
+  );
+  await ready(page);
+  await expect(outgoing).toHaveCount(0);
+  await expect(albums).toHaveAttribute('aria-pressed', 'true');
+  await expect(albums).toBeFocused();
+  await expect(page).toHaveURL(/#library\/music\?view=albums$/);
+  const phases = await page.evaluate(
+    () =>
+      (window as unknown as { listPhases: (string | undefined)[] }).listPhases,
+  );
+  expect(phases[0]).toBe('leaving');
+  // An album's Back button returns to the list it was opened from.
+  await page.locator('article.library-tile .card-primary').first().click();
+  await ready(page);
+  await page
+    .getByRole('button', { name: 'Back to Music', exact: true })
+    .click();
+  await ready(page);
+  await expect(page).toHaveURL(/#library\/music\?view=albums$/);
+  await expect(albums).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('a slow click on a music list does not use up its animations', async ({
+  page,
+}) => {
+  await page.goto('/#library/music');
+  await ready(page);
+  const lists = page.getByRole('group', { name: 'Music lists' });
+  const artists = lists.getByRole('button', { name: /^Artists/ });
+  const distance = (await artists.boundingBox())!.width;
+  type Frame = { translate: number; leaving: boolean };
+  await page.evaluate(() => {
+    const frames: Frame[] = [];
+    (window as unknown as { listFrames: Frame[] }).listFrames = frames;
+    const highlight = document.querySelector<HTMLElement>(
+      '[aria-label="Music lists"] [data-choice-selection]',
+    )!;
+    const sample = () => {
+      frames.push({
+        translate: parseFloat(getComputedStyle(highlight).translate) || 0,
+        leaving: !!document.querySelector('[data-page-leaving]'),
+      });
+      if (frames.length < 60) requestAnimationFrame(sample);
+    };
+    document.addEventListener(
+      'click',
+      () => requestAnimationFrame(sample),
+      true,
+    );
+    // Outlasts the animations, after the app's handler and before any frame.
+    document.addEventListener('click', () => {
+      const end = performance.now() + 400;
+      while (performance.now() < end);
+    });
+  });
+  await lists.getByRole('button', { name: /^Albums/ }).click();
+  await ready(page);
+  const frames = await page.evaluate(
+    () => (window as unknown as { listFrames: Frame[] }).listFrames,
+  );
+  expect(Math.abs(frames[0].translate)).toBeGreaterThan(distance * 0.9);
+  expect(frames.filter((frame) => frame.leaving).length).toBeGreaterThan(2);
+});
+
+test('the choice highlight fills its button up to the separator at fractional widths', async ({
+  page,
+}) => {
+  await page.goto('/#library/music');
+  await ready(page);
+  await page.addStyleTag({
+    content:
+      '[data-page-content] [aria-label^="Artists"] { width: 90.5px; } [data-page-content] [aria-label^="Albums"] { width: 80.5px; } [data-page-content] [aria-label^="Tracks"] { width: 70.5px; }',
+  });
+  const lists = page.getByRole('group', { name: 'Music lists' });
+  const highlight = lists.locator('[data-choice-selection]');
+  for (const [name, separator] of [
+    ['Artists', 1],
+    ['Albums', 1],
+    ['Tracks', 0],
+  ] as const) {
+    const button = lists.getByRole('button', { name: new RegExp(`^${name}`) });
+    await button.click();
+    await ready(page);
+    await expect
+      .poll(async () => {
+        const selected = (await button.boundingBox())!;
+        const selection = (await highlight.boundingBox())!;
+        return (
+          Math.abs(selected.x - selection.x) +
+          Math.abs(selected.width - separator - selection.width)
+        );
+      })
+      .toBeLessThan(0.05);
+  }
+});
+
+test('the music dock slides in and out on the animation clock and comes back for a track chosen as it leaves', async ({
+  page,
+}) => {
+  type Dock = { slides: number[]; holdNext: boolean };
+  await page.addInitScript(() => {
+    const dock: Dock = { slides: [], holdNext: false };
+    (window as unknown as { dock: Dock }).dock = dock;
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (keyframes, options) {
+      const animation = animate.call(this, keyframes, options);
+      const duration = (options as KeyframeAnimationOptions).duration;
+      // Svelte's first animation on an intro only holds the starting frame.
+      if (
+        Array.isArray(keyframes) &&
+        keyframes.some((frame) => frame.gridTemplateRows !== undefined) &&
+        duration
+      ) {
+        dock.slides.push(Number(duration));
+        if (dock.holdNext) animation.pause();
+        dock.holdNext = false;
+      }
+      return animation;
+    };
+  });
+  await page.goto('/#library/music?view=tracks');
+  await ready(page);
+  const dock = page.getByRole('region', { name: 'Music player' });
+  const pause = dock.getByRole('button', { name: 'Pause', exact: true });
+  const close = dock.getByRole('button', { name: 'Close player', exact: true });
+  const play = page.getByRole('button', { name: /^Play / }).first();
+  const slides = () =>
+    page.evaluate(
+      () => (window as unknown as { dock: Dock }).dock.slides.length,
+    );
+  const workspace = page.locator('[data-feed-scroll]');
+  const height = async () => (await workspace.boundingBox())!.height;
+  const fullHeight = await height();
+
+  await play.click();
+  await expect(pause).toBeVisible();
+  expect(await slides()).toBe(1);
+  const [duration, clock] = await page.evaluate(() => [
+    (window as unknown as { dock: Dock }).dock.slides[0],
+    getComputedStyle(document.documentElement).getPropertyValue(
+      '--animation-duration',
+    ),
+  ]);
+  expect(duration).toBeGreaterThan(0);
+  expect(`${duration}ms`).toBe(clock);
+  // The dock's height comes out of the page rather than covering it.
+  const dockHeight = (await dock.boundingBox())!.height;
+  await expect.poll(height).toBeCloseTo(fullHeight - dockHeight, 0);
+
+  await close.click();
+  await expect.poll(slides).toBe(2);
+  await expect(dock).toHaveCount(0);
+  await expect.poll(height).toBeCloseTo(fullHeight, 0);
+
+  await play.click();
+  await expect(pause).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as { dock: Dock }).dock.holdNext = true;
+  });
+  await close.click();
+  await expect.poll(slides).toBe(4);
+  await play.click();
+  await expect(pause).toBeVisible();
+  await expect.poll(height).toBeCloseTo(fullHeight - dockHeight, 0);
+});

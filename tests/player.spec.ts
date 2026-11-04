@@ -296,9 +296,6 @@ async function fixture(
     tools?: 'metadata' | 'playback';
     music?: boolean;
     gapless?: boolean;
-    native?: boolean;
-    nativeTools?: boolean;
-    nativeRestore?: boolean;
     indexed?: boolean;
     failProgress?: 'network' | number;
     chapters?: { start: number; title: string | null }[];
@@ -836,8 +833,7 @@ async function fixture(
         import { mount, unmount } from '/node_modules/.vite/deps/svelte.js';
         import Player from '/src/lib/Player.svelte';
         import App from '/src/App.svelte';
-        import MusicPlayer from '/src/lib/MusicPlayer.svelte';
-        import NativePlayer from '/src/lib/NativePlayer.svelte';
+        import MusicDock from '/src/lib/music/MusicDock.svelte';
         import { loadAppearance, acceptAppearance } from '/src/lib/appearance.ts';
         import '/src/app.css';
         await loadAppearance('fixture');
@@ -845,121 +841,13 @@ async function fixture(
         const app = ${
           options.app
             ? "mount(App, { target: document.querySelector('#fixture-root') })"
-            : `mount(${options.native ? 'NativePlayer' : options.music ? 'MusicPlayer' : 'Player'}, { target: document.querySelector('#fixture-root'), props: {
-          choice: { id: 'fixture', title: ${JSON.stringify(title)}, kind: ${JSON.stringify(options.music || options.native ? 'track' : 'movie')}, restore: ${!!options.nativeRestore}, run: 'fixture-run' }, closed: () => unmount(app, { outro: true })
+            : `mount(${options.music ? 'MusicDock' : 'Player'}, { target: document.querySelector('#fixture-root'), props: {
+          choice: { id: 'fixture', title: ${JSON.stringify(title)}, kind: ${JSON.stringify(options.music ? 'track' : 'movie')} }, closed: () => unmount(app, { outro: true })
         }})`
         };
       </script></body></html>`,
     }),
   );
-  if (options.native)
-    await page.addInitScript((holdTools: boolean) => {
-      const bridge = window as unknown as {
-        __TAURI_INTERNALS__: unknown;
-        __TAURI_EVENT_PLUGIN_INTERNALS__: unknown;
-        nativeReady: () => void;
-        nativeStarts: number;
-        nativeInvocations: number;
-      };
-      let ready!: () => void;
-      const pending = new Promise<void>((resolve) => (ready = resolve));
-      let canceled = false;
-      let run = 'fixture-run';
-      let listener: ((event: unknown) => void) | undefined;
-      let toolsReady = !holdTools;
-      bridge.nativeReady = () => {
-        toolsReady = true;
-        ready();
-        listener?.({
-          event: 'mpv-state',
-          id: 1,
-          payload: {
-            run,
-            status: 'playing',
-            media_id: 'fixture',
-            title: 'Native fixture',
-            music: true,
-          },
-        });
-      };
-      bridge.nativeStarts = 0;
-      bridge.nativeInvocations = 0;
-      bridge.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
-      bridge.__TAURI_INTERNALS__ = {
-        transformCallback: (callback: (event: unknown) => void) => {
-          listener = callback;
-          return 1;
-        },
-        unregisterCallback() {},
-        async invoke(
-          command: string,
-          args: {
-            command?: string;
-            path?: string;
-            method?: string;
-            body?: unknown;
-            run?: string;
-          } = {},
-        ) {
-          if (command === 'backend_request') {
-            const response = await fetch(`/api/v1${args.path}`, {
-              method: args.method,
-              headers: { 'Content-Type': 'application/json' },
-              ...(args.body ? { body: JSON.stringify(args.body) } : {}),
-            });
-            return { status: response.status, body: await response.json() };
-          }
-          if (command === 'plugin:event|listen') return 1;
-          if (command === 'mpv_state')
-            return {
-              run: args.run,
-              status: 'starting',
-              media_id: 'fixture',
-              title: 'Native fixture',
-              music: true,
-            };
-          if (command === 'tools_get')
-            return {
-              tools: holdTools
-                ? [
-                    {
-                      id: 'mpv',
-                      preference: {
-                        source: 'managed',
-                        active: toolsReady ? 'mpv-installed' : null,
-                      },
-                      selectedPath: toolsReady ? 'mpv.exe' : null,
-                    },
-                  ]
-                : [],
-              operation: {
-                tool: 'mpv',
-                phase: toolsReady ? 'idle' : 'downloading',
-                error: null,
-              },
-            };
-          if (command === 'mpv_command' && args.command === 'stop') {
-            canceled = true;
-            return;
-          }
-          if (command === 'mpv_play') {
-            bridge.nativeInvocations++;
-            run = args.run ?? run;
-            await pending;
-            if (canceled) throw new Error('Playback canceled');
-            bridge.nativeStarts++;
-            return {
-              run,
-              status: 'playing',
-              media_id: 'fixture',
-              title: 'Native fixture',
-              music: true,
-            };
-          }
-          return null;
-        },
-      };
-    }, !!options.nativeTools);
   await page.goto(`/player-test${options.app ? '?section=Twitch' : ''}`);
   return state;
 }
@@ -991,28 +879,6 @@ async function revealedPlayer(page: Page) {
       );
     });
 }
-
-test('restored native player keeps its spinner until pending playback starts', async ({
-  page,
-}, testInfo) => {
-  const state = await fixture(page, { native: true, nativeRestore: true });
-  await expect(page.getByRole('status')).toContainText('Preparing playback…');
-  await testInfo.attach('restored-native-preparation', {
-    body: await page.screenshot(),
-    contentType: 'image/png',
-  });
-  await page.evaluate(() =>
-    (window as unknown as { nativeReady: () => void }).nativeReady(),
-  );
-  await expect(page.getByRole('status')).toHaveCount(0);
-  expect(
-    await page.evaluate(
-      () =>
-        (window as unknown as { nativeInvocations: number }).nativeInvocations,
-    ),
-  ).toBe(0);
-  expect(state.errors).toEqual([]);
-});
 
 for (const tools of ['metadata', 'playback'] as const) {
   test(`player waits for tools during ${tools} and starts automatically`, async ({
@@ -1166,20 +1032,30 @@ test('failed tool preparation replaces the spinner with a retryable error', asyn
   expect(state.errors).toEqual([]);
 });
 
-test('music waits for tools and starts its streaming fallback automatically', async ({
+// A track the browser cannot decode in memory streams in the same queue.
+test('music waits for tools and streams a track it cannot decode in memory', async ({
   page,
 }, testInfo) => {
   const state = await fixture(page, { tools: 'metadata', music: true });
-  await expect(page.getByRole('status')).toContainText(
+  const music = page.getByRole('region', { name: 'Music player' });
+  await expect(music.getByRole('status')).toContainText(
     'Waiting for playback tools…',
   );
-  await expect(page.getByRole('status').locator('svg')).toBeVisible();
+  await expect(music.getByRole('status').locator('svg')).toBeVisible();
   await testInfo.attach('music-waiting-for-tools', {
     body: await page.screenshot(),
     contentType: 'image/png',
   });
   state.toolsPreparing = false;
-  await decoded(page);
+  await expect(
+    music.getByRole('button', { name: 'Pause', exact: true }),
+  ).toBeVisible();
+  const position = () =>
+    music
+      .getByLabel('Music position')
+      .evaluate((input: HTMLInputElement) => Number(input.value));
+  await expect.poll(position).toBeGreaterThan(0.5);
+  await expect(music.getByRole('status')).not.toContainText('Waiting');
   expect(state.errors).toEqual([]);
 });
 
@@ -1192,7 +1068,9 @@ test('failed progress reports keep the gapless music queue playing until the ser
     failProgress: 'network',
   });
   const music = page.getByRole('region', { name: 'Music player' });
-  await expect(music).toContainText('Track 1 of 1 · Gapless');
+  await expect(
+    music.getByRole('button', { name: 'Pause', exact: true }),
+  ).toBeVisible();
   await expect.poll(() => state.progressAttempts).toBeGreaterThan(0);
   const position = () =>
     music
@@ -1216,71 +1094,34 @@ test('failed progress reports keep the gapless music queue playing until the ser
   expect(state.errors).toEqual([]);
 });
 
-for (const close of [false, true]) {
-  test(`native player ${close ? 'cancels' : 'automatically starts'} pending preparation`, async ({
-    page,
-  }, testInfo) => {
-    const state = await fixture(page, { native: true });
-    await expect(page.getByRole('status')).toContainText('Preparing playback…');
-    await expect(page.getByRole('status').locator('svg')).toBeVisible();
-    await testInfo.attach('native-preparation', {
-      body: await page.screenshot(),
-      contentType: 'image/png',
-    });
-    if (close) await page.getByRole('button', { name: 'Close player' }).click();
-    await page.evaluate(() =>
-      (window as unknown as { nativeReady: () => void }).nativeReady(),
-    );
-    await expect(page.getByRole('status')).toHaveCount(0);
-    expect(
-      await page.evaluate(
-        () => (window as unknown as { nativeStarts: number }).nativeStarts,
-      ),
-    ).toBe(close ? 0 : 1);
-    expect(state.errors).toEqual([]);
-    await testInfo.attach('native-preparation-finished', {
-      body: await page.screenshot(),
-      contentType: 'image/png',
-    });
+test('moving to the next track silences the playing one without waiting for its report', async ({
+  page,
+}) => {
+  const state = await fixture(page, { music: true, gapless: true });
+  const music = page.getByRole('region', { name: 'Music player' });
+  const position = () =>
+    music
+      .getByLabel('Music position')
+      .evaluate((input: HTMLInputElement) => Number(input.value));
+  // Repeating the queue makes its only track the next one.
+  await music.getByRole('button', { name: 'Repeat off', exact: true }).click();
+  await expect.poll(position).toBeGreaterThan(2);
+  let held = 0;
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/api/v1/playback/*/progress', async (route) => {
+    if (route.request().postDataJSON()?.state === 'stopped') {
+      held++;
+      await answered;
+    }
+    return route.fallback();
   });
-}
-
-for (const close of [false, true]) {
-  test(`native MPV installation ${close ? 'can be canceled' : 'automatically resumes playback'}`, async ({
-    page,
-  }, testInfo) => {
-    const state = await fixture(page, { native: true, nativeTools: true });
-    await expect(page.getByRole('status')).toContainText(
-      'Waiting for playback tools…',
-    );
-    expect(
-      await page.evaluate(
-        () =>
-          (window as unknown as { nativeInvocations: number })
-            .nativeInvocations,
-      ),
-    ).toBe(0);
-    await testInfo.attach('waiting-for-mpv', {
-      body: await page.screenshot(),
-      contentType: 'image/png',
-    });
-    if (close) await page.getByRole('button', { name: 'Close player' }).click();
-    await page.evaluate(() =>
-      (window as unknown as { nativeReady: () => void }).nativeReady(),
-    );
-    await expect(page.getByRole('status')).toHaveCount(0);
-    expect(
-      await page.evaluate(
-        () => (window as unknown as { nativeStarts: number }).nativeStarts,
-      ),
-    ).toBe(close ? 0 : 1);
-    expect(state.errors).toEqual([]);
-    await testInfo.attach('mpv-installation-finished', {
-      body: await page.screenshot(),
-      contentType: 'image/png',
-    });
-  });
-}
+  await music.getByRole('button', { name: 'Next track', exact: true }).click();
+  await expect.poll(() => held).toBe(1);
+  await expect.poll(position).toBeLessThan(1);
+  release();
+  expect(state.errors).toEqual([]);
+});
 
 test('web playback records active time but excludes paused time and seeking', async ({
   page,

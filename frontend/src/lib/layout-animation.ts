@@ -177,11 +177,15 @@ export function playAnimations(
     trackAnimation(owner ?? element, animation, effectTiming.fill);
     return animation;
   });
-  // Every group uses the same timeline origin, including long settings pages.
-  const start = document.timeline.currentTime;
-  if (start !== null)
-    for (const animation of animations) {
-      if (animation.playState !== 'paused') animation.startTime = start;
-    }
+  // Every group uses the same timeline origin, including long settings pages:
+  // the frame that first shows it. An earlier origin would spend the start of
+  // the animation, where its ease-out moves the most, on work nobody sees.
+  const start = () => {
+    for (const animation of animations)
+      if (animation.pending && animation.playState === 'running')
+        animation.startTime = document.timeline.currentTime;
+  };
+  if (document.hidden) start();
+  else requestAnimationFrame(start);
   return animations;
 }

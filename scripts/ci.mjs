@@ -9,7 +9,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { stageBuildImages, stageServiceImages } from './ci-images.mjs';
+import {
+  pullFixtureImage,
+  stageBuildImages,
+  stageServiceImages,
+} from './ci-images.mjs';
 import {
   cleanupResources,
   composeFixture,
@@ -202,7 +206,7 @@ async function recyclarr() {
 
 async function media() {
   const references = await images();
-  await stageServiceImages();
+  await pullFixtureImage('caddy:2');
   await browser();
   await group('server-tools', () =>
     run(process.execPath, ['scripts/test-server-tools.mjs', '--built'], {

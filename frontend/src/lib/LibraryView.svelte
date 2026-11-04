@@ -1,15 +1,13 @@
 <script lang="ts">
   import { revisions } from './server-events.svelte';
-  import SectionHeading from './ui/SectionHeading.svelte';
   import Notice from './ui/Notice.svelte';
-  import { Folder, RefreshCw, ArrowLeft, Ellipsis } from '@lucide/svelte';
+  import { Folder, RefreshCw, Ellipsis } from '@lucide/svelte';
   import { DropdownMenu } from 'bits-ui';
   import { api } from './api';
   import { display } from './display.svelte';
   import { navigationCache } from './navigation-cache';
   import { inBackground } from './page-readiness';
   import { activity, byMedia } from './activity';
-  import { LatestRequest } from './latest-request';
   import {
     attention,
     attentionErrors,
@@ -18,20 +16,15 @@
   import MediaGrid from './ui/MediaGrid.svelte';
   import LibraryCard from './ui/LibraryCard.svelte';
   import MediaSkeleton from './ui/MediaSkeleton.svelte';
-  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import Skeleton from './ui/Skeleton.svelte';
-  import MediaActions from './MediaActions.svelte';
-  import MediaOperations from './MediaOperations.svelte';
   import TitleMenu from './title/TitleMenu.svelte';
   import { showToast } from './providers/toasts';
   import { loadRoots, scanRoot } from './title/catalog';
   import type { TitleStatus } from './title/status';
   import { untrack, onDestroy } from 'svelte';
-  import type { MediaChoice } from './playback';
   import Button from './ui/Button.svelte';
   import MenuBackdrop, { ignoreBackdrop } from './ui/MenuBackdrop.svelte';
-  import Panel from './ui/Panel.svelte';
-  import { emptyClass, rowClass } from './ui/styles';
+  import { emptyClass } from './ui/styles';
   import LibraryToolbar from './LibraryToolbar.svelte';
   import { appearance, updateAppearance } from './appearance';
   import {
@@ -45,29 +38,16 @@
     type SortValues,
     unfiltered,
   } from './library-view';
-  let {
-    domain,
-    admin,
-    play,
-    userId,
-    focusId,
-    ancestors,
-    selectedChanged,
-    searchQuery,
-    collectionId,
-    filtersChanged,
-  } = $props<{
-    domain: string;
-    admin: boolean;
-    play: (choice: MediaChoice) => void;
-    userId: string;
-    focusId?: string;
-    ancestors?: string[];
-    selectedChanged?: (id?: string, ancestors?: string[]) => void;
-    searchQuery?: string;
-    collectionId?: string;
-    filtersChanged?: (query: string, collection: string) => void;
-  }>();
+  let { domain, admin, opened, searchQuery, collectionId, filtersChanged } =
+    $props<{
+      domain: 'Movies' | 'Shows';
+      admin: boolean;
+      /** A card opens its title page. */
+      opened: (id: string) => void;
+      searchQuery?: string;
+      collectionId?: string;
+      filtersChanged: (query: string, collection: string) => void;
+    }>();
   type Item = SortValues & {
     id: string;
     kind: string;
@@ -88,8 +68,6 @@
     counts?: LibraryCounts;
     genres?: string[];
   };
-  // Movies and Shows open a title page; Music keeps its track panel here.
-  const titles = $derived(domain !== 'Music');
   let items = $state<Item[]>([]),
     total = $state(0),
     counts = $state<LibraryCounts>(),
@@ -109,16 +87,14 @@
     counts = result.counts;
     genres = result.genres ?? [];
   }
-  // Movies and Shows keep each user's sorting and filters.
+  // Each user keeps their sorting and filters.
   const viewKey = $derived(libraryViewKey(domain));
   const shows = $derived(domain === 'Shows');
-  const view = $derived<LibraryView | undefined>(
-    titles
-      ? parseLibraryView($appearance.provider_preferences[viewKey], shows)
-      : undefined,
+  const view = $derived<LibraryView>(
+    parseLibraryView($appearance.provider_preferences[viewKey], shows),
   );
-  const viewParameters = $derived(view ? viewQuery(view, shows) : '');
-  const filtered = $derived(!!view && filtering(view, shows));
+  const viewParameters = $derived(viewQuery(view, shows));
+  const filtered = $derived(filtering(view, shows));
   function viewChanged(next: LibraryView) {
     updateAppearance({
       provider_preferences: { [viewKey]: JSON.stringify(next) },
@@ -126,19 +102,7 @@
   }
   let collections = $state<{ id: number; name: string; count: number }[]>([]),
     collection = $state('');
-  let breadcrumbs = $state<{ id: string; title: string; kind: string }[]>([]),
-    selected = $state<Item | null>(null),
-    details = $state<{
-      files: {
-        id: string;
-        edition: string;
-        present: boolean;
-        probe: { format?: { duration?: string } };
-      }[];
-      local_trailers?: { file_id: string }[];
-    } | null>(null);
   let generation = 0;
-  const detailRequests = new LatestRequest();
   const activityOf = $derived(byMedia($activity));
   const attentionOf = $derived(byMedia($attention));
   let search = $state('');
@@ -146,27 +110,19 @@
   onDestroy(() => {
     clearTimeout(searchTimer);
     generation++;
-    detailRequests.invalidate();
   });
   function searchChanged() {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      if (filtersChanged) filtersChanged(search, collection);
-      else void load();
-    }, 250);
+    searchTimer = setTimeout(() => filtersChanged(search, collection), 250);
   }
-  async function load(refreshDetails = true) {
+  async function load() {
     const request = ++generation;
     busy = true;
     extending = false;
     error = '';
     pageError = '';
     try {
-      const parent = breadcrumbs.at(-1)?.id;
-      const query = parent
-        ? `parent=${parent}`
-        : `kind=${domain === 'Movies' ? 'movie' : domain === 'Shows' ? 'show' : 'artist'}`;
-      const path = `/catalog?${query}&q=${encodeURIComponent(search)}${collection ? `&collection=${collection}` : ''}${!parent && viewParameters ? `&${viewParameters}` : ''}`;
+      const path = `/catalog?kind=${domain === 'Movies' ? 'movie' : 'show'}&q=${encodeURIComponent(search)}${collection ? `&collection=${collection}` : ''}${viewParameters ? `&${viewParameters}` : ''}`;
       const list = navigationCache.read(
         'catalog',
         path,
@@ -191,8 +147,6 @@
             )
           : Promise.resolve();
       await Promise.all([list, groups]);
-      if (request !== generation) return;
-      if (refreshDetails && selected) await loadDetails(selected.id);
     } catch (e) {
       if (request === generation) error = String(e);
     } finally {
@@ -224,25 +178,6 @@
       if (request === generation) extending = false;
     }
   }
-  // A track plays on through the whole album, not only the pages shown.
-  async function trackQueue() {
-    const path = listed,
-      shown = items;
-    const rest =
-      shown.length < total
-        ? await api<Page>(
-            `${path}&offset=${shown.length}&limit=${total - shown.length}`,
-          ).then(
-            (page) => page.items,
-            // Playback still starts with the tracks already shown.
-            () => [],
-          )
-        : [];
-    const known = new Set(shown.map((item) => item.id));
-    return [...shown, ...rest.filter((item) => !known.has(item.id))].filter(
-      (item) => item.kind === 'track' && item.available,
-    );
-  }
   function nearEnd(node: HTMLElement) {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -255,61 +190,12 @@
   }
   $effect(() => {
     void domain;
-    const parents: string[] = ancestors ?? [];
-    const id = focusId,
-      query = searchQuery ?? '',
+    const query = searchQuery ?? '',
       group = collectionId ?? '';
     untrack(() => {
-      // Searching or opening an album reads no crumb the trail already shows.
-      const known = new Map(breadcrumbs.map((crumb) => [crumb.id, crumb]));
-      const crumb = id ? known.get(id) : undefined;
-      generation++;
-      busy = true;
-      extending = false;
-      closeDetails();
-      breadcrumbs = [];
       search = query;
       collection = group;
-      error = '';
-      const current = detailRequests.begin();
-      void (async () => {
-        try {
-          const [ancestry, item] = await Promise.all([
-            Promise.all(
-              parents.map(
-                (parent) =>
-                  known.get(parent) ?? api<Item>(`/catalog/${parent}`),
-              ),
-            ),
-            id && !crumb
-              ? api<Item & NonNullable<typeof details>>(`/catalog/${id}`)
-              : null,
-          ]);
-          if (!current()) return;
-          breadcrumbs = ancestry.map(({ id, title, kind }) => ({
-            id,
-            title,
-            kind,
-          }));
-          if (crumb) breadcrumbs = [...breadcrumbs, crumb];
-          else if (item) {
-            if (['movie', 'episode', 'track'].includes(item.kind)) {
-              selected = item;
-              details = item;
-            } else
-              breadcrumbs = [
-                ...breadcrumbs,
-                { id: item.id, title: item.title, kind: item.kind },
-              ];
-          }
-          if (current()) await load(false);
-        } catch (e) {
-          if (current()) {
-            error = String(e);
-            busy = false;
-          }
-        }
-      })();
+      void load();
     });
   });
   let observedView: string | undefined;
@@ -331,43 +217,6 @@
       observedRevision = next;
     });
   });
-  async function open(item: Item) {
-    if (selectedChanged) {
-      selectedChanged(
-        item.id,
-        breadcrumbs.map((entry) => entry.id),
-      );
-      return;
-    }
-    if (['movie', 'episode', 'track'].includes(item.kind)) {
-      await select(item);
-    } else {
-      closeDetails();
-      breadcrumbs = [
-        ...breadcrumbs,
-        { id: item.id, title: item.title, kind: item.kind },
-      ];
-      await load();
-    }
-  }
-  async function select(item: Item) {
-    selected = item;
-    details = null;
-    error = '';
-    if (selectedChanged) {
-      selectedChanged(
-        item.id,
-        breadcrumbs.map((entry) => entry.id),
-      );
-      return;
-    }
-    await loadDetails(item.id);
-  }
-  function closeDetails() {
-    detailRequests.invalidate();
-    selected = null;
-    details = null;
-  }
   let actionsOpen = $state(false);
   const menuItemClass =
     'flex h-8 w-full cursor-default items-center gap-[0.55rem] whitespace-nowrap px-[0.55rem] text-left text-[0.7rem] text-muted outline-none data-[highlighted]:bg-accent-soft data-[highlighted]:text-foreground [&_svg]:size-[0.85rem] compact:h-11 compact:text-[13px]';
@@ -394,54 +243,20 @@
       });
     }
   }
-  async function loadDetails(id: string) {
-    const current = detailRequests.begin();
-    try {
-      const detail = await api<Item & NonNullable<typeof details>>(
-        `/catalog/${id}`,
-      );
-      if (current() && selected?.id === id) {
-        selected = detail;
-        details = detail;
-      }
-    } catch (e) {
-      if (current() && selected?.id === id) error = String(e);
-    }
-  }
 </script>
 
-{#if breadcrumbs.length}
-  <div class="mb-4">
-    <Button
-      variant="secondary"
-      size="form"
-      onclick={() => {
-        if (selectedChanged) {
-          selectedChanged(
-            breadcrumbs.at(-2)?.id,
-            breadcrumbs.slice(0, -2).map((entry) => entry.id),
-          );
-          return;
-        }
-        breadcrumbs = breadcrumbs.slice(0, -1);
-        void load();
-      }}><ArrowLeft size={15} />{breadcrumbs.at(-1)?.title}</Button
-    >
-  </div>
-{/if}
 <div class="mb-5 flex flex-wrap items-center gap-1.5">
   <LibraryToolbar
     {domain}
     bind:search
     {searchChanged}
-    view={breadcrumbs.length ? undefined : view}
+    {view}
     {viewChanged}
     {counts}
     {genres}
     {collections}
     bind:collection
-    collectionChanged={() =>
-      filtersChanged ? filtersChanged(search, collection) : void load()}
+    collectionChanged={() => filtersChanged(search, collection)}
   />{#if busy && !items.length}<Skeleton class="ml-1.5 w-16" />{:else}<span
       class="ml-1.5 text-muted">{total} items</span
     >{/if}
@@ -478,52 +293,6 @@
     </div>{/if}
 </div>
 {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
-{#if selected}<Panel>
-    <SectionHeading>
-      <h2>{selected.title}</h2>
-      <Button
-        variant="secondary"
-        size="form"
-        onclick={() => {
-          closeDetails();
-          selectedChanged?.(
-            breadcrumbs.at(-1)?.id,
-            breadcrumbs.slice(0, -1).map((entry) => entry.id),
-          );
-        }}>Close</Button
-      >
-    </SectionHeading>
-    {#if selected.overview}<p class="text-muted">{selected.overview}</p>{/if}
-    <MediaActions id={selected.id} kind={selected.kind} {userId} />
-    {#if admin}{#key selected.id}<MediaOperations
-          id={selected.id}
-          kind={selected.kind}
-          changed={() => void load()}
-        />{/key}{/if}
-    {#if !details && !error}<ContentSkeleton label="Loading media files" />{/if}
-    {#each details?.files ?? [] as file (file.id)}<div class={rowClass}>
-        <span>{file.edition || 'Original edition'}</span><span
-          class="text-muted"
-          >{file.probe.format?.duration
-            ? `${Math.round(Number(file.probe.format.duration) / 60)} minutes`
-            : 'Duration unknown'}</span
-        >
-        {#if file.present}<Button
-            size="form"
-            onclick={async () => {
-              const item = selected!;
-              play({
-                id: item.id,
-                title: item.title,
-                fileId: file.id,
-                kind: item.kind,
-                queue: item.kind === 'track' ? await trackQueue() : undefined,
-              });
-            }}>Play {file.edition || 'media'}</Button
-          >{/if}
-      </div>
-    {/each}
-  </Panel>{/if}
 {#if items.length}<MediaGrid
     revision={items.map((i) => i.id).join(',')}
     label={domain}
@@ -537,20 +306,15 @@
           .filter(Boolean)
           .join('\n')}
         onSeen={() => {
-          for (const entry of attentionOf(item.id).filter(
-            (entry) => entry.target !== 'music' || item.kind === 'album',
-          ))
+          for (const entry of attentionOf(item.id))
             void acknowledgeAttention(entry);
         }}
-        open={() => void open(item)}
-        details={titles ? undefined : () => void select(item)}
-        timezone={titles ? display.timezone : undefined}
-        detail={view && !breadcrumbs.length
-          ? sortDetail(view.sort, item, display.timezone)
-          : undefined}
+        open={() => opened(item.id)}
+        timezone={display.timezone}
+        detail={sortDetail(view.sort, item, display.timezone)}
         >{#snippet menu(
           card,
-        )}{#if titles && (!item.virtual || (admin && item.kind === 'movie'))}<TitleMenu
+        )}{#if !item.virtual || (admin && item.kind === 'movie')}<TitleMenu
               bind:open={card.open}
               id={item.virtual ? null : item.id}
               kind={item.kind}
@@ -576,12 +340,10 @@
         ></Notice
       >{:else if extending}<MediaSkeleton
         label={`Loading more ${domain.toLowerCase()}`}
-        shape={domain === 'Music' ? 'square' : 'poster'}
       />{/if}
   {/if}
 {:else if busy}<MediaSkeleton
     label={`Loading ${domain.toLowerCase()}`}
-    shape={domain === 'Music' ? 'square' : 'poster'}
   />{:else if !error}<section class={emptyClass}>
     <Folder size={42} />
     <h2>
@@ -590,7 +352,6 @@
     {#if search}<p>Try a different search.</p>{:else if filtered}<Button
         variant="secondary"
         size="form"
-        onclick={() => view && viewChanged(unfiltered(view))}
-        >Clear filters</Button
+        onclick={() => viewChanged(unfiltered(view))}>Clear filters</Button
       >{:else if !collection}<p>Imported media will appear here.</p>{/if}
   </section>{/if}

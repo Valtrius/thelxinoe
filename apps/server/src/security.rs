@@ -175,10 +175,7 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
             .get(header::ORIGIN)
             .and_then(|v| v.to_str().ok())
         {
-            let desktop = matches!(
-                origin,
-                "http://tauri.localhost" | "https://tauri.localhost" | "tauri://localhost"
-            );
+            let desktop = DESKTOP_ORIGINS.contains(&origin);
             if origin != context.origin && !desktop && cors.is_none() {
                 // Development WebViews use their dev-server origin. Their Rust
                 // transport already authenticated to obtain this short-lived,
@@ -217,6 +214,19 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
         }
     }
     let api_request = request.uri().path().starts_with("/api/");
+    // The desktop app plays music in its WebView, which reads playback streams from
+    // another origin. Their grants authorize them; the WebView sends no cookie.
+    let stream_origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .filter(|origin| {
+            request.uri().path().starts_with("/api/v1/playback/")
+                && matches!(*request.method(), Method::GET | Method::HEAD)
+                && origin
+                    .to_str()
+                    .is_ok_and(|origin| DESKTOP_ORIGINS.contains(&origin))
+        })
+        .cloned();
     let preflight = api_request
         && cors.is_some()
         && request.method() == Method::OPTIONS
@@ -257,6 +267,18 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
                 .headers_mut()
                 .insert(header::ACCESS_CONTROL_MAX_AGE, "600".parse().unwrap());
         }
+    }
+    if let Some(origin) = stream_origin
+        && !response
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+    {
+        response
+            .headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        response
+            .headers_mut()
+            .append(header::VARY, "Origin".parse().unwrap());
     }
     if api_request
         && response.status().is_client_error()
@@ -337,9 +359,65 @@ pub async fn require(
     Ok(p)
 }
 
+/// Origins the desktop app's WebView sends.
+const DESKTOP_ORIGINS: [&str; 3] = [
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "tauri://localhost",
+];
+
 #[cfg(test)]
 mod tests {
     use super::client_bucket;
+
+    // The desktop WebView may read playback streams across origins, and nothing else.
+    #[tokio::test]
+    async fn desktop_webviews_read_playback_streams_across_origins() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+        let (_temp, state, _) = crate::test_support::fixture().await;
+        let allowed = |path: &'static str, origin: &'static str| {
+            let state = state.clone();
+            async move {
+                let mut request = axum::http::Request::builder()
+                    .uri(path)
+                    .header("host", "internal:8484")
+                    .header("origin", origin)
+                    .body(Body::empty())
+                    .unwrap();
+                request.extensions_mut().insert(axum::extract::ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ));
+                crate::router(state)
+                    .oneshot(request)
+                    .await
+                    .unwrap()
+                    .headers()
+                    .get(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .map(|v| v.to_str().unwrap().to_owned())
+            }
+        };
+        assert_eq!(
+            allowed(
+                "/api/v1/playback/missing/stream?grant=x",
+                "http://tauri.localhost"
+            )
+            .await,
+            Some("http://tauri.localhost".into())
+        );
+        assert_eq!(
+            allowed("/api/v1/auth/me", "http://tauri.localhost").await,
+            None
+        );
+        assert_eq!(
+            allowed(
+                "/api/v1/playback/missing/stream?grant=x",
+                "https://elsewhere.example"
+            )
+            .await,
+            None
+        );
+    }
 
     #[test]
     fn ipv6_clients_share_a_bucket_per_64_and_mapped_ipv4_is_plain_ipv4() {

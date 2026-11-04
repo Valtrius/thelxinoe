@@ -30,6 +30,7 @@
     attentionError = '',
     landscape = false,
     detail,
+    caption,
   } = $props<{
     item: {
       id: string;
@@ -60,6 +61,8 @@
     landscape?: boolean;
     /** The value its list is sorted by. */
     detail?: string;
+    /** Replaces the year under the title. */
+    caption?: string;
   }>();
   const music = $derived(['artist', 'album', 'track'].includes(item.kind));
   const wide = $derived(landscape || item.kind === 'episode');
@@ -229,7 +232,7 @@
       <p
         class="mt-2 mb-0 text-[11px] leading-normal text-muted phone-card:mt-0.75 phone-card:text-[10px]"
       >
-        {item.year ?? item.kind}{item.available === false &&
+        {caption ?? item.year ?? item.kind}{item.available === false &&
         !chip &&
         ['movie', 'episode', 'track'].includes(item.kind)
           ? ' · Unavailable'

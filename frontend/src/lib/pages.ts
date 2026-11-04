@@ -19,6 +19,7 @@ export const pages = {
   home: cached(() => import('./Home.svelte')),
   discover: cached(() => import('./seerr/Discover.svelte')),
   library: cached(() => import('./LibraryView.svelte')),
+  music: cached(() => import('./music/MusicSection.svelte')),
   title: cached(() => import('./title/TitlePage.svelte')),
   playlists: cached(() => import('./Playlists.svelte')),
   statistics: cached(() => import('./statistics/StatisticsView.svelte')),
@@ -60,8 +61,7 @@ export const settingsPages = {
 };
 
 export const players = {
-  native: cached(() => import('./NativePlayer.svelte')),
-  music: cached(() => import('./MusicPlayer.svelte')),
+  music: cached(() => import('./music/MusicDock.svelte')),
   video: cached(() => import('./Player.svelte')),
 };
 export const providerPages = {
@@ -139,8 +139,8 @@ export async function preloadPage(route: AppRoute) {
   else if (route.section === 'Discover') await pages.discover();
   else if (['Movies', 'Shows'].includes(route.section) && route.item)
     await pages.title();
-  else if (['Movies', 'Shows', 'Music'].includes(route.section))
-    await pages.library();
+  else if (route.section === 'Music') await pages.music();
+  else if (['Movies', 'Shows'].includes(route.section)) await pages.library();
   else if (route.section === 'Playlists') await pages.playlists();
   else if (route.section === 'Statistics') await pages.statistics();
   // The platform's view loads beside its page, not once the account arrives.

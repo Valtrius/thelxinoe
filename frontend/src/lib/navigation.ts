@@ -46,6 +46,8 @@ export type AppRoute = {
   requests?: boolean;
   item?: string;
   ancestors?: string[];
+  /** The music home's list: artists, albums or tracks. */
+  view?: string;
   playlist?: string;
   service?: string;
   workflow?: 'setup' | 'updates';
@@ -120,6 +122,7 @@ export function readRoute(url: URL, fallback: AppRoute = homeRoute): AppRoute {
           ancestors: parts.slice(2, -1).filter(Boolean),
           query: query.get('q') ?? undefined,
           collection: query.get('collection') ?? undefined,
+          view: query.get('view') ?? undefined,
         }
       : base;
   }
@@ -211,6 +214,7 @@ export function routeHref(route: AppRoute): string {
       path = `library/${route.section.toLowerCase()}${route.item ? '/' + [...(route.ancestors ?? []), route.item].map(encodeURIComponent).join('/') : ''}`;
       if (route.query) query.set('q', route.query);
       if (route.collection) query.set('collection', route.collection);
+      if (route.view) query.set('view', route.view);
       break;
     case 'Playlists':
       path = `playlists${route.playlist ? '/' + encodeURIComponent(route.playlist) : ''}`;

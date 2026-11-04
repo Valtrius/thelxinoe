@@ -130,11 +130,14 @@ pub async fn scan(
 pub struct Browse {
     kind: Option<String>,
     parent: Option<String>,
+    /// Everything under this item, two levels down: an artist's tracks, a series'
+    /// episodes.
+    ancestor: Option<String>,
     q: Option<String>,
     collection: Option<i64>,
-    /// Top-level movie and show lists are sorted and filtered by these.
-    #[serde(default)]
-    sort: Sort,
+    /// Top-level movie and show lists are sorted and filtered by these. Other lists
+    /// keep their natural order unless a sort is named.
+    sort: Option<Sort>,
     #[serde(default)]
     order: Order,
     watch: Option<String>,
@@ -444,7 +447,7 @@ async fn titles(
     shelf.sort_by(|a, b| {
         let title = a.title.cmp(&b.title);
         let (x, y, order) = (&a.facts, &b.facts, input.order);
-        match input.sort {
+        match input.sort.unwrap_or_default() {
             Sort::Title if order == Order::Desc => return title.reverse(),
             Sort::Title => return title,
             Sort::Year => by(a.card["year"].as_i64(), b.card["year"].as_i64(), order),
@@ -772,6 +775,64 @@ mod presentation_tests {
                     .all(|item| item["watched"] == false)
             );
         }
+    }
+
+    // Music lists carry what their pages show: a track's length and format with its
+    // album and artist, an album's track count and length, an artist's album and track
+    // counts. `ancestor` lists everything under an artist, album by album.
+    #[tokio::test]
+    async fn music_lists_carry_lengths_counts_and_names() {
+        let (_temp, state, alice) = fixture().await;
+        state.db.write("test.fixture", |db| {
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Music','music','/media/music')",[])?;
+            for (id, kind, parent, sort, created) in [
+                ("artist", "artist", None, None, 1),
+                ("album", "album", Some("artist"), None, 2),
+                ("single", "album", Some("artist"), None, 3),
+                ("t1", "track", Some("album"), Some(10001), 4),
+                ("t2", "track", Some("album"), Some(10002), 5),
+                ("t3", "track", Some("single"), Some(10001), 6),
+            ] {
+                db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'root',?2,?3,?1,?1,?4,?5)",rusqlite::params![id,kind,parent,sort,created])?;
+            }
+            // A second edition of t1 counts once in the totals, as its row does.
+            for (file, media, duration) in [("f1", "t1", "200.5"), ("f1b", "t1", "300"), ("f2", "t2", "100"), ("f3", "t3", "60")] {
+                let probe = serde_json::json!({"format":{"duration":duration},"streams":[{"codec_type":"audio","codec_name":"flac","sample_rate":"44100","bits_per_raw_sample":"16"}]}).to_string();
+                db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,'root',?1,'g',1,'m',?1,?2,1)",rusqlite::params![file,probe])?;
+                db.execute("INSERT INTO media_sources(media_id,file_id) VALUES (?1,?2)",rusqlite::params![media,file])?;
+            }
+            Ok(())
+        }).await.unwrap();
+        let list = |path: &'static str| call(&state, path, "GET", Value::Null, &alice);
+        let artist = list("/api/v1/catalog?kind=artist").await.2["items"][0].clone();
+        assert_eq!(artist["album_count"], 2);
+        assert_eq!(artist["track_count"], 3);
+        assert_eq!(artist["duration"], 360.5);
+        let albums = list("/api/v1/catalog?parent=artist&sort=added&order=desc")
+            .await
+            .2;
+        assert_eq!(albums["items"][0]["id"], "single");
+        assert_eq!(albums["items"][1]["track_count"], 2);
+        assert_eq!(albums["items"][1]["duration"], 300.5);
+        assert_eq!(albums["items"][1]["artist"], "artist");
+        let tracks = list("/api/v1/catalog?ancestor=artist&kind=track").await.2;
+        assert_eq!(tracks["total"], 3);
+        let ids = tracks["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|track| track["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["t1", "t2", "t3"]);
+        let track = &tracks["items"][0];
+        assert_eq!(track["duration"], 200.5);
+        assert_eq!(
+            track["audio"],
+            serde_json::json!({"codec":"flac","sample_rate":44100,"bit_depth":16})
+        );
+        assert_eq!(track["album"], "album");
+        assert_eq!(track["artist"], "artist");
+        assert_eq!(track["artist_id"], "artist");
     }
 
     #[tokio::test]
