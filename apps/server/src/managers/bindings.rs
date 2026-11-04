@@ -7,8 +7,13 @@ pub(super) mod tests;
 use super::*;
 use std::collections::BTreeMap;
 
-/// Every manager kind; retention reads only the movie and series managers it deletes through.
+/// Every manager kind.
 pub(super) const ALL: &[&str] = &["radarr", "sonarr", "lidarr"];
+/// The movie and series managers auto-delete goes through; it never reads music libraries.
+pub(super) const RETAINED: &[&str] = &["radarr", "sonarr"];
+/// How old a read of a whole library can be for auto-delete to rely on it. Each deletion still
+/// reads its own movie or series before changing anything.
+const RECENT_SECONDS: i64 = 30;
 
 pub(super) struct ServiceInventory {
     pub generation: String,
@@ -310,6 +315,16 @@ pub(super) async fn inventory(
 /// Read every manager without a lock, then record the result under the exclusive one.
 pub(super) async fn reconcile(state: &AppState) -> Result<()> {
     let observed = observe(state, ALL).await?;
+    let _guard = state.managers.guard.lock().await;
+    reconcile_observation(state, &observed).await
+}
+/// Reconcile what auto-delete deletes through unless that just happened, so that several
+/// deletions due together share one read of each whole library.
+pub(super) async fn reconcile_retained(state: &AppState) -> Result<()> {
+    if storage::reconciled_since(&state.db, RETAINED, now() - RECENT_SECONDS).await? {
+        return Ok(());
+    }
+    let observed = observe(state, RETAINED).await?;
     let _guard = state.managers.guard.lock().await;
     reconcile_observation(state, &observed).await
 }

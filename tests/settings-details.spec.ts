@@ -27,7 +27,7 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
       title: 'Shared video',
       state: 'pending',
       reason: 'watched',
-      due_at: 1791648000 + 86400,
+      due_at: Math.floor(Date.now() / 1000) + 86400,
       error: null,
       watched_users: ['Alice', 'Bob'],
     },
@@ -39,7 +39,7 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
       state: 'pending',
       reason: 'watched',
       due_at: 1791648000,
-      error: null,
+      error: 'Manager has a download queued for this title',
       watched_users: ['Alice', 'Bob'],
     },
   ];
@@ -249,6 +249,14 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
     /Shared video/,
   ]);
   await expect(queue.getByText('2 items', { exact: true })).toBeVisible();
+  const overdue = queue.locator('.setting-row').filter({ hasText: 'Arrival' });
+  await expect(overdue).toContainText('Overdue since');
+  await expect(overdue).toContainText(
+    'Manager has a download queued for this title',
+  );
+  await expect(
+    queue.locator('.setting-row').filter({ hasText: 'Shared video' }),
+  ).toContainText('Scheduled for');
   await expect(
     queue.getByRole('button', { name: 'Cancel', exact: true }),
   ).toHaveCount(0);
