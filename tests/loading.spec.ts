@@ -7,29 +7,60 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
-for (const section of ['Movies', 'Shows', 'Music', 'Playlists'] as const) {
-  test(`${section} reserves content while its first response is pending`, async ({
+for (const [section, view, kind] of [
+  ['Movies', undefined, undefined],
+  ['Shows', undefined, undefined],
+  ['Music', 'artists', 'artist'],
+  ['Music', 'albums', 'album'],
+  ['Music', 'tracks', 'track'],
+  ['Playlists', undefined, undefined],
+] as const) {
+  test(`${section}${view ? ` ${view}` : ''} reserves content while its first response is pending`, async ({
     page,
   }, testInfo) => {
     const fixture = await installUiFixture(page, { section });
     const gate = responseGate();
-    await page.route(
-      section === 'Playlists' ? '**/api/v1/playlists' : '**/api/v1/catalog?**',
-      async (route) => {
-        await gate.promise;
-        if (section === 'Playlists')
-          await route.fulfill({ json: { items: [] } });
-        else await route.fallback();
-      },
-    );
+    const endpoint =
+      section === 'Playlists' ? '**/api/v1/playlists' : '**/api/v1/catalog?**';
+    const title = kind ? `Fixture ${kind} 0` : 'Fixture movie 0';
+    await page.route(endpoint, async (route) => {
+      await gate.promise;
+      if (section === 'Playlists') await route.fulfill({ json: { items: [] } });
+      else if (kind) {
+        const params = new URL(route.request().url()).searchParams;
+        const total = params.get('kind') === kind ? 1 : 0;
+        await route.fulfill({
+          json: {
+            total,
+            items:
+              total && params.get('limit') !== '0'
+                ? [
+                    {
+                      id: `${kind}-0`,
+                      kind,
+                      title,
+                      available: true,
+                      metadata: {},
+                    },
+                  ]
+                : [],
+          },
+        });
+      } else await route.fallback();
+    });
     try {
-      await page.goto('/');
+      const requested = page.waitForRequest(endpoint);
+      await page.goto(view ? `/#library/music?view=${view}` : '/');
+      await requested;
       const loading = page.getByRole('status', {
-        name: `Loading ${section.toLowerCase()}`,
+        name: `Loading ${view ?? section.toLowerCase()}`,
         exact: true,
       });
       await expect(loading).toBeVisible();
       await expect(page.getByText('No media yet', { exact: true })).toHaveCount(
+        0,
+      );
+      await expect(page.getByText('No music yet', { exact: true })).toHaveCount(
         0,
       );
       await expect(
@@ -47,9 +78,13 @@ for (const section of ['Movies', 'Shows', 'Music', 'Playlists'] as const) {
         await expect(
           page.getByText('Create a playlist or save tracks from Music.'),
         ).toBeVisible();
+      else if (view === 'tracks')
+        await expect(
+          page.getByRole('button', { name: `Play ${title}`, exact: true }),
+        ).toBeVisible();
       else
         await expect(
-          page.getByRole('heading', { name: 'Fixture movie 0', exact: true }),
+          page.getByRole('heading', { name: title, exact: true }),
         ).toBeVisible();
       expect(fixture.errors).toEqual([]);
       expect(fixture.unexpected).toEqual([]);
