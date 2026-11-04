@@ -24,9 +24,7 @@ test('HTTPS setup, secure login, event replay, CSRF rejection and device revocat
       exact: true,
     })
     .click();
-  await expect(
-    page.getByRole('button', { name: 'Refresh Home', exact: true }),
-  ).toBeVisible();
+  await expect(page.locator('.page-header h1')).toHaveText('Home');
   await expect(page.locator('.page-header .connection')).toHaveText(
     'Connected',
   );

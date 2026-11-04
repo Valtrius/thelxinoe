@@ -287,6 +287,7 @@ export function videoSeed() {
     channelName: ['Field Notes', 'Night Studio', 'Open Roads'][index % 3],
     title: `${titles[index % titles.length]} · Episode ${index + 1}`,
     thumbnailUrl: art('video', index),
+    channelThumbnailUrl: art('person', index % 3),
     publishedAt: iso(-index * 7200),
     durationSeconds: index % 10 === 8 ? 120 : 600 + index * 60,
     broadcastState:
@@ -317,7 +318,18 @@ export function videoSeed() {
             frameRate: index === 0 ? 24000 / 1001 : 60,
             requestedAt: iso(-3600),
           }
-        : null,
+        : index === 5
+          ? {
+              videoId: `preview${String(index).padStart(4, '0')}`,
+              status: 'downloading',
+              fileSizeBytes: 0,
+              pinned: false,
+              downloadedBytes: 226 * 1024 ** 2,
+              totalBytes: 540 * 1024 ** 2,
+              mediaKind: 'video',
+              requestedAt: iso(-600),
+            }
+          : null,
   }));
 }
 

@@ -79,12 +79,15 @@ export async function connectNativePlayback(
   };
 }
 
+/** The MPV run playing a video on this desktop. */
+export const nativeVideoRun = (mediaId: string) => videoRuns.get(mediaId);
+
 /**
  * A YouTube video at the position MPV is playing it on this desktop. MPV reports
  * twice a second; the server hears every few seconds.
  */
 export function withNativePosition(video: YoutubeVideo): YoutubeVideo {
-  const view = videoRuns.get(`youtube:${video.videoId}`);
+  const view = nativeVideoRun(`youtube:${video.videoId}`);
   if (!view) return video;
   const duration = video.durationSeconds || view.duration;
   return {

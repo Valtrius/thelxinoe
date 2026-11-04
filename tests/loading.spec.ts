@@ -1,5 +1,5 @@
 import { expect, test, type WebSocketRoute } from '@playwright/test';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 import { current } from './helpers/versions';
 import { responseGate } from './helpers/response-gate';
 
@@ -195,6 +195,7 @@ test('Home displays ready sources while the library is pending and keeps content
       },
     }),
   );
+  const events = await installServerEvents(page);
   let gate = responseGate();
   await page.route('**/api/v1/me/home', async (route) => {
     await gate.promise;
@@ -234,7 +235,10 @@ test('Home displays ready sources while the library is pending and keeps content
       page.getByRole('status', { name: 'Loading library', exact: true }),
     ).toHaveCount(0);
     gate = responseGate();
-    await page.getByRole('button', { name: 'Refresh Home' }).click();
+    await expect.poll(events.connected).toBe(true);
+    events.send('catalog.changed');
+    const home = page.locator('[data-page-content] [aria-busy]').first();
+    await expect(home).toHaveAttribute('aria-busy', 'true');
     await expect(
       page.getByRole('heading', { name: 'Ready episode', exact: true }),
     ).toBeVisible();
@@ -242,9 +246,7 @@ test('Home displays ready sources while the library is pending and keeps content
       page.getByRole('status', { name: 'Loading library', exact: true }),
     ).toHaveCount(0);
     gate.release();
-    await expect(
-      page.getByRole('button', { name: 'Refresh Home' }),
-    ).toBeEnabled();
+    await expect(home).toHaveAttribute('aria-busy', 'false');
     expect(fixture.errors).toEqual([]);
     expect(fixture.unexpected).toEqual([]);
   } finally {
@@ -326,11 +328,14 @@ test('Home stops reading the YouTube feed once it found the account disconnected
   });
   await page.goto('/');
   await expect.poll(() => accounts).toBe(1);
-  await page.getByRole('button', { name: 'Refresh Home' }).click();
+  await expect(
+    page.locator('[data-page-content] [aria-busy]').first(),
+  ).toHaveAttribute('aria-busy', 'false');
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
   await expect.poll(() => accounts).toBe(2);
   await expect(
-    page.getByRole('button', { name: 'Refresh Home' }),
-  ).toBeEnabled();
+    page.locator('[data-page-content] [aria-busy]').first(),
+  ).toHaveAttribute('aria-busy', 'false');
   expect(feeds).toBe(1);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);

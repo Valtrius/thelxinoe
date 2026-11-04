@@ -197,6 +197,20 @@ export async function playbackApi(s, c) {
     p.position = body.position ?? p.position;
     const item = s.library.find((item) => item.id === p.media_id);
     if (item) item.position = p.position;
+    const video = s.videos.find((v) => `youtube:${v.videoId}` === p.media_id);
+    if (video) {
+      video.positionSeconds = p.position;
+      video.watchedPercentage = (p.position / video.durationSeconds) * 100;
+    }
+    if (action[2] === 'progress')
+      c.emit('playback.changed', {
+        id: p.id,
+        media_id: p.media_id,
+        state: body.state,
+        position: p.position,
+        duration: item?.duration ?? video?.durationSeconds ?? p.duration,
+        watched: video?.isWatched ?? false,
+      });
     if (action[2] === 'seek')
       return json({
         ...p,

@@ -1,11 +1,14 @@
 <script lang="ts">
   import ProgressBar from '../../../ui/ProgressBar.svelte';
+  import CardTimes from '../../../ui/CardTimes.svelte';
   import LaunchingOverlay from '../../../ui/LaunchingOverlay.svelte';
+  import PlatformIcon from '../../../ui/PlatformIcon.svelte';
   import VideoActionsMenu from './VideoActionsMenu.svelte';
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
   import { longPress } from '../../../long-press';
   import {
     mediaCardMotionClass,
+    mediaCardSignalClass as signalBadgeClass,
     mediaCardThumbnailClass,
   } from '../../../ui/styles';
 
@@ -20,7 +23,6 @@
     YoutubeVideo,
   } from '../../types';
   import {
-    formatClock,
     relativeTime,
     youtubeAvatarSet,
     youtubeThumbnailUrl,
@@ -45,6 +47,7 @@
     onMenuToggle,
     onShortcutDeleteRequest,
     onShortcutDeleteCancel,
+    platformIcon = false,
   }: {
     actions: YoutubeVideoActions;
     video: YoutubeVideo;
@@ -64,6 +67,8 @@
     onMenuToggle: () => void;
     onShortcutDeleteRequest: () => void;
     onShortcutDeleteCancel: () => void;
+    /** Shows the YouTube logo under the avatar, for rows that mix media. */
+    platformIcon?: boolean;
   } = $props();
 
   const current = $derived(withNativePosition(video));
@@ -86,7 +91,6 @@
   const tracksVideoProgress = $derived(presentation.tracksVideoProgress);
 
   const showPosition = $derived(presentation.showPosition);
-  const remainingSeconds = $derived(presentation.remainingSeconds);
   const primaryLabel = $derived(presentation.primaryLabel);
   const downloadPercent = $derived(presentation.downloadPercent);
   const downloadLabel = $derived(presentation.downloadLabel);
@@ -96,8 +100,6 @@
 
   let thumbnailAspectRatio = $state(16 / 9);
 
-  const signalBadgeClass =
-    'border border-line-strong bg-[rgba(5,7,10,0.78)] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-accent uppercase phone-card:card-pixels phone-card:px-1.5 phone-card:py-0.75 phone-card:text-[8.5px]';
   const downloadBadgeClass =
     'border border-[color-mix(in_srgb,var(--success)_55%,var(--line-strong))] bg-[color-mix(in_srgb,var(--success)_12%,rgba(5,7,10,0.9))] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-success uppercase shadow-[0_0_14px_color-mix(in_srgb,var(--success)_18%,transparent)] phone-card:card-pixels phone-card:px-1.5 phone-card:py-0.75 phone-card:text-[8.5px]';
 
@@ -169,22 +171,12 @@
       class="absolute inset-0 bg-linear-to-t from-black/45 via-transparent to-transparent"
     ></span>
     {#if isLaunching}<LaunchingOverlay label={`Starting ${video.title}`} />{/if}
-    {#if tracksVideoProgress && video.durationSeconds}
-      <span
-        class="absolute right-2 bottom-3 border border-white/20 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-white phone-card:card-pixels phone-card:px-1.5 phone-card:py-0.75 phone-card:text-[9px]"
-      >
-        {isPlaying && remainingSeconds !== null
-          ? `-${formatClock(remainingSeconds)}`
-          : formatClock(video.durationSeconds)}
-      </span>
-    {/if}
-    {#if showPosition}
-      <span
-        class="absolute bottom-3 left-2 border border-accent/45 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-accent phone-card:card-pixels phone-card:px-1.5 phone-card:py-0.75 phone-card:text-[9px]"
-      >
-        {formatClock(current.positionSeconds)}
-      </span>
-    {/if}
+    <CardTimes
+      duration={tracksVideoProgress ? video.durationSeconds : null}
+      position={current.positionSeconds}
+      {showPosition}
+      playing={isPlaying}
+    />
     {#if isLaunching}<span
         class={`${signalBadgeClass} absolute top-2 left-2 animate-pulse`}
         >Launching</span
@@ -223,22 +215,28 @@
   </button>
 
   <div class="flex flex-1 items-start gap-3 p-4 pb-5">
-    {#if video.channelThumbnailUrl}
-      <img
-        class="size-9 shrink-0 rounded-full border border-line object-cover"
-        src={video.channelThumbnailUrl}
-        srcset={youtubeAvatarSet(video.channelThumbnailUrl)}
-        sizes={avatarSizes}
-        alt=""
-        loading="lazy"
-      />
-    {:else}
-      <span
-        class="grid size-9 shrink-0 place-items-center rounded-full border border-line bg-surface-soft text-xs text-accent"
-      >
-        {video.channelName.slice(0, 1).toUpperCase()}
-      </span>
-    {/if}
+    <div class="flex shrink-0 flex-col items-center gap-2">
+      {#if video.channelThumbnailUrl}
+        <img
+          class="size-9 rounded-full border border-line object-cover"
+          src={video.channelThumbnailUrl}
+          srcset={youtubeAvatarSet(video.channelThumbnailUrl)}
+          sizes={avatarSizes}
+          alt=""
+          loading="lazy"
+        />
+      {:else}
+        <span
+          class="grid size-9 place-items-center rounded-full border border-line bg-surface-soft text-xs text-accent"
+        >
+          {video.channelName.slice(0, 1).toUpperCase()}
+        </span>
+      {/if}
+      {#if platformIcon}<PlatformIcon
+          platform="youtube"
+          class="size-4.5 text-accent"
+        />{/if}
+    </div>
     <div class="min-w-0 flex-1 phone-card:card-pixels">
       <div
         class="mb-2 flex items-center justify-between gap-3 text-[0.62rem] tracking-[0.08em] text-muted uppercase phone-card:mb-1 phone-card:text-[9px]"

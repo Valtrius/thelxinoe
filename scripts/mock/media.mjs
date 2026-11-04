@@ -9,6 +9,52 @@ import {
 } from './data.mjs';
 import { airings, inLibrary, statusOf, virtualCards } from './titles.mjs';
 
+// Downloads report their progress over a few seconds, like the server's worker.
+function simulateDownload(video, emit) {
+  const totalBytes = 540 * 1024 ** 2;
+  const download = {
+    videoId: video.videoId,
+    status: 'downloading',
+    fileSizeBytes: 0,
+    pinned: false,
+    downloadedBytes: 0,
+    totalBytes,
+    mediaKind: 'video',
+    requestedAt: iso(),
+  };
+  video.download = download;
+  const report = () =>
+    emit('online.download.progress', {
+      video_id: video.videoId,
+      state: download.status,
+      size: download.fileSizeBytes,
+      downloaded_bytes: download.downloadedBytes,
+      total_bytes: totalBytes,
+      media_kind: download.mediaKind,
+      width: download.widthPixels,
+      height: download.heightPixels,
+      frame_rate: download.frameRate,
+    });
+  const timer = setInterval(() => {
+    if (video.download !== download) return clearInterval(timer);
+    download.downloadedBytes += totalBytes / 16;
+    if (download.downloadedBytes >= totalBytes) {
+      clearInterval(timer);
+      Object.assign(download, {
+        status: 'ready',
+        fileSizeBytes: totalBytes,
+        widthPixels: 1920,
+        heightPixels: 1080,
+        frameRate: 30,
+      });
+    }
+    report();
+    if (download.status === 'ready')
+      emit('online.download.changed', { video_id: video.videoId });
+  }, 500);
+  timer.unref();
+}
+
 export async function mediaApi(s, c) {
   const { path, method, body, query, json, fail } = c;
   // Watching a title clears it from Watch Later, and finishing every episode
@@ -1011,8 +1057,14 @@ export async function onlineApi(s, c) {
         (v) => v.positionSeconds > 0 && !v.isWatched,
       ),
       next_up: s.videos
-        .filter((v) => !v.isWatched && !v.isUpcoming && !v.isLive)
-        .slice(3, 10),
+        .filter(
+          (v) =>
+            !v.isWatched &&
+            !v.isUpcoming &&
+            !v.isLive &&
+            v.positionSeconds <= 1,
+        )
+        .slice(0, 7),
     });
   if (action === 'browse') {
     const q = body?.query ?? {};
@@ -1170,17 +1222,7 @@ export async function onlineApi(s, c) {
     const video = s.videos.find((v) => v.videoId === videoRoute[1]);
     if (!video) return fail(404, 'Video not found');
     if (videoRoute[2]) {
-      if (method === 'POST')
-        video.download = {
-          videoId: video.videoId,
-          status: 'ready',
-          fileSizeBytes: 540 * 1024 ** 2,
-          pinned: false,
-          widthPixels: 1920,
-          heightPixels: 1080,
-          frameRate: 30,
-          requestedAt: iso(),
-        };
+      if (method === 'POST') simulateDownload(video, c.emit);
       if (method === 'DELETE') video.download = null;
       return json({
         download: video.download

@@ -11,7 +11,7 @@
   import type { YoutubeVideoGroup } from '../../youtube-feed';
   import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import VideoCard from './VideoCard.svelte';
-  import { CARD_LOGICAL_WIDTH_PX } from '../../../card-grid-zoom';
+  import { cardAvatarSizes } from '../../../card-grid-zoom';
 
   let {
     actions,
@@ -72,11 +72,7 @@
   });
 
   const trackStickyGroupHeader = createStickyGroupHeaders();
-  // Cards lay out at a fixed width and zoom to fill their column, so the 36 px
-  // avatar shows at a size that follows the column count.
-  const avatarSizes = $derived(
-    `${((36 / CARD_LOGICAL_WIDTH_PX) * 100) / cardColumns}vw`,
-  );
+  const avatarSizes = $derived(cardAvatarSizes(cardColumns));
 
   $effect(() => {
     const target = loadMoreTarget;

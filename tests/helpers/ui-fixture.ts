@@ -260,6 +260,7 @@ export async function installUiFixture(
     // Home reads these beside the account before knowing it is disconnected.
     if (path === '/online/youtube/home')
       return json({ continue_watching: [], next_up: [] });
+    if (path === '/online/youtube/watchlists') return json([]);
     if (path === '/online/twitch/feed') return json({ items: [] });
     if (path === '/online/kick')
       return json({ connected: false, configured: false, items: [] });

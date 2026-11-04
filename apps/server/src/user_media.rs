@@ -212,4 +212,26 @@ mod tests {
         let (status, _, _) = call(&state, path, "GET", json!(null), "").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
+
+    #[tokio::test]
+    async fn next_up_cards_carry_the_length_of_their_episode() {
+        let (_temp, state, cookie) = fixture().await;
+        state.db.write("test.fixture", |db| {
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Library','shows','/media/shows')",[])?;
+            for (id, kind, parent, sort) in [("show", "show", None, 0), ("season", "season", Some("show"), 1), ("first", "episode", Some("season"), 1), ("second", "episode", Some("season"), 2)] {
+                db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'root',?2,?3,?1,?1,?4,1)",rusqlite::params![id,kind,parent,sort])?;
+            }
+            for media in ["first", "second"] {
+                let probe = json!({"format":{"duration":"1500.5"}}).to_string();
+                db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,'root',?1,'g',1,'m',?1,?2,1)",rusqlite::params![media,probe])?;
+                db.execute("INSERT INTO media_sources(media_id,file_id) VALUES (?1,?1)",[media])?;
+            }
+            db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice','first',1,1)",[])?;
+            Ok(())
+        }).await.unwrap();
+        let (status, _, home) = call(&state, "/api/v1/me/home", "GET", json!(null), &cookie).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(home["next_up"][0]["id"], "second");
+        assert_eq!(home["next_up"][0]["duration"], 1500.5);
+    }
 }

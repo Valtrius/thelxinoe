@@ -422,6 +422,32 @@ test('mock Home, Discover and request details work without external services', a
   expect((await diagnostic.json()).unhandled).toEqual([]);
 });
 
+for (const name of ['twitch', 'kick'])
+  test(`${name} categories line up on the bottom of cards with uneven titles`, async ({
+    page,
+  }) => {
+    await page.goto(`/#online/${name}`);
+    const cards = page.locator('article[data-stream-id]');
+    await expect(cards.nth(3)).toBeVisible();
+    const placement = await cards.evaluateAll((items) =>
+      items.slice(0, 4).map((item) => {
+        const card = item.getBoundingClientRect();
+        const title = item.querySelector('h3 + p')!.getBoundingClientRect();
+        const category = item
+          .querySelector('.mt-auto')!
+          .getBoundingClientRect();
+        return {
+          titleHeight: title.height,
+          margin: Math.round(card.bottom - category.bottom),
+        };
+      }),
+    );
+    expect(
+      new Set(placement.map(({ titleHeight }) => titleHeight)).size,
+    ).toBeGreaterThan(1);
+    expect(new Set(placement.map(({ margin }) => margin)).size).toBe(1);
+  });
+
 test('every admin settings panel and service tab has populated mocks', async ({
   page,
 }, info) => {
