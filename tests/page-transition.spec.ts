@@ -287,6 +287,22 @@ test('the music lists change under a toolbar that stays, requesting the next lis
         );
       return original(input, init);
     };
+    // Hold the outgoing copy until its assertions finish, even when the
+    // runner takes longer than the animation to return from the click.
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (keyframes, options) {
+      const animation = animate.call(this, keyframes, options);
+      const root = this.getRootNode();
+      if (
+        root instanceof ShadowRoot &&
+        root.host.hasAttribute('data-page-leaving')
+      ) {
+        animation.pause();
+        (window as unknown as { musicLeave: Animation }).musicLeave = animation;
+        Element.prototype.animate = animate;
+      }
+      return animation;
+    };
   });
   const lists = page.getByRole('group', { name: 'Music lists' });
   const albums = lists.getByRole('button', { name: /^Albums/ });
@@ -302,6 +318,9 @@ test('the music lists change under a toolbar that stays, requesting the next lis
   await expect(lists).toBeVisible();
   await expect(pageContent(page)).toHaveCSS('opacity', '1');
   await page.screenshot({ path: info.outputPath('music-list-leaving.png') });
+  await page.evaluate(() =>
+    (window as unknown as { musicLeave: Animation }).musicLeave.play(),
+  );
   await ready(page);
   await expect(outgoing).toHaveCount(0);
   await expect(albums).toHaveAttribute('aria-pressed', 'true');
