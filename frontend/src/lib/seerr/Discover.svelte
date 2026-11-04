@@ -786,7 +786,7 @@
                   {open}
                   sizes={rowCardSizes}
                 />{/each}</MediaRow
-            >{:else if feed.loading}<div use:nearScreen={feed}>
+            >{:else if feed.loading}<div class="min-w-0" use:nearScreen={feed}>
               <MediaSkeleton
                 label={`Loading ${feed.label}`}
                 heading={feed.label}
