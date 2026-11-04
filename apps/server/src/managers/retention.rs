@@ -254,18 +254,23 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
     }
 }
 
-/// What the auto-delete policy that scheduled `operation` does to its movie in Radarr,
-/// or `None` when no auto-delete scheduled it.
+/// What the auto-delete policy that scheduled `operation` does to its movie in Radarr or
+/// season in Sonarr, or `None` when no auto-delete scheduled it.
 pub(super) async fn options(state: &AppState, operation: &str) -> Result<Option<Retained>> {
     let operation = operation.to_owned();
     let options = storage::options(operation, &state.db).await?;
-    Ok(options.map(|(exclude, remove)| Retained { exclude, remove }))
+    Ok(options.map(|(exclude, remove, season)| Retained {
+        exclude,
+        remove,
+        season,
+    }))
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct Retained {
     pub exclude: bool,
     pub remove: bool,
+    pub season: bool,
 }
 
 pub(super) async fn exclude(state: &AppState, files: &[operations::Target]) -> Result<()> {
@@ -390,6 +395,7 @@ pub(super) async fn reacquire(
                 Some(json!({"episodeIds":episodes,"monitored":true})),
             )
             .await?;
+        operations::set_seasons_monitored(connection, entity, external, &episodes, true).await?;
     }
     if let Some((id, true)) = exclusion {
         let endpoint = exclusion_endpoint(&service.kind);

@@ -266,6 +266,75 @@ async fn wait_until_idle(c: &Connection<'_>, selected: &[i64]) -> Result<()> {
         Err(_) => Err(refusal.unwrap_or_else(unavailable)),
     }
 }
+/// Set Sonarr's own flag on the seasons these episodes are in. Sonarr applies a change to all
+/// of a season's episodes and monitors what it later adds to a monitored season, while a series
+/// search skips a season that isn't monitored.
+pub(super) async fn set_seasons_monitored(
+    c: &Connection<'_>,
+    entity: i64,
+    external: &str,
+    episodes: &std::collections::BTreeSet<i64>,
+    monitored: bool,
+) -> Result<()> {
+    let listed = c
+        .call(
+            reqwest::Method::GET,
+            "episode",
+            &[("seriesId", entity.to_string())],
+            None,
+        )
+        .await?;
+    let seasons = listed
+        .as_array()
+        .ok_or_else(unavailable)?
+        .iter()
+        .filter(|e| e["id"].as_i64().is_some_and(|id| episodes.contains(&id)))
+        .filter_map(|e| e["seasonNumber"].as_i64())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut series = c.get(&format!("series/{entity}")).await?;
+    if requests::external("sonarr", &series).as_deref() != Some(external) {
+        return Err(ApiError::conflict("Manager series identity changed"));
+    }
+    let mut changed = false;
+    for season in series["seasons"].as_array_mut().ok_or_else(unavailable)? {
+        let selected = season["seasonNumber"]
+            .as_i64()
+            .is_some_and(|number| seasons.contains(&number));
+        if selected && season["monitored"] != monitored {
+            season["monitored"] = json!(monitored);
+            changed = true;
+        }
+    }
+    if changed {
+        c.call(
+            reqwest::Method::PUT,
+            &format!("series/{entity}"),
+            &[],
+            Some(series),
+        )
+        .await?;
+    }
+    Ok(())
+}
+/// Sonarr's own flag follows the episodes of a season auto-delete removed. A refresh under way
+/// could write the old flag back and monitor every episode again, so this waits for it.
+async fn unmonitor_seasons(state: &AppState, files: &[Target]) -> Result<()> {
+    let mut selected =
+        std::collections::BTreeMap::<(&str, i64, &str), std::collections::BTreeSet<i64>>::new();
+    for claim in files.iter().flat_map(|f| &f.claims) {
+        selected
+            .entry((&claim.service_id, claim.entity_id, &claim.external_id))
+            .or_default()
+            .extend(&claim.members);
+    }
+    for ((key, entity, external), episodes) in selected {
+        let s = service(state, key).await?;
+        let c = Connection::open(state, &s).await?;
+        wait_until_idle(&c, &[entity]).await?;
+        set_seasons_monitored(&c, entity, external, &episodes, false).await?;
+    }
+    Ok(())
+}
 /// `changed` is set before the first call that can change anything upstream, so that it stays
 /// false only when an attempt certainly changed nothing.
 #[allow(clippy::too_many_arguments)]
@@ -542,6 +611,12 @@ pub(super) async fn execute_locked(
             &mut changed,
         )
         .await?;
+        // The files are gone by now, so this alone doesn't make the deletion a failure.
+        if retained.is_some_and(|r| r.season)
+            && let Err(error) = unmonitor_seasons(state, &current).await
+        {
+            tracing::warn!(media, error = %error.2, "Could not unmonitor the deleted season");
+        }
         finish_movies(state, &media, &current, options, actor.clone()).await
     }
     .await;

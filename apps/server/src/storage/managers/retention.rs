@@ -254,12 +254,13 @@ pub(super) async fn run(
 }
 
 /// Whether the policy that scheduled `operation` excludes its movie from Radarr's lists,
-/// and removes it from Radarr. `None` when no auto-delete scheduled it.
+/// removes it from Radarr, and whether what it deletes is a season. `None` when no auto-delete
+/// scheduled it.
 pub(super) async fn options(
     operation: String,
     db: &Database,
-) -> anyhow::Result<Option<(bool, bool)>> {
-    db.read("managers.retention.options", move|db|Ok(db.query_row("SELECT p.exclude_from_lists AND m.kind='movie',p.remove_from_manager AND m.kind='movie' FROM retention_candidates c JOIN media m ON m.id=c.media_id JOIN retention_policies p ON p.domain=CASE m.kind WHEN 'movie' THEN 'movies' ELSE 'shows' END WHERE c.operation_id=?1 AND c.state IN ('pending','executing')",[operation],|r|Ok((r.get::<_,bool>(0)?,r.get::<_,bool>(1)?))).optional()?)).await
+) -> anyhow::Result<Option<(bool, bool, bool)>> {
+    db.read("managers.retention.options", move|db|Ok(db.query_row("SELECT p.exclude_from_lists AND m.kind='movie',p.remove_from_manager AND m.kind='movie',m.kind='season' FROM retention_candidates c JOIN media m ON m.id=c.media_id JOIN retention_policies p ON p.domain=CASE m.kind WHEN 'movie' THEN 'movies' ELSE 'shows' END WHERE c.operation_id=?1 AND c.state IN ('pending','executing')",[operation],|r|Ok((r.get::<_,bool>(0)?,r.get::<_,bool>(1)?,r.get::<_,bool>(2)?))).optional()?)).await
 }
 
 pub(super) async fn exclude_write_retention_exclusions(

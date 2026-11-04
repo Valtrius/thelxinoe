@@ -351,7 +351,10 @@ async fn reacquisition_restores_exact_episode_ids_and_preserves_foreign_exclusio
         let deletes = Arc::new(AtomicUsize::new(0));
         let recorded_monitors = monitors.clone();
         let recorded_deletes = deletes.clone();
+        let seasons = Arc::new(std::sync::Mutex::new(Value::Null));
+        let recorded_seasons = seasons.clone();
         let stub=Router::new()
+            .route("/api/v3/series/9",get(||async {Json(json!({"id":9,"tvdbId":42,"seasons":[{"seasonNumber":1,"monitored":false},{"seasonNumber":2,"monitored":false}]}))}).put(move|Json(body):Json<Value>|{let seasons=recorded_seasons.clone();async move{*seasons.lock().unwrap()=body["seasons"].clone();Json(json!(9))}}))
             .route("/api/v3/episode",get(||async {Json(json!([{"id":37,"seriesId":9,"seasonNumber":1,"episodeNumber":2},{"id":80,"seriesId":9,"seasonNumber":2,"episodeNumber":1}]))}))
             .route("/api/v3/episode/monitor",axum::routing::put(move|Json(body):Json<Value>|{let count=recorded_monitors.clone();async move{assert_eq!(body,json!({"episodeIds":[37],"monitored":true}));count.fetch_add(1,Ordering::SeqCst);Json(json!({}))}}))
             .route("/api/v3/importlistexclusion",get(||async{Json(json!([{"id":5,"tvdbId":42}]))}))
@@ -387,6 +390,11 @@ async fn reacquisition_restores_exact_episode_ids_and_preserves_foreign_exclusio
         reacquire(&state, &s, &connection, "42", 9).await.unwrap();
         assert_eq!(monitors.load(Ordering::SeqCst), 1);
         assert_eq!(deletes.load(Ordering::SeqCst), usize::from(owned));
+        assert_eq!(
+            *seasons.lock().unwrap(),
+            json!([{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":false}]),
+            "A series search skips a season that isn't monitored"
+        );
         state
             .db
             .write("test.fixture", |db| {
@@ -734,6 +742,9 @@ struct Upstream {
     /// Whether each coming read of the commands finds one running, and `busy` after those.
     commands: std::sync::Mutex<std::collections::VecDeque<bool>>,
     busy: std::sync::atomic::AtomicBool,
+    /// The seasons of each series update Sonarr accepted, and whether it refuses them.
+    series_updates: std::sync::Mutex<Vec<Value>>,
+    refuses_series_updates: std::sync::atomic::AtomicBool,
     /// While set, reads of the commands after the first two never get an answer in time.
     hung: std::sync::atomic::AtomicBool,
     command_reads: std::sync::atomic::AtomicUsize,
@@ -1136,25 +1147,25 @@ async fn a_manager_that_stops_answering_cant_hold_a_deletion_past_the_wait() {
     server.abort();
 }
 
-/// Two episodes of a season on a fake Sonarr, with their deletion prepared.
-async fn prepared_season() -> (
+/// Two episodes of a season on a fake Sonarr.
+async fn season_on_sonarr() -> (
     tempfile::TempDir,
     AppState,
     Arc<Upstream>,
     [std::path::PathBuf; 2],
-    String,
     tokio::task::JoinHandle<()>,
 ) {
     let (temp, state, media, first) = media_library("shows/11.mkv").await;
     let second = first.with_file_name("12.mkv");
     std::fs::write(&second, "fixture shows/12.mkv").unwrap();
     let upstream = Arc::new(Upstream::default());
-    let series = json!({"id":9,"tvdbId":42,"statistics":{"episodeFileCount":2}});
-    let episode = |id: i64, file: i64| json!({"id":id,"seriesId":9,"episodeFileId":file,"episodeFile":{"id":file,"path":format!("/media/shows/{file}.mkv")}});
+    let series = json!({"id":9,"tvdbId":42,"statistics":{"episodeFileCount":2},"seasons":[{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":true}]});
+    let episode = |id: i64, file: i64| json!({"id":id,"seriesId":9,"seasonNumber":1,"episodeFileId":file,"episodeFile":{"id":file,"path":format!("/media/shows/{file}.mkv")}});
     let episodes = json!([episode(101, 11), episode(102, 12)]);
     let (library, entity) = (series.clone(), series);
     let shows = first.parent().unwrap().to_owned();
-    let (u1, u2, u3, u4) = (
+    let (u1, u2, u3, u4, u5) = (
+        upstream.clone(),
         upstream.clone(),
         upstream.clone(),
         upstream.clone(),
@@ -1173,6 +1184,21 @@ async fn prepared_season() -> (
             get(move || {
                 let entity = entity.clone();
                 async move { Json(entity) }
+            })
+            .put(move |Json(body): Json<Value>| {
+                let u = u5.clone();
+                async move {
+                    if u.refuses_series_updates
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+                    }
+                    u.series_updates
+                        .lock()
+                        .unwrap()
+                        .push(body["seasons"].clone());
+                    Ok(Json(json!(9)))
+                }
             }),
         )
         .route(
@@ -1244,6 +1270,19 @@ async fn prepared_season() -> (
         }
         Ok(())
     }).await.unwrap();
+    (temp, state, upstream, [first, second], server)
+}
+
+/// A season prepared for deletion by hand.
+async fn prepared_season() -> (
+    tempfile::TempDir,
+    AppState,
+    Arc<Upstream>,
+    [std::path::PathBuf; 2],
+    String,
+    tokio::task::JoinHandle<()>,
+) {
+    let (temp, state, upstream, files, server) = season_on_sonarr().await;
     let operation = operations::prepare_operation(&state, None, "season".into(), "delete".into())
         .await
         .unwrap()
@@ -1251,7 +1290,46 @@ async fn prepared_season() -> (
         .as_str()
         .unwrap()
         .to_owned();
-    (temp, state, upstream, [first, second], operation, server)
+    (temp, state, upstream, files, operation, server)
+}
+
+/// A watched, finished season with its auto-delete scheduled and due.
+async fn scheduled_season() -> (
+    tempfile::TempDir,
+    AppState,
+    Arc<Upstream>,
+    [std::path::PathBuf; 2],
+    String,
+    tokio::task::JoinHandle<()>,
+) {
+    let (temp, state, upstream, files, server) = season_on_sonarr().await;
+    let refreshed = now();
+    state.db.write("test.fixture", move |db| {
+        db.execute("UPDATE media SET metadata=?1 WHERE id='show'",[json!({"refreshed_at":refreshed,"status":"Ended","seasons":[{"season_number":1,"episode_count":2}]}).to_string()])?;
+        db.execute("INSERT INTO metadata_bindings VALUES ('show','sonarr','g','42',9,?1)",[refreshed])?;
+        for (episode, manager_episode) in [("e1", 101), ("e2", 102)] {
+            db.execute("INSERT INTO manager_episodes VALUES ('sonarr','g','42',?1,1,?2,?3,?4)",params![manager_episode,manager_episode-100,refreshed,json!({"air_date":"2000-01-01"}).to_string()])?;
+            db.execute("INSERT INTO manager_episode_mappings VALUES (?1,'sonarr','g',?2,'confirmed')",params![episode,manager_episode])?;
+            db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice',?1,1,1)",[episode])?;
+        }
+        db.execute("INSERT INTO settings(key,value) VALUES ('manager.retention.sonarr','true')",[])?;
+        db.execute("UPDATE retention_policies SET enabled=1,trigger_users='[\"alice\"]' WHERE domain='shows'",[])?;
+        Ok(())
+    }).await.unwrap();
+    assert_eq!(evaluate_all(&state, None).await.unwrap(), 1);
+    make_due(&state).await;
+    let candidate = state
+        .db
+        .read("test.candidate", |db| {
+            Ok(
+                db.query_row("SELECT id FROM retention_candidates", [], |r| {
+                    r.get::<_, String>(0)
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    (temp, state, upstream, files, candidate, server)
 }
 
 async fn operation_state(state: &AppState, operation: &str) -> String {
@@ -1289,6 +1367,47 @@ async fn a_season_deletion_waits_out_a_command_between_its_files() {
     assert_eq!(operation_state(&state, &operation).await, "complete");
     assert_eq!(upstream.changes.load(Ordering::SeqCst), 4);
     assert!(files.iter().all(|file| !file.exists()));
+    assert!(
+        upstream.series_updates.lock().unwrap().is_empty(),
+        "Only auto-delete unmonitors the season itself"
+    );
+    server.abort();
+}
+
+// Only that season: the series and its other seasons stay monitored.
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
+#[tokio::test]
+async fn auto_deleting_a_season_unmonitors_that_season() {
+    let (_temp, state, upstream, files, candidate, server) = scheduled_season().await;
+    delete_locked(&state, &candidate, None, true).await.unwrap();
+    assert!(files.iter().all(|file| !file.exists()));
+    assert_eq!(
+        *upstream.series_updates.lock().unwrap(),
+        [json!([{"seasonNumber":1,"monitored":false},{"seasonNumber":2,"monitored":true}])]
+    );
+    let (done, operation, _) = deletion_states(&state).await;
+    assert_eq!(
+        (done.as_str(), operation.as_str()),
+        ("complete", "complete")
+    );
+    server.abort();
+}
+
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
+#[tokio::test]
+async fn a_season_that_cant_be_unmonitored_is_still_a_completed_deletion() {
+    use std::sync::atomic::Ordering;
+    let (_temp, state, upstream, files, candidate, server) = scheduled_season().await;
+    upstream
+        .refuses_series_updates
+        .store(true, Ordering::SeqCst);
+    delete_locked(&state, &candidate, None, true).await.unwrap();
+    assert!(files.iter().all(|file| !file.exists()));
+    let (done, operation, _) = deletion_states(&state).await;
+    assert_eq!(
+        (done.as_str(), operation.as_str()),
+        ("complete", "complete")
+    );
     server.abort();
 }
 
