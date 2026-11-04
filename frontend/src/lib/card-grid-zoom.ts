@@ -23,6 +23,10 @@ export const DEFAULT_CARD_COLUMNS = 6;
 export const CARD_LOGICAL_WIDTH_PX = 320;
 export const CARD_GRID_GAP_PX = 12;
 export const YOUTUBE_SIDEBAR_LOGICAL_WIDTH_PX = 430;
+// Cards lay out at a fixed width and zoom to fill their column, so a 36 px
+// channel avatar shows at a size that follows the column count.
+export const cardAvatarSizes = (columns: number) =>
+  `${((36 / CARD_LOGICAL_WIDTH_PX) * 100) / columns}vw`;
 const mediaLayoutSynchronizers = new Set<() => void>();
 
 export function syncMediaLayouts() {

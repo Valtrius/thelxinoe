@@ -4,13 +4,19 @@
   import { Film, Music, Tv, MoreHorizontal } from '@lucide/svelte';
   import { serverUrl } from '../api';
   import AttentionDot from './AttentionDot.svelte';
+  import CardTimes from './CardTimes.svelte';
   import PlatformIcon from './PlatformIcon.svelte';
+  import SectionIcon from './SectionIcon.svelte';
   import { attentionDescription, type AttentionItem } from '../attention';
   import type { ActivityItem } from '../activity';
   import { appearance } from '../appearance';
-  import { mediaCardMotionClass, mediaCardThumbnailClass } from './styles';
+  import {
+    mediaCardMotionClass,
+    mediaCardSignalClass,
+    mediaCardThumbnailClass,
+  } from './styles';
   import { statusChip, type TitleStatus } from '../title/status';
-  import { launchingMedia } from '../native-playback';
+  import { launchingMedia, nativeVideoRun } from '../native-playback';
   import LaunchingOverlay from './LaunchingOverlay.svelte';
   import StatusChip from './StatusChip.svelte';
   import { youtubeThumbnailSet } from '../providers/utils';
@@ -31,6 +37,8 @@
     landscape = false,
     detail,
     caption,
+    asVideo = false,
+    playing = false,
   } = $props<{
     item: {
       id: string;
@@ -63,6 +71,13 @@
     detail?: string;
     /** Replaces the year under the title. */
     caption?: string;
+    /**
+     * Presents the title like a video card, beside them in a row: time overlays
+     * that follow playback, and an icon for its kind where they show a channel.
+     */
+    asVideo?: boolean;
+    /** Frames the card, and counts down its time when `asVideo`. */
+    playing?: boolean;
   }>();
   const music = $derived(['artist', 'album', 'track'].includes(item.kind));
   const wide = $derived(landscape || item.kind === 'episode');
@@ -74,6 +89,20 @@
   const cardId = $props.id();
   const chip = $derived(timezone ? statusChip(item.status, timezone) : null);
   const launching = $derived(launchingMedia.has(item.id));
+  const run = $derived(asVideo ? nativeVideoRun(item.id) : undefined);
+  const position = $derived(run?.position ?? item.position);
+  const duration = $derived(run?.duration || item.duration);
+  const captionLine = $derived(
+    [
+      caption ?? item.year ?? (asVideo ? null : item.kind),
+      item.available === false &&
+        !chip &&
+        ['movie', 'episode', 'track'].includes(item.kind) &&
+        'Unavailable',
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  );
   const chipClass = {
     success: 'text-success',
     accent: 'text-accent',
@@ -130,10 +159,14 @@
 
 <article
   use:longPress={hold}
-  class={`media-tile library-tile group/library-card group/media-card relative h-full min-w-0 border border-line bg-surface shadow-card hover:border-line-strong touch:select-none touch:[-webkit-touch-callout:none] ${mediaCardMotionClass} ${faded ? 'opacity-55 focus-within:opacity-100 hover:opacity-100' : 'opacity-100'}`}
+  class={`media-tile library-tile group/library-card group/media-card relative h-full min-w-0 border bg-surface shadow-card touch:select-none touch:[-webkit-touch-callout:none] ${mediaCardMotionClass} ${playing ? 'border-accent' : 'border-line hover:border-line-strong'} ${faded ? 'opacity-55 focus-within:opacity-100 hover:opacity-100' : 'opacity-100'}`}
   data-layout-key={`${keyPrefix}:${item.id}`}
   data-sidebar-resize="xy"
 >
+  {#if playing}<span
+      aria-hidden="true"
+      class="pointer-events-none absolute inset-0 z-20 border-3 border-accent"
+    ></span>{/if}
   {#if details || menu}<div
       class={[
         'card-actions absolute top-2 right-2 z-2 flex gap-1 transition-opacity duration-(--animation-duration)',
@@ -202,9 +235,22 @@
           class={`absolute bottom-2 left-2 z-2 max-w-[calc(100%-1rem)] truncate border border-[#ffffff30] bg-[#080b10e6] px-2 py-1 text-[11px] leading-none font-semibold phone-card:card-pixels phone-card:text-[9px] ${chipClass[chip.tone]}`}
           data-title-chip={item.status?.state}>{chip.label}</span
         >{/if}
-      {#if item.position && item.duration}<ProgressBar
+      {#if asVideo}<span
+          class="absolute inset-0 bg-linear-to-t from-black/45 via-transparent to-transparent"
+        ></span>
+        <CardTimes
+          {duration}
+          {position}
+          showPosition={(position ?? 0) > 1}
+          {playing}
+        />
+        {#if launching || playing}<span
+            class={`${mediaCardSignalClass} absolute top-2 ${activity.length || attention.length ? 'left-7' : 'left-2'} ${launching ? 'animate-pulse' : ''}`}
+            >{launching ? 'Launching' : 'Playing'}</span
+          >{/if}{/if}
+      {#if position && duration}<ProgressBar
           class="card-progress absolute inset-x-0 bottom-0 h-0.75 bg-transparent"
-          value={(item.position / item.duration) * 100}
+          value={(position / duration) * 100}
           barClass="shadow-accent-glow"
         />{/if}
       <AttentionDot
@@ -217,40 +263,48 @@
     </div>
     <div
       id={`${cardId}-label`}
-      class="tile-body min-w-0 p-4 phone-card:card-pixels phone-card:p-2"
+      class={[
+        'tile-body min-w-0 p-4 phone-card:card-pixels phone-card:p-2',
+        asVideo && 'flex items-start gap-3 pb-5 phone-card:gap-1.5',
+      ]}
     >
-      {#if item.show_title}<div
-          class="mb-2 flex justify-between gap-2.5 text-[10px] tracking-[0.08em] text-muted uppercase phone-card:mb-0.75 phone-card:text-[9px]"
+      {#if asVideo}<span
+          class="grid size-9 shrink-0 place-items-center rounded-full border border-line bg-surface-soft text-accent phone-card:size-5"
+          ><SectionIcon
+            section={item.kind === 'movie' ? 'Movies' : 'Shows'}
+            class="size-4.5 phone-card:size-3"
+          /><span class="sr-only">{item.kind}</span></span
+        >{/if}
+      <div class="min-w-0 flex-1">
+        {#if item.show_title}<div
+            class="mb-2 flex justify-between gap-2.5 text-[10px] tracking-[0.08em] text-muted uppercase phone-card:mb-0.75 phone-card:text-[9px]"
+          >
+            {item.show_title}
+          </div>{/if}
+        <h3
+          class="text-[15px] leading-5 tracking-[-0.02em] phone-card:text-xs phone-card:leading-tight"
         >
-          {item.show_title}
-        </div>{/if}
-      <h3
-        class="text-[15px] leading-5 tracking-[-0.02em] phone-card:text-xs phone-card:leading-tight"
-      >
-        {item.title}
-      </h3>
-      <p
-        class="mt-2 mb-0 text-[11px] leading-normal text-muted phone-card:mt-0.75 phone-card:text-[10px]"
-      >
-        {caption ?? item.year ?? item.kind}{item.available === false &&
-        !chip &&
-        ['movie', 'episode', 'track'].includes(item.kind)
-          ? ' · Unavailable'
-          : ''}{#if item.ended}<StatusChip
-            dot={false}
-            class="ml-1.5 py-px align-[1px] phone-card:text-[8px]"
-            >Ended</StatusChip
-          >{/if}{#if chip || item.virtual}<span class="sr-only"
-            >{item.virtual ? ' · Not in your library' : ''}{chip
-              ? ` · ${chip.label}`
-              : ''}</span
-          >{/if}
-      </p>
-      {#if detail}<p
-          class="mt-0.5 mb-0 text-[11px] leading-normal text-muted phone-card:text-[10px]"
-        >
-          {detail}
-        </p>{/if}
+          {item.title}
+        </h3>
+        {#if captionLine || item.ended || chip || item.virtual}<p
+            class="mt-2 mb-0 text-[11px] leading-normal text-muted phone-card:mt-0.75 phone-card:text-[10px]"
+          >
+            {captionLine}{#if item.ended}<StatusChip
+                dot={false}
+                class="ml-1.5 py-px align-[1px] phone-card:text-[8px]"
+                >Ended</StatusChip
+              >{/if}{#if chip || item.virtual}<span class="sr-only"
+                >{item.virtual ? ' · Not in your library' : ''}{chip
+                  ? ` · ${chip.label}`
+                  : ''}</span
+              >{/if}
+          </p>{/if}
+        {#if detail}<p
+            class="mt-0.5 mb-0 text-[11px] leading-normal text-muted phone-card:text-[10px]"
+          >
+            {detail}
+          </p>{/if}
+      </div>
     </div>
   </button>
   {#if description}<span id={`${cardId}-description`} class="sr-only"

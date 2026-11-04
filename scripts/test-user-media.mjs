@@ -28,9 +28,7 @@ async function login(page, username) {
     'Connected',
   );
   await page.getByRole('link', { name: 'Home', exact: true }).click();
-  await expect(
-    page.getByRole('button', { name: 'Refresh Home', exact: true }),
-  ).toBeVisible();
+  await expect(page.locator('.page-header h1')).toHaveText('Home');
 }
 try {
   await login(page, 'admin');

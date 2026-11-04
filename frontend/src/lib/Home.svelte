@@ -6,18 +6,21 @@
 </script>
 
 <script lang="ts">
-  import { revisions } from './server-events.svelte';
+  import { onServerEvent, revisions } from './server-events.svelte';
   import { onMount, untrack } from 'svelte';
-  import { RefreshCw, Radio } from '@lucide/svelte';
+  import { Radio } from '@lucide/svelte';
   import { api, type User } from './api';
   import { inBackground } from './page-readiness';
   import type { MediaChoice, PlayingMedia } from './playback';
   import { providers } from './providers/availability';
   import {
     api as providerApi,
+    downloadEvent,
+    rememberVideos,
     type OnlineAccount,
     type KickFeed,
   } from './providers/api';
+  import { createHomeVideoCards } from './providers/home-video-cards.svelte';
   import type {
     YoutubeProgressEvent,
     YoutubeVideo,
@@ -27,6 +30,9 @@
   import { LatestRequest } from './latest-request';
   import { RefreshTask } from './refresh-task';
   import { navigationCache } from './navigation-cache';
+  import { appearance } from './appearance';
+  import { cardAvatarSizes } from './card-grid-zoom';
+  import { compactViewport } from './responsive';
   import Button from './ui/Button.svelte';
   import Notice from './ui/Notice.svelte';
   import LibraryCard from './ui/LibraryCard.svelte';
@@ -35,7 +41,7 @@
   import MediaSkeleton from './ui/MediaSkeleton.svelte';
   import LiveCard from './providers/components/ui/LiveCard.svelte';
   import LiveCardBadge from './providers/components/ui/LiveCardBadge.svelte';
-  import LibraryVideoMenu from './providers/components/youtube/LibraryVideoMenu.svelte';
+  import VideoCard from './providers/components/youtube/VideoCard.svelte';
   import PlatformIcon from './ui/PlatformIcon.svelte';
 
   let { user, playing, play, navigate, details } = $props<{
@@ -127,6 +133,14 @@
     kick: new RefreshTask(() => loadKick($providers.kick), 60_000),
   };
   const pending = new SvelteSet<string>();
+  const videoCards = createHomeVideoCards({
+    play: playVideo,
+    downloadChanged: (videoId, download) => updateVideo(videoId, { download }),
+  });
+  let downloadsEnabled = $state(false);
+  const avatarSizes = $derived(
+    cardAvatarSizes(compactViewport.current ? 2 : $appearance.video_columns),
+  );
   const activityOf = $derived(byMedia($activity));
   const busy = $derived(Object.values(loading).some(Boolean));
   function youtubeItem(video: YoutubeVideo & { last_played?: number }): Item {
@@ -135,10 +149,6 @@
       kind: 'youtube',
       title: video.title,
       available: true,
-      artwork_url: video.thumbnailUrl ?? undefined,
-      show_title: video.channelName,
-      position: video.positionSeconds,
-      duration: video.durationSeconds ?? undefined,
       last_played: video.last_played,
       video,
     };
@@ -242,8 +252,11 @@
         return;
       }
       disconnected.delete(key);
+      downloadsEnabled = account.downloads_enabled ?? false;
+      videoCards.loadWatchlists();
       const result = await (home ?? api<YoutubeHome>('/online/youtube/home'));
       if (current()) {
+        rememberVideos([...result.continue_watching, ...result.next_up]);
         youtube = result;
         errors.youtube = account.sync?.error ?? '';
       }
@@ -384,9 +397,11 @@
       void reads.youtube.refresh();
     });
   });
-  function refreshSources() {
-    navigationCache.invalidate('catalog', 'youtube', 'twitch', 'kick');
-    Object.values(reads).forEach((read) => void read.refresh());
+  function updateVideo(videoId: string, change: Partial<YoutubeVideo>) {
+    for (const videos of [youtube.continue_watching, youtube.next_up]) {
+      const index = videos.findIndex((video) => video.videoId === videoId);
+      if (index >= 0) videos[index] = { ...videos[index], ...change };
+    }
   }
   onMount(() => {
     // A report moves the card of a video already in progress. A video that
@@ -407,11 +422,43 @@
         watchedPercentage: progress.watchedPercentage,
       };
     };
+    const removed = (event: Event) =>
+      updateVideo((event as CustomEvent<string>).detail, { download: null });
+    const stopEvents = onServerEvent(({ kind, payload }) => {
+      if (kind === 'online.download.progress') {
+        const { download, downloadedBytes, totalBytes, etaSeconds, mediaKind } =
+          downloadEvent(payload as Parameters<typeof downloadEvent>[0]);
+        updateVideo(download.videoId, {
+          download: {
+            ...download,
+            downloadedBytes,
+            totalBytes,
+            etaSeconds,
+            mediaKind,
+          },
+        });
+      } else if (kind === 'playback.changed') {
+        const report = payload as {
+          media_id?: string;
+          position?: number;
+          duration?: number;
+        };
+        if (report.position === undefined) return;
+        for (const item of [...library.continue_watching, ...library.next_up])
+          if (item.id === report.media_id) {
+            item.position = report.position;
+            item.duration = report.duration || item.duration;
+          }
+      }
+    });
     const stops = Object.values(reads).map((read) => read.start(false));
     window.addEventListener('thelxinoe-youtube-progress', changed);
+    window.addEventListener('thelxinoe-youtube-download-removed', removed);
     return () => {
       stops.forEach((stop) => stop());
+      stopEvents();
       window.removeEventListener('thelxinoe-youtube-progress', changed);
+      window.removeEventListener('thelxinoe-youtube-download-removed', removed);
       Object.values(requests).forEach((request) => request.invalidate());
     };
   });
@@ -438,29 +485,61 @@
       kind: item.kind,
       title: item.title,
       fileId: item.fileId,
-      position: resume
-        ? item.position
-        : item.kind === 'youtube'
-          ? 0
-          : undefined,
+      position: resume ? item.position : undefined,
     });
   }
+  function playVideo(video: YoutubeVideo, beginning = false) {
+    void launch({
+      id: `youtube:${video.videoId}`,
+      kind: 'youtube',
+      title: video.title,
+      position:
+        !beginning && video.positionSeconds > 1 ? video.positionSeconds : 0,
+    });
+  }
+  const isPlaying = (id: string) =>
+    playing.some((media: PlayingMedia) => media.id === id);
 </script>
 
-<div class="grid min-w-0 gap-7" aria-busy={busy}>
-  <div class="flex justify-end">
-    <Button
-      variant="ghost"
-      size="sm"
-      aria-label="Refresh Home"
-      onclick={refreshSources}
-      disabled={busy}
-      ><RefreshCw
-        size={17}
-        class={busy ? 'animate-spin motion-reduce:animate-none' : ''}
-      /></Button
-    >
+{#snippet videoCard(video: YoutubeVideo, row: string, platformIcon: boolean)}
+  {@const id = `youtube:${video.videoId}`}
+  <div data-layout-key={`${row}:${id}`} class="h-full min-w-0">
+    <VideoCard
+      actions={videoCards.actions}
+      {video}
+      {avatarSizes}
+      playerReady
+      {downloadsEnabled}
+      fadeWatchedCards={$appearance.fade_watched}
+      youtubeCardShortcuts={$appearance.youtube_card_shortcuts}
+      isPlaying={isPlaying(id)}
+      isLaunching={pending.has(id) ||
+        playing.some(
+          (media: PlayingMedia) => media.id === id && media.launching,
+        )}
+      downloadBusy={videoCards.downloadBusy(video.videoId)}
+      watchlists={videoCards.watchlists}
+      menuOpen={videoCards.menu === video.videoId}
+      shortcutDeleteConfirming={videoCards.confirmingDelete === video.videoId}
+      onMenuToggle={() => videoCards.toggleMenu(video.videoId)}
+      onShortcutDeleteRequest={() => videoCards.confirmDelete(video.videoId)}
+      onShortcutDeleteCancel={() => videoCards.confirmDelete(null)}
+      {platformIcon}
+    />
   </div>
+{/snippet}
+
+<div class="grid min-w-0 gap-7" aria-busy={busy}>
+  {#if videoCards.menu || videoCards.confirmingDelete}
+    <button
+      type="button"
+      class="fixed inset-0 z-40 cursor-default bg-transparent"
+      aria-label={videoCards.confirmingDelete
+        ? 'Cancel deleting download'
+        : 'Close video actions'}
+      onclick={videoCards.closeMenus}
+    ></button>
+  {/if}
   {#each Object.entries(errors).filter(([, message]) => message) as [source, message] (source)}
     <Notice variant="callout" role="status">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -501,21 +580,20 @@
   {#if continuing.length}
     <MediaRow label="Continue watching">
       {#each continuing as item (item.id)}
-        <LibraryCard
-          {item}
-          activity={activityOf(item.id)}
-          landscape
-          keyPrefix="home-continue"
-          open={() => playItem(item, true)}
-          details={item.kind === 'youtube'
-            ? undefined
-            : () => details(item.id, item.kind)}
-          >{#snippet menu(card)}{#if item.video}<LibraryVideoMenu
-                bind:open={card.open}
-                video={item.video}
-                restart={() => playItem(item)}
-              />{/if}{/snippet}</LibraryCard
-        >
+        {#if item.video}
+          {@render videoCard(item.video, 'home-continue', true)}
+        {:else}
+          <LibraryCard
+            {item}
+            activity={activityOf(item.id)}
+            landscape
+            asVideo
+            playing={isPlaying(item.id)}
+            keyPrefix="home-continue"
+            open={() => playItem(item, true)}
+            details={() => details(item.id, item.kind)}
+          />
+        {/if}
       {/each}
     </MediaRow>
   {:else if initialLoading.library || initialLoading.youtube}
@@ -535,6 +613,8 @@
               {item}
               activity={activityOf(item.id)}
               landscape
+              asVideo
+              playing={isPlaying(item.id)}
               keyPrefix="home-next"
               open={() => playItem(item)}
               details={() => details(item.id, item.kind)}
@@ -551,19 +631,8 @@
       {/if}
       {#if youtube.next_up.length}
         <MediaRow label="YouTube subscriptions">
-          {#each youtube.next_up.map(youtubeItem) as item (item.id)}
-            <LibraryCard
-              {item}
-              activity={activityOf(item.id)}
-              landscape
-              keyPrefix="home-youtube"
-              open={() => playItem(item)}
-              >{#snippet menu(card)}{#if item.video}<LibraryVideoMenu
-                    bind:open={card.open}
-                    video={item.video}
-                    restart={() => playItem(item)}
-                  />{/if}{/snippet}</LibraryCard
-            >
+          {#each youtube.next_up as video (video.videoId)}
+            {@render videoCard(video, 'home-youtube', false)}
           {/each}
         </MediaRow>
       {:else if initialLoading.youtube}

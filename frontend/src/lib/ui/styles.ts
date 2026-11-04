@@ -5,6 +5,10 @@ export const mediaCardMotionClass =
 export const mediaCardThumbnailClass =
   'transition-transform duration-(--animation-duration) group-hover/media-card:scale-102';
 
+// Launching, Playing and other states over a card's artwork.
+export const mediaCardSignalClass =
+  'border border-line-strong bg-[rgba(5,7,10,0.78)] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-accent uppercase phone-card:card-pixels phone-card:px-1.5 phone-card:py-0.75 phone-card:text-[8.5px]';
+
 // Inside the settings grid a Panel sits flush with the SettingsCard rhythm.
 export const panelClass =
   'panel mb-5 min-w-0 rounded-none border border-line bg-surface p-6 shadow-none compact:p-4 settings-panel:mb-0 settings-panel:p-5.5 settings-panel:compact:p-4';

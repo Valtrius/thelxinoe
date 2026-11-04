@@ -75,7 +75,7 @@ export function createMockState() {
       title: [
         'Exploring the northern wilderness',
         'Live from the studio',
-        'Building an observatory',
+        'Building an observatory from scratch: pouring the foundation, wiring the dome and answering every question from chat until the sun comes up',
         'Evening games',
       ][i % 4],
       category: ['Science & Technology', 'Music', 'Just Chatting', 'Gaming'][

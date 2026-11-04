@@ -5,14 +5,17 @@ test.beforeEach(async ({ request }) => {
   await request.post('/__mock/reset');
 });
 
-async function openVideo(page: Page) {
-  await page.goto('/#online/youtube');
-  await page
+// A video that already played resumes, once it played long enough to matter.
+const replay = (page: Page, title: string) =>
+  page
     .getByRole('button', {
-      name: 'Play: A Quiet Journey · Episode 5',
-      exact: true,
+      name: new RegExp(`^(Play|Resume from [\\d:]+): ${title}$`),
     })
     .click();
+
+async function openVideo(page: Page) {
+  await page.goto('/#online/youtube');
+  await replay(page, 'A Quiet Journey · Episode 5');
   const video = page.locator('video');
   await expect
     .poll(() =>
@@ -39,21 +42,11 @@ test('desktop video volume and mute are remembered across consecutive plays and 
   await page.getByRole('button', { name: 'Mute', exact: true }).click();
   await expect(video).toHaveJSProperty('muted', true);
   await page.getByRole('button', { name: 'Close player', exact: true }).click();
-  await page
-    .getByRole('button', {
-      name: 'Play: After the Rain · Episode 6',
-      exact: true,
-    })
-    .click();
+  await replay(page, 'After the Rain · Episode 6');
   await expect(video).toHaveJSProperty('volume', 0.23);
   await expect(video).toHaveJSProperty('muted', true);
   await page.reload();
-  await page
-    .getByRole('button', {
-      name: 'Play: A Quiet Journey · Episode 5',
-      exact: true,
-    })
-    .click();
+  await replay(page, 'A Quiet Journey · Episode 5');
   await expect(video).toHaveJSProperty('volume', 0.23);
   await expect(video).toHaveJSProperty('muted', true);
   await page.getByRole('button', { name: 'Unmute', exact: true }).click();
@@ -66,12 +59,7 @@ test('desktop video volume and mute are remembered across consecutive plays and 
   await expect(video).toHaveJSProperty('volume', 0.37);
   await expect(video).toHaveJSProperty('muted', false);
   await page.getByRole('button', { name: 'Close player', exact: true }).click();
-  await page
-    .getByRole('button', {
-      name: 'Play: After the Rain · Episode 6',
-      exact: true,
-    })
-    .click();
+  await replay(page, 'After the Rain · Episode 6');
   await expect(video).toHaveJSProperty('volume', 0.37);
   await expect(video).toHaveJSProperty('muted', false);
   await page.screenshot({ path: info.outputPath('remembered-volume.png') });

@@ -91,6 +91,7 @@ async function desktopFixture(page: Page) {
           kind: 'movie',
           title: `Fixture movie ${index}`,
           available: true,
+          duration: 6000,
         })),
         watch_later: [],
         favorites: [],
@@ -153,8 +154,16 @@ test('desktop videos start on their card and several play at once', async ({
   await report(page, run, 'playing');
   // MPV is playing, but the spinner waits for its first video frame.
   await expect(starting).toBeVisible();
-  await report(page, run, 'playing', { video_ready: true });
+  await report(page, run, 'playing', {
+    video_ready: true,
+    position: 30,
+    duration: 120,
+  });
   await expect(starting).toHaveCount(0);
+  // The card follows MPV's position while it plays, in the file MPV opened.
+  await expect(first).toContainText('Playing');
+  await expect(first).toContainText('0:30');
+  await expect(first).toContainText('-1:30');
 
   const second = await play(page, 'Fixture movie 1');
   await expect(

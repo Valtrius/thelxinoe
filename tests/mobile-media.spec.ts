@@ -433,17 +433,20 @@ test.describe('mobile video touch actions', () => {
   }) => {
     await page.goto('/#home');
     const player = page.getByRole('region', { name: 'Media player' });
-    const watched = page.getByRole('menuitem', { name: 'Mark watched' });
+    const watched = page.getByRole('button', {
+      name: 'Mark watched',
+      exact: true,
+    });
     await hold(
       page,
       page
-        .locator('article[data-layout-key="home-continue:youtube:preview0000"]')
-        .locator('.card-primary'),
+        .locator('article[data-video-id="preview0000"]')
+        .getByRole('button', { name: /^Resume from / }),
       () => expect(watched).toBeVisible(),
     );
     await expect(player).toHaveCount(0);
     await watched.tap();
-    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(watched).toHaveCount(0);
 
     await hold(
       page,

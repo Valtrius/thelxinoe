@@ -161,6 +161,6 @@
         </p>
       </div>
     </div>
-    {@render metadata()}
+    <div class="mt-auto">{@render metadata()}</div>
   </div>
 </article>

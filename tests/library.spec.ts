@@ -12,9 +12,7 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     .getByLabel('Password', { exact: true })
     .fill('test-only long passphrase');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(
-    page.getByRole('button', { name: 'Refresh Home', exact: true }),
-  ).toBeVisible();
+  await expect(page.locator('.page-header h1')).toHaveText('Home');
   const api = page.request;
   await waitForServerTools(async (timeout) => {
     const response = await api.get('/api/v1/admin/tools', { timeout });

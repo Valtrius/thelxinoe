@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 
 const video = (id: string, title: string, position = 0, last_played = 0) => ({
   videoId: id,
@@ -45,7 +45,7 @@ for (const density of [1, 2]) {
       );
       await page.goto('/');
       const image = page.locator(
-        '[data-layout-key="home-continue:youtube:abcdefghijk"] img[data-art]',
+        '[data-layout-key="home-continue:youtube:abcdefghijk"] button img',
       );
       await expect(image).toBeVisible();
       await expect
@@ -88,11 +88,18 @@ for (const density of [1, 2]) {
   });
 }
 
+// Finished once none of Home's sources is being read.
+const homeSettled = (page: Page) =>
+  expect(
+    page.locator('[data-page-content] [aria-busy]').first(),
+  ).toHaveAttribute('aria-busy', 'false');
+
 async function homeFixture(page: Page) {
   const fixture = await installUiFixture(page, {
     section: 'Home',
     preserveNavigation: true,
   });
+  const events = await installServerEvents(page);
   const data = {
     library: {
       continue_watching: [
@@ -200,7 +207,7 @@ async function homeFixture(page: Page) {
       },
     }),
   );
-  return { fixture, data };
+  return { fixture, data, events };
 }
 
 test('Home defers hidden refreshes and only reloads YouTube for progress events', async ({
@@ -249,9 +256,7 @@ test('Home defers hidden refreshes and only reloads YouTube for progress events'
   });
   await expect.poll(() => Object.values(counts)).toEqual([2, 2, 2, 2]);
   // Finish the requests before sending a new progress notification.
-  await expect(
-    page.getByRole('button', { name: 'Refresh Home', exact: true }),
-  ).toBeEnabled();
+  await homeSettled(page);
   await page.evaluate(() =>
     window.dispatchEvent(
       new CustomEvent('thelxinoe-youtube-progress', {
@@ -260,9 +265,7 @@ test('Home defers hidden refreshes and only reloads YouTube for progress events'
     ),
   );
   await expect.poll(() => Object.values(counts)).toEqual([2, 3, 2, 2]);
-  await expect(
-    page.getByRole('button', { name: 'Refresh Home', exact: true }),
-  ).toBeEnabled();
+  await homeSettled(page);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -372,7 +375,7 @@ test('Home combines progress, subscription uploads and live channels on desktop 
 test('Home hides empty sections and disconnected caches while source failures remain independent', async ({
   page,
 }, testInfo) => {
-  const { fixture, data } = await homeFixture(page);
+  const { fixture, data, events } = await homeFixture(page);
   data.twitchFailed = true;
   await page.goto('/');
   await expect(
@@ -382,13 +385,14 @@ test('Home hides empty sections and disconnected caches while source failures re
     page.getByRole('region', { name: 'Live now', exact: true }),
   ).toContainText('Kick channel');
   await expect(page.getByText(/Twitch is unavailable/)).toBeVisible();
+  await expect.poll(events.connected).toBe(true);
   data.library = {
     continue_watching: [],
     next_up: [],
     watch_later: [],
     favorites: [],
   };
-  await page.getByRole('button', { name: 'Refresh Home', exact: true }).click();
+  events.send('catalog.changed');
   await expect(
     page.getByRole('region', { name: 'YouTube subscriptions', exact: true }),
   ).toBeVisible();
@@ -401,7 +405,7 @@ test('Home hides empty sections and disconnected caches while source failures re
     animations: 'disabled',
   });
   data.connected = false;
-  await page.getByRole('button', { name: 'Refresh Home', exact: true }).click();
+  events.send('online.account.changed');
   for (const title of [
     'Continue watching',
     'Next up',
@@ -469,29 +473,35 @@ test('Home actions preserve resume positions and local editions, and launch live
     });
   });
   await page.goto('/');
-  for (const [region, title, expected] of [
+  for (const [region, title, expected, name] of [
     [
       'Continue watching',
       'Film',
       { media_id: 'movie', file_id: 'edition-file', position: 120 },
+      undefined,
     ],
     [
       'Continue watching',
       'Direct-link video',
       { media_id: 'youtube:abcdefghijk', position: 80 },
+      'Resume from 1:20: Direct-link video',
     ],
     [
       'YouTube subscriptions',
       'New subscription upload',
       { media_id: 'youtube:lmnopqrstuv', position: 0 },
+      'Play: New subscription upload',
     ],
   ] as const) {
-    await page
+    const card = page
       .getByRole('region', { name: region, exact: true })
       .locator('article')
-      .filter({ has: page.getByRole('heading', { name: title, exact: true }) })
-      .locator('.card-primary')
-      .click();
+      .filter({ has: page.getByRole('heading', { name: title, exact: true }) });
+    await (
+      name
+        ? card.getByRole('button', { name, exact: true })
+        : card.locator('.card-primary')
+    ).click();
     await expect.poll(() => launches.at(-1)).toMatchObject(expected);
     await page
       .getByRole('button', { name: 'Close player', exact: true })
@@ -560,21 +570,26 @@ test('Home YouTube cards restart videos and mark them watched with undo', async 
     name: 'More actions for Direct-link video',
     exact: true,
   });
+  const menuItem = (name: string) =>
+    page.getByRole('button', { name, exact: true });
+  await card.hover();
   await actions.click();
-  await expect(page.getByRole('menuitem')).toHaveText([
+  for (const name of [
     'Play from beginning',
     'Mark watched',
     'Copy YouTube URL',
     'Open in browser',
-  ]);
-  await page.getByRole('menuitem', { name: 'Play from beginning' }).click();
+  ])
+    await expect(menuItem(name)).toBeVisible();
+  await menuItem('Play from beginning').click();
   await expect
     .poll(() => launches.at(-1))
     .toMatchObject({ media_id: 'youtube:abcdefghijk', position: 0 });
   await page.getByRole('button', { name: 'Close player', exact: true }).click();
 
+  await card.hover();
   await actions.click();
-  await page.getByRole('menuitem', { name: 'Mark watched' }).click();
+  await menuItem('Mark watched').click();
   await expect(card).toHaveCount(0);
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
   await expect(card).toBeVisible();
@@ -583,17 +598,106 @@ test('Home YouTube cards restart videos and mark them watched with undo', async 
     { videoId: 'abcdefghijk', watched: false },
   ]);
 
-  await page
+  const upload = page
     .getByRole('region', { name: 'YouTube subscriptions', exact: true })
+    .locator('article');
+  await upload.hover();
+  await upload
     .getByRole('button', {
       name: 'More actions for New subscription upload',
       exact: true,
     })
     .click();
-  await page.getByRole('menuitem', { name: 'Mark watched' }).click();
+  await menuItem('Mark watched').click();
   await expect
     .poll(() => marks.at(-1))
     .toEqual({ videoId: 'lmnopqrstuv', watched: true });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('Home YouTube cards follow downloads and progress like the YouTube page', async ({
+  page,
+}) => {
+  const { fixture, data, events } = await homeFixture(page);
+  data.youtube.continue_watching[0].channelThumbnailUrl = '/avatar.png';
+  await page.route('**/avatar.png', (route) =>
+    route.fulfill({
+      contentType: 'image/svg+xml',
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"/>',
+    }),
+  );
+  await page.goto('/');
+  await expect.poll(events.connected).toBe(true);
+  const resuming = page.locator('article[data-video-id="abcdefghijk"]');
+  const upload = page.locator('article[data-video-id="lmnopqrstuv"]');
+
+  await expect(resuming.locator('img[src$="/avatar.png"]')).toBeVisible();
+  // Only the row that mixes media names YouTube, and only with its logo.
+  await expect(resuming.locator('> div').last().locator('svg')).toHaveCount(1);
+  await expect(upload.locator('> div').last().locator('svg')).toHaveCount(0);
+  await expect(resuming).not.toContainText(/youtube/i);
+  await expect(upload).not.toContainText(/youtube/i);
+  await expect(resuming).toContainText('10:00');
+  await expect(resuming).toContainText('1:20');
+
+  const download = { video_id: 'lmnopqrstuv', total_bytes: 200 };
+  events.send('online.download.progress', {
+    ...download,
+    state: 'downloading',
+    downloaded_bytes: 100,
+    media_kind: 'video',
+  });
+  await expect(upload).toContainText('Downloading video 50%');
+  events.send('online.download.progress', {
+    ...download,
+    state: 'ready',
+    size: 200,
+    downloaded_bytes: 200,
+    width: 1920,
+    height: 1080,
+    frame_rate: 30,
+  });
+  await expect(upload).toContainText('1080p30');
+
+  const report = {
+    id: 'session',
+    state: 'playing',
+    position: 150,
+    duration: 600,
+  };
+  events.send('playback.changed', {
+    ...report,
+    media_id: 'youtube:abcdefghijk',
+  });
+  await expect(resuming).toContainText('2:30');
+  const film = page.locator('article[data-layout-key="home-continue:movie"]');
+  await expect(film).toContainText('2:00');
+  events.send('playback.changed', { ...report, media_id: 'movie' });
+  await expect(film).toContainText('2:30');
+  const episode = page.locator('article[data-layout-key="home-next:episode"]');
+  await expect(episode).not.toContainText('2:30');
+  events.send('playback.changed', { ...report, media_id: 'episode' });
+  await expect(episode).toContainText('2:30');
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('Home library cards show their kind as an icon instead of a word', async ({
+  page,
+}) => {
+  const { fixture } = await homeFixture(page);
+  await page.goto('/');
+  for (const key of ['home-continue:movie', 'home-next:episode']) {
+    const body = page.locator(`article[data-layout-key="${key}"] .tile-body`);
+    await expect(body.locator('svg')).toBeVisible();
+    await expect(body.locator('p')).toHaveCount(0);
+  }
+  await expect(
+    page.locator(
+      'article[data-layout-key="home-Watch later:saved"] .tile-body p',
+    ),
+  ).toHaveText('movie');
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
