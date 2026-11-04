@@ -1,6 +1,8 @@
 //! Database operations for managers.retention.
 use crate::managers::{
-    domain::{PreparedOperation, RetentionEligibility as Eligible, RetentionPolicy as Policy},
+    domain::{
+        PreparedOperation, RetentionEligibility as Eligible, RetentionPolicy as Policy, Target,
+    },
     operations,
 };
 use rusqlite::{OptionalExtension, params};
@@ -82,19 +84,45 @@ pub(super) async fn evaluate_all_write_media(
         let ids=tx.prepare("SELECT id FROM media WHERE kind IN ('movie','season')")?.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut eligible=Vec::new();
         for media in ids {
-            if let Some(e)=eligibility(&tx,&media)? {
-                tx.execute("UPDATE media_operations SET state='blocked',error='Retention eligibility changed' WHERE state='pending' AND id IN (SELECT operation_id FROM retention_candidates WHERE media_id=?1 AND stamp<>?2 AND state='pending')",params![media,e.stamp])?;
-                tx.execute("UPDATE retention_candidates SET state='cancelled',error='Eligibility changed; a fresh countdown is required' WHERE media_id=?1 AND stamp<>?2 AND state='pending'",params![media,e.stamp])?;
-                let exists=tx.query_row("SELECT EXISTS(SELECT 1 FROM retention_candidates WHERE media_id=?1 AND ((stamp=?2 AND state IN ('complete','blocked')) OR state IN ('pending','executing')))",params![media,e.stamp],|r|r.get::<_,bool>(0))?;
-                if !exists {eligible.push((media,e));}
-            } else {
-                tx.execute("UPDATE media_operations SET state='blocked',error='Auto-delete eligibility changed' WHERE state='pending' AND id IN (SELECT operation_id FROM retention_candidates WHERE media_id=?1 AND state='pending')",[&media])?;
-                tx.execute("UPDATE retention_candidates SET state='cancelled',error='Auto-delete eligibility changed' WHERE media_id=?1 AND state='pending'",[&media])?;
+            match assess(&tx,&media)? {
+                Assessment::Eligible(e) => {
+                    tx.execute("UPDATE media_operations SET state='blocked',error='Retention eligibility changed' WHERE state='pending' AND id IN (SELECT operation_id FROM retention_candidates WHERE media_id=?1 AND stamp<>?2 AND state='pending')",params![media,e.stamp])?;
+                    tx.execute("UPDATE retention_candidates SET state='cancelled',error='Eligibility changed; a fresh countdown is required' WHERE media_id=?1 AND stamp<>?2 AND state='pending'",params![media,e.stamp])?;
+                    recapture(&tx,&media,&e.stamp)?;
+                    let exists=tx.query_row("SELECT EXISTS(SELECT 1 FROM retention_candidates WHERE media_id=?1 AND ((stamp=?2 AND state IN ('complete','blocked')) OR state IN ('pending','executing')))",params![media,e.stamp],|r|r.get::<_,bool>(0))?;
+                    if !exists {eligible.push((media,e));}
+                }
+                // Unknown is not ineligible: every deletion still has to find it eligible.
+                Assessment::Waiting(_) => {}
+                Assessment::Ineligible => {
+                    tx.execute("UPDATE media_operations SET state='blocked',error='Auto-delete eligibility changed' WHERE state='pending' AND id IN (SELECT operation_id FROM retention_candidates WHERE media_id=?1 AND state='pending')",[&media])?;
+                    tx.execute("UPDATE retention_candidates SET state='cancelled',error='Auto-delete eligibility changed' WHERE media_id=?1 AND state='pending'",[&media])?;
+                }
             }
         }
         tx.commit()?;
         Ok(eligible)
     }).await
+}
+
+/// A scheduled deletion outlives a replaced manager's ids, which the eligibility stamp leaves
+/// out, so its operation follows them; otherwise it could never run. It keeps its deadline.
+fn recapture(tx: &rusqlite::Transaction<'_>, media: &str, stamp: &str) -> anyhow::Result<()> {
+    let scheduled=tx.query_row("SELECT o.id,o.targets FROM retention_candidates c JOIN media_operations o ON o.id=c.operation_id WHERE c.media_id=?1 AND c.stamp=?2 AND c.state='pending' AND o.state='pending'",params![media,stamp],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?;
+    let Some((operation, saved)) = scheduled else {
+        return Ok(());
+    };
+    // A file this media shares with another can't be captured; running it reports that.
+    let Ok(current) = operations::storage::load_targets(tx, media) else {
+        return Ok(());
+    };
+    if serde_json::from_str::<Vec<Target>>(&saved).ok().as_ref() != Some(&current) {
+        tx.execute(
+            "UPDATE media_operations SET targets=?1,updated_at=?2 WHERE id=?3",
+            params![serde_json::to_string(&current)?, now(), operation],
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) async fn evaluate_all_write_retention_candidates(
@@ -157,29 +185,45 @@ pub(super) async fn operation_pending(operation: String, db: &Database) -> anyho
     .await
 }
 
-/// Record why a deletion didn't run; it stays pending when `retry`, otherwise it is blocked.
+/// Record why a deletion didn't run, and whether that's news. It stays pending when `retry`,
+/// otherwise it is blocked.
 pub(super) async fn delete_locked_write_retention_candidates(
     key: String,
     message: String,
     retry: bool,
     db: &Database,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     db.write(
         "managers.retention.delete_locked_write_retention_candidates",
         move |db| {
-            db.execute(
+            let tx = db.transaction()?;
+            let previous = tx
+                .query_row(
+                    "SELECT error FROM retention_candidates WHERE id=?1",
+                    [&key],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+            tx.execute(
                 "UPDATE retention_candidates SET state=CASE WHEN ?3 THEN state ELSE 'blocked' END,error=?1 WHERE id=?2",
                 params![message, key, retry],
             )?;
-            Ok(())
+            tx.commit()?;
+            Ok(previous.as_deref() != Some(message.as_str()))
         },
     )
     .await
 }
 
-pub(super) async fn run(db: &Database) -> anyhow::Result<Vec<String>> {
-    db.read("managers.retention.run", |db| {
-        let items = db
+/// The due deletions, split into those that can run and those whose reason for waiting is new.
+/// The reason is recorded so that the deletion's row says why it is late.
+pub(super) async fn run(
+    db: &Database,
+) -> anyhow::Result<(Vec<String>, Vec<(String, &'static str)>)> {
+    db.write("managers.retention.run", |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let items = tx
             .prepare(
                 "SELECT id,media_id FROM retention_candidates WHERE state='pending' AND due_at<=?1",
             )?
@@ -187,13 +231,24 @@ pub(super) async fn run(db: &Database) -> anyhow::Result<Vec<String>> {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut ready = Vec::new();
+        let (mut ready, mut waiting) = (Vec::new(), Vec::new());
         for (key, media) in items {
-            if eligibility(db, &media)?.is_some() {
-                ready.push(key);
+            match assess(&tx, &media)? {
+                Assessment::Eligible(_) => ready.push(key),
+                Assessment::Waiting(reason) => {
+                    if tx.execute(
+                        "UPDATE retention_candidates SET error=?1 WHERE id=?2 AND error IS NOT ?1",
+                        params![reason, key],
+                    )? > 0
+                    {
+                        waiting.push((key, reason));
+                    }
+                }
+                Assessment::Ineligible => {}
             }
         }
-        Ok(ready)
+        tx.commit()?;
+        Ok((ready, waiting))
     })
     .await
 }
@@ -248,10 +303,31 @@ pub(super) async fn reacquire_write_media_operations(
     }).await
 }
 
+/// What watched-state auto-delete can say about a movie or season right now.
+pub(super) enum Assessment {
+    Eligible(Eligible),
+    /// What decides it can't be confirmed now, or playback is holding it. A scheduled deletion
+    /// keeps its deadline meanwhile; the reason says what it waits for.
+    Waiting(&'static str),
+    /// Something decided against it, such as Keep, an unwatched episode or a removed file.
+    Ineligible,
+}
+
 pub(super) fn eligibility(
     db: &rusqlite::Connection,
     media: &str,
 ) -> anyhow::Result<Option<Eligible>> {
+    Ok(match assess(db, media)? {
+        Assessment::Eligible(e) => Some(e),
+        Assessment::Waiting(_) | Assessment::Ineligible => None,
+    })
+}
+
+/// Everything that rules media out is checked even once it has to wait, so that a change that
+/// should cancel a scheduled deletion isn't hidden by an outage.
+pub(super) fn assess(db: &rusqlite::Connection, media: &str) -> anyhow::Result<Assessment> {
+    use Assessment::Ineligible;
+    let mut waiting = None;
     let Some((kind, _root, parent, number)) = db
         .query_row(
             "SELECT kind,root_id,parent_id,sort_number FROM media WHERE id=?1",
@@ -267,49 +343,59 @@ pub(super) fn eligibility(
         )
         .optional()?
     else {
-        return Ok(None);
+        return Ok(Ineligible);
     };
     let domain = match kind.as_str() {
         "movie" => "movies",
         "season" => "shows",
-        _ => return Ok(None),
+        _ => return Ok(Ineligible),
     };
     let (enabled,grace,specials,users,revision)=db.query_row("SELECT enabled,grace_seconds,exclude_specials,trigger_users,updated_at FROM retention_policies WHERE domain=?1",[domain],|r|Ok((r.get::<_,bool>(0)?,r.get::<_,i64>(1)?,r.get::<_,bool>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?)))?;
     if !enabled || (kind == "season" && specials && number == Some(0)) {
-        return Ok(None);
+        return Ok(Ineligible);
     };
     let protected=db.query_row("WITH RECURSIVE tree(id) AS (SELECT id FROM media WHERE id=?1 UNION ALL SELECT m.id FROM media m JOIN tree t ON m.parent_id=t.id), ancestors(id,parent_id) AS (SELECT id,parent_id FROM media WHERE id IN (SELECT id FROM tree) UNION SELECT m.id,m.parent_id FROM media m JOIN ancestors a ON a.parent_id=m.id) SELECT EXISTS(SELECT 1 FROM media_protection p JOIN ancestors a ON a.id=p.media_id WHERE p.keep=1)",[media],|r|r.get::<_,bool>(0))?;
     if protected {
-        return Ok(None);
+        return Ok(Ineligible);
     };
     let files=db.prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM media WHERE id=?1 UNION ALL SELECT m.id FROM media m JOIN tree t ON m.parent_id=t.id) SELECT DISTINCT f.id,f.generation,f.ownership FROM tree JOIN media_sources ms ON ms.media_id=tree.id JOIN media_files f ON f.id=ms.file_id WHERE f.present=1 ORDER BY f.id")?.query_map([media],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    if files.is_empty() || files.iter().any(|f| f.2 != "managed") {
-        return Ok(None);
+    if files.is_empty() || files.iter().any(|f| f.2 == "unmanaged") {
+        return Ok(Ineligible);
     };
+    // Unresolved is what a manager that couldn't be read leaves behind.
+    if files.iter().any(|f| f.2 != "managed") {
+        waiting = waiting.or(Some("Waiting for its manager to confirm its files"));
+    }
     let permitted = db.query_row("SELECT NOT EXISTS(SELECT 1 FROM manager_bindings b JOIN manager_services s ON s.id=b.service_id JOIN media_files f ON f.id=b.file_id WHERE s.operational=1 AND b.service_generation=s.generation AND b.generation=f.generation AND b.checked_at>=?2 AND b.file_id IN (SELECT value FROM json_each(?1)) AND NOT COALESCE((SELECT value='true' FROM settings WHERE key='manager.retention.'||b.service_id),EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=b.service_id AND origin='installed')))", params![json!(files.iter().map(|f| &f.0).collect::<Vec<_>>()).to_string(),now()-60], |r| r.get::<_,bool>(0))?;
     if !permitted {
-        return Ok(None);
+        return Ok(Ineligible);
     }
     let active=db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE file_id IN (SELECT value FROM json_each(?1)) AND state IN ('ready','playing','paused') AND updated_at>?2)",params![json!(files.iter().map(|f|&f.0).collect::<Vec<_>>()).to_string(),now()-120],|r|r.get::<_,bool>(0))?;
     if active {
-        return Ok(None);
+        waiting = waiting.or(Some("Waiting for playback to finish"));
     };
     let units = if kind == "movie" {
         vec![media.to_owned()]
     } else {
-        let Some(show) = parent else { return Ok(None) };
+        let Some(show) = parent else {
+            return Ok(Ineligible);
+        };
         let episodes = db
             .prepare("SELECT id FROM media WHERE parent_id=?1 AND kind='episode' ORDER BY id")?
             .query_map([media], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        if !complete_season(db, &show, &episodes, specials)? {
-            return Ok(None);
-        };
+        match season(db, &show, &episodes, specials)? {
+            Season::Complete => {}
+            Season::Unconfirmed => {
+                waiting = waiting.or(Some("Waiting for current season details from its manager"));
+            }
+            Season::Incomplete => return Ok(Ineligible),
+        }
         episodes
     };
     let users: Vec<String> = serde_json::from_str(&users)?;
     if users.is_empty() {
-        return Ok(None);
+        return Ok(Ineligible);
     }
     let mut watched = Vec::new();
     for user in &users {
@@ -318,9 +404,12 @@ pub(super) fn eligibility(
             if let Some(at) = value {
                 watched.push((user.clone(), unit.clone(), at));
             } else {
-                return Ok(None);
+                return Ok(Ineligible);
             }
         }
+    }
+    if let Some(reason) = waiting {
+        return Ok(Assessment::Waiting(reason));
     }
     let stamp = Sha256::digest(serde_json::to_vec(&(
         media, revision, &files, &users, &watched,
@@ -328,7 +417,7 @@ pub(super) fn eligibility(
     .iter()
     .map(|byte| format!("{byte:02x}"))
     .collect();
-    Ok(Some(Eligible {
+    Ok(Assessment::Eligible(Eligible {
         stamp,
         user: users[0].clone(),
         users,
@@ -336,46 +425,59 @@ pub(super) fn eligibility(
     }))
 }
 
-pub(super) fn complete_season(
+enum Season {
+    Complete,
+    /// The manager's current description of the show isn't available, so it can't be known.
+    Unconfirmed,
+    Incomplete,
+}
+
+fn season(
     db: &rusqlite::Connection,
     show: &str,
     episodes: &[String],
     exclude_specials: bool,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Season> {
+    use Season::{Complete, Incomplete, Unconfirmed};
     if episodes.is_empty() {
-        return Ok(false);
+        return Ok(Incomplete);
     };
+    // Checked first: a missing file settles it whatever the manager can say.
+    for episode in episodes {
+        let present=db.query_row("SELECT EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=?1 AND f.present=1)",[episode],|r|r.get::<_,bool>(0))?;
+        if !present {
+            return Ok(Incomplete);
+        }
+    }
     let binding=db.query_row("SELECT m.metadata,b.service_id,b.external_id,b.refreshed_at FROM media m JOIN metadata_bindings b ON b.media_id=m.id JOIN manager_services s ON s.id=b.service_id AND s.kind='sonarr' AND s.operational=1 AND s.generation=b.service_generation WHERE m.id=?1",[show],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).optional()?;
     let Some((metadata, service, series, refreshed_at)) = binding else {
-        return Ok(false);
+        return Ok(Unconfirmed);
     };
     let metadata: Value = serde_json::from_str(&metadata).unwrap_or_default();
     if metadata["refreshed_at"]
         .as_i64()
         .is_none_or(|at| at != refreshed_at || at < now() - 7 * 86400 || at > now() + 60)
     {
-        return Ok(false);
+        return Ok(Unconfirmed);
     };
     let mut identities = BTreeSet::new();
     let mut seasons = BTreeSet::new();
     for episode in episodes {
-        let present=db.query_row("SELECT EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=?1 AND f.present=1)",[episode],|r|r.get::<_,bool>(0))?;
         let mappings=db.prepare("SELECT e.manager_episode_id,e.season_number,m.state FROM manager_episode_mappings m JOIN manager_episodes e ON e.service_id=m.service_id AND e.service_generation=m.service_generation AND e.manager_episode_id=m.manager_episode_id JOIN metadata_bindings b ON b.service_id=e.service_id AND b.service_generation=e.service_generation AND b.external_id=e.series_external_id WHERE m.media_id=?1 AND b.media_id=?2 AND e.service_id=?3 AND e.series_external_id=?4 AND e.refreshed_at=?5")?.query_map(params![episode,show,service,series,refreshed_at],|r|Ok((r.get::<_,i64>(0)?.to_string(),r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        if !present
-            || mappings.len() != 1
+        if mappings.len() != 1
             || mappings[0].2 != "confirmed"
             || !identities.insert(mappings[0].0.clone())
         {
-            return Ok(false);
+            return Ok(Incomplete);
         };
         seasons.insert(mappings[0].1);
     }
     if seasons.len() != 1 {
-        return Ok(false);
+        return Ok(Incomplete);
     };
     let season = *seasons.first().unwrap();
     if exclude_specials && season == 0 {
-        return Ok(false);
+        return Ok(Incomplete);
     };
     let expected=db.prepare("SELECT e.manager_episode_id,e.metadata FROM manager_episodes e JOIN metadata_bindings b ON b.service_id=e.service_id AND b.service_generation=e.service_generation AND b.external_id=e.series_external_id WHERE b.media_id=?1 AND e.service_id=?2 AND e.series_external_id=?3 AND e.season_number=?4 AND e.refreshed_at=?5")?.query_map(params![show,service,series,season,refreshed_at],|r|Ok((r.get::<_,i64>(0)?.to_string(),serde_json::from_str::<Value>(&r.get::<_,String>(1)?).unwrap_or_default())))?.collect::<rusqlite::Result<Vec<_>>>()?;
     if expected
@@ -384,7 +486,7 @@ pub(super) fn complete_season(
         .collect::<BTreeSet<_>>()
         != identities
     {
-        return Ok(false);
+        return Ok(Incomplete);
     };
     let described = metadata["seasons"]
         .as_array()
@@ -392,7 +494,7 @@ pub(super) fn complete_season(
         .flatten()
         .find(|s| s["season_number"].as_i64() == Some(season));
     if described.and_then(|s| s["episode_count"].as_u64()) != Some(expected.len() as u64) {
-        return Ok(false);
+        return Ok(Incomplete);
     };
     let today = chrono::Utc::now().date_naive();
     let aired = |v: &Value| {
@@ -401,7 +503,7 @@ pub(super) fn complete_season(
             .is_some_and(|date| date < today)
     };
     if expected.iter().any(|e| !aired(&e.1["air_date"])) {
-        return Ok(false);
+        return Ok(Incomplete);
     };
     let ended = metadata["status"].as_str().is_some_and(|status| {
         matches!(
@@ -417,5 +519,9 @@ pub(super) fn complete_season(
     let finale = expected
         .iter()
         .any(|e| matches!(e.1["finale_type"].as_str(), Some("season" | "series")));
-    Ok(ended || later || finale)
+    Ok(if ended || later || finale {
+        Complete
+    } else {
+        Incomplete
+    })
 }

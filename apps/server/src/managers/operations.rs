@@ -90,9 +90,8 @@ fn validate_ownership(files: &[Target], action: &str) -> Result<()> {
     }
     Ok(())
 }
-/// Recheck the selection against its managers' current files. Only the selected movies,
-/// series or albums are read: nothing else can change what this operation affects.
-async fn complete_manager_scope(state: &AppState, files: &[Target]) -> Result<()> {
+/// The movies, series or albums a selection touches in each of its managers.
+fn selected_entities(files: &[Target]) -> std::collections::BTreeMap<&str, Vec<i64>> {
     let mut entities = std::collections::BTreeMap::<&str, std::collections::BTreeSet<i64>>::new();
     for claim in files.iter().flat_map(|f| &f.claims) {
         entities
@@ -100,10 +99,17 @@ async fn complete_manager_scope(state: &AppState, files: &[Target]) -> Result<()
             .or_default()
             .insert(claim.entity_id);
     }
+    entities
+        .into_iter()
+        .map(|(key, entities)| (key, entities.into_iter().collect()))
+        .collect()
+}
+/// Recheck the selection against its managers' current files. Only the selected movies,
+/// series or albums are read: nothing else can change what this operation affects.
+async fn complete_manager_scope(state: &AppState, files: &[Target]) -> Result<()> {
     let mut inventories = std::collections::BTreeMap::new();
-    for (key, entities) in entities {
+    for (key, entities) in selected_entities(files) {
         let s = service(state, key).await?;
-        let entities = entities.into_iter().collect::<Vec<_>>();
         let inventory = bindings::inventory(state, &s, Some(&entities)).await;
         inventories.insert(
             s.id,
@@ -193,7 +199,11 @@ pub(super) async fn protected_or_active(
     }
     Ok(())
 }
-async fn manager_idle(c: &Connection<'_>) -> Result<()> {
+/// Refuse while a manager runs commands, or has downloads that would import into `selected`:
+/// the movies or series about to change, or everything it holds when `None`. A stuck download
+/// of something else can't affect them. A manager that ignores the filter counts its whole
+/// queue, which only refuses more.
+async fn manager_idle(c: &Connection<'_>, selected: Option<&[i64]>) -> Result<()> {
     let commands = c.get("command").await?;
     if commands
         .as_array()
@@ -205,19 +215,60 @@ async fn manager_idle(c: &Connection<'_>) -> Result<()> {
             "Manager is busy; retry after its active commands finish",
         ));
     }
-    let queue = c
-        .call(
-            reqwest::Method::GET,
-            "queue",
-            &[("pageSize", "1".into())],
-            None,
-        )
-        .await?;
+    let filter = match (c.kind.as_str(), selected) {
+        ("radarr", Some(ids)) => Some(("movieIds", ids)),
+        ("sonarr", Some(ids)) => Some(("seriesIds", ids)),
+        _ => None,
+    };
+    let mut query = vec![("pageSize", "1".to_owned())];
+    if let Some((name, ids)) = filter {
+        query.extend(ids.iter().map(|id| (name, id.to_string())));
+    }
+    let queue = c.call(reqwest::Method::GET, "queue", &query, None).await?;
     if queue["totalRecords"].as_u64() != Some(0) {
-        return Err(ApiError::conflict("Manager download queue is not empty"));
+        return Err(ApiError::conflict(if filter.is_some() {
+            "Manager has a download queued for this title"
+        } else {
+            "Manager download queue is not empty"
+        }));
     }
     Ok(())
 }
+/// Every manager of a selection must be idle for what is selected.
+async fn managers_idle(state: &AppState, files: &[Target]) -> Result<()> {
+    for (key, entities) in selected_entities(files) {
+        let s = service(state, key).await?;
+        manager_idle(&Connection::open(state, &s).await?, Some(&entities)).await?;
+    }
+    Ok(())
+}
+/// How long a deletion under way waits for a manager, and how often it asks. Managers run short
+/// scheduled commands every minute, so one will often land among a season's many files, and
+/// stopping there would leave only part of the season deleted.
+const IDLE_WAIT: std::time::Duration =
+    std::time::Duration::from_millis(if cfg!(test) { 1_000 } else { 30_000 });
+const IDLE_POLL: std::time::Duration =
+    std::time::Duration::from_millis(if cfg!(test) { 20 } else { 2_000 });
+async fn wait_until_idle(c: &Connection<'_>, selected: &[i64]) -> Result<()> {
+    let mut refusal = None;
+    let waiting = async {
+        loop {
+            match manager_idle(c, Some(selected)).await {
+                Ok(()) => return Ok::<(), ApiError>(()),
+                Err(error) => refusal = Some(error),
+            }
+            tokio::time::sleep(IDLE_POLL).await;
+        }
+    };
+    // The limit includes requests a manager that stopped answering leaves hanging.
+    match tokio::time::timeout(IDLE_WAIT, waiting).await {
+        Ok(result) => result,
+        Err(_) => Err(refusal.unwrap_or_else(unavailable)),
+    }
+}
+/// `changed` is set before the first call that can change anything upstream, so that it stays
+/// false only when an attempt certainly changed nothing.
+#[allow(clippy::too_many_arguments)]
 async fn mutate(
     state: &AppState,
     media: &str,
@@ -226,29 +277,27 @@ async fn mutate(
     operation: &str,
     automatic: bool,
     proofs: &[Arc<ValidatedFile>],
+    changed: &mut bool,
 ) -> Result<()> {
     validate_ownership(files, action)?;
-    complete_manager_scope(state, files).await?;
-    protected_or_active(state, media, files).await?;
-    // Recheck every manager before the first mutation, then each immediately before its call.
-    for file in files {
-        for claim in &file.claims {
-            let s = service(state, &claim.service_id).await?;
-            let c = Connection::open(state, &s).await?;
-            manager_idle(&c).await?;
-        }
-    }
     for (file, proof) in files.iter().zip(proofs) {
+        // The wait comes first because it could outdate the checks after it.
+        let manager = match file.claims.first() {
+            Some(claim) => {
+                let s = service(state, &claim.service_id).await?;
+                if s.generation != claim.service_generation {
+                    return Err(ApiError::conflict("Manager configuration changed"));
+                }
+                let c = Connection::open(state, &s).await?;
+                wait_until_idle(&c, &[claim.entity_id]).await?;
+                Some((claim, s, c))
+            }
+            None => None,
+        };
         super::retention::revalidate_operation(state, operation, automatic).await?;
         protected_or_active(state, media, files).await?;
         recheck(proof).await?;
-        if let Some(claim) = file.claims.first() {
-            let s = service(state, &claim.service_id).await?;
-            if s.generation != claim.service_generation {
-                return Err(ApiError::conflict("Manager configuration changed"));
-            }
-            let c = Connection::open(state, &s).await?;
-            manager_idle(&c).await?;
+        if let Some((claim, s, c)) = manager {
             let endpoint = match s.kind.as_str() {
                 "radarr" => "moviefile",
                 "sonarr" => "episodefile",
@@ -289,6 +338,7 @@ async fn mutate(
                     ));
                 }
                 recheck(proof).await?;
+                *changed = true;
                 c.call(
                     reqwest::Method::PUT,
                     "episode/monitor",
@@ -304,6 +354,7 @@ async fn mutate(
                 }
                 item["monitored"] = json!(monitored);
                 recheck(proof).await?;
+                *changed = true;
                 c.call(
                     reqwest::Method::PUT,
                     &format!("{entity}/{}", claim.entity_id),
@@ -324,6 +375,7 @@ async fn mutate(
             }
         } else if action == "delete" {
             // Automatic deletion separately requires confirmed manager tracking.
+            *changed = true;
             tokio::fs::remove_file(&file.path)
                 .await
                 .map_err(|_| ApiError::conflict("Could not remove the confirmed-unmanaged file"))?;
@@ -403,7 +455,14 @@ pub(super) async fn execute_locked(
         ));
     }
     let captured: Vec<Target> = serde_json::from_str(&saved).map_err(|_| unavailable())?;
-    bindings::reconcile(state).await?;
+    // Waiting on a manager is the usual reason a deletion can't run. Asking first spares each
+    // retry the whole-library read and file hashing below.
+    managers_idle(state, &captured).await?;
+    if automatic {
+        bindings::reconcile_retained(state).await?;
+    } else {
+        bindings::reconcile(state).await?;
+    }
     let keys = captured
         .iter()
         .map(|file| format!("file:{}", file.id))
@@ -462,21 +521,37 @@ pub(super) async fn execute_locked(
     // Read-only checks a busy or briefly unreachable manager can fail run while the
     // operation is still pending, so a later pass can try again; nothing has changed yet.
     complete_manager_scope(state, &current).await?;
-    for claim in current.iter().flat_map(|file| &file.claims) {
-        let s = service(state, &claim.service_id).await?;
-        manager_idle(&Connection::open(state, &s).await?).await?;
-    }
+    managers_idle(state, &current).await?;
     let k = key.clone();
     storage::execute_locked_write_media_operations(k, &state.db).await?;
     // Once executing is durable, interruption never automatically repeats a destructive call.
+    let mut changed = false;
     let result = async {
+        // Adding the same exclusion again changes nothing, so this alone doesn't count.
         if retained.is_some_and(|r| r.exclude) {
             super::retention::exclude(state, &current).await?;
         }
-        mutate(state, &media, &action, &current, &key, automatic, &proofs).await?;
+        mutate(
+            state,
+            &media,
+            &action,
+            &current,
+            &key,
+            automatic,
+            &proofs,
+            &mut changed,
+        )
+        .await?;
         finish_movies(state, &media, &current, options, actor.clone()).await
     }
     .await;
+    let result = match result {
+        Err(error) if !changed => {
+            storage::reopen_operation(key, &state.db).await?;
+            return Err(error);
+        }
+        result => result,
+    };
     let error = result.as_ref().err().map(|e| e.2.clone());
     let status = if result.is_ok() {
         "complete"
@@ -514,5 +589,5 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
 pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
     let s = connected(state, key).await?;
     let c = Connection::open(state, &s).await?;
-    manager_idle(&c).await
+    manager_idle(&c, None).await
 }

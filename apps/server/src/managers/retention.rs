@@ -139,8 +139,7 @@ async fn evaluate_all(state: &AppState, actor: Option<String>) -> Result<usize> 
     if !enabled {
         return Ok(0);
     };
-    // Music is never retained, so Lidarr's library is not read.
-    let observed = bindings::observe(state, &["radarr", "sonarr"]).await?;
+    let observed = bindings::observe(state, bindings::RETAINED).await?;
     let _lease = state.media_operations.write().await;
     let _guard = state.managers.guard.lock().await;
     bindings::reconcile_observation(state, &observed).await?;
@@ -214,9 +213,15 @@ async fn delete_locked(
         // While its operation is still pending nothing was changed: the deletion stays
         // scheduled and the next pass tries again. Only an attempt that started blocks it.
         let retry = storage::operation_pending(operation, &state.db).await?;
-        let key = key.to_owned();
+        let candidate = key.to_owned();
         let message = error.2.clone();
-        storage::delete_locked_write_retention_candidates(key, message, retry, &state.db).await?;
+        let news =
+            storage::delete_locked_write_retention_candidates(candidate, message, retry, &state.db)
+                .await?;
+        // A blocked deletion is always news: finishing its operation already recorded why.
+        if news || !retry {
+            tracing::warn!(candidate = key, retry, error = %error.2, "Scheduled deletion did not run");
+        }
         return Err(error);
     }
     Ok(())
@@ -237,8 +242,12 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
         if let Err(error) = crate::auto_delete::evaluate(&state).await {
             tracing::warn!(%error, "Video deletion evaluation will retry");
         }
-        let ready = storage::run(&state.db).await?;
+        let (ready, waiting) = storage::run(&state.db).await?;
+        for (candidate, reason) in waiting {
+            tracing::info!(candidate, reason, "Scheduled deletion is waiting");
+        }
         for key in ready {
+            // A failure is recorded and logged; the next pass tries again unless it is blocked.
             let _ = delete_locked(&state, &key, None, true).await;
         }
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;

@@ -14,7 +14,10 @@ pub(super) async fn targets(media: String, db: &Database) -> anyhow::Result<Vec<
     })
     .await
 }
-fn load_targets(db: &rusqlite::Connection, media: &str) -> anyhow::Result<Vec<Target>> {
+pub(in crate::managers) fn load_targets(
+    db: &rusqlite::Connection,
+    media: &str,
+) -> anyhow::Result<Vec<Target>> {
     let files=db.prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM media WHERE id=?1 UNION ALL SELECT m.id FROM media m JOIN tree t ON m.parent_id=t.id) SELECT DISTINCT f.id,f.generation,f.path,l.path,f.size,f.modified,f.fingerprint,f.ownership FROM tree JOIN media_sources ms ON ms.media_id=tree.id JOIN media_files f ON f.id=ms.file_id JOIN library_roots l ON l.id=f.root_id WHERE f.present=1 ORDER BY f.id")?.query_map([&media],|r|Ok(Target{id:r.get(0)?,generation:r.get(1)?,path:r.get(2)?,root:r.get(3)?,size:r.get::<_,i64>(4)? as u64,modified:r.get(5)?,fingerprint:r.get(6)?,ownership:r.get(7)?,claims:vec![]}))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut output = Vec::new();
     for mut file in files {
@@ -130,6 +133,18 @@ pub(super) async fn execute_locked_write_media_operations(
             Ok(())
         },
     )
+    .await
+}
+
+/// An attempt that changed nothing leaves its operation to run again.
+pub(super) async fn reopen_operation(key: String, db: &Database) -> anyhow::Result<()> {
+    db.write("managers.operations.reopen_operation", move |db| {
+        db.execute(
+            "UPDATE media_operations SET state='pending',updated_at=?1 WHERE id=?2 AND state='executing'",
+            params![now(), key],
+        )?;
+        Ok(())
+    })
     .await
 }
 

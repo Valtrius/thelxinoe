@@ -51,6 +51,8 @@
     item.reason === 'storage_limit'
       ? 'Storage limit'
       : `Watched${item.watched_users?.length ? ' by ' + item.watched_users.join(', ') : ''}`;
+  const due = (item: Item) =>
+    `${item.state === 'pending' && item.due_at * 1000 <= Date.now() ? 'Overdue since' : 'Scheduled for'} ${formatTimestamp(item.due_at)}`;
   const stateLabel = (state: string) =>
     ({
       complete: 'Deleted',
@@ -157,7 +159,7 @@
       {#each visible as item (item.id)}
         <SettingRow
           label={item.title}
-          description={`${reason(item)} · Scheduled for ${formatTimestamp(item.due_at)}${item.error ? ` · ${item.error}` : ''}`}
+          description={`${reason(item)} · ${due(item)}${item.error ? ` · ${item.error}` : ''}`}
         >
           {#if scheduled}
             <Button

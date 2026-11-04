@@ -48,6 +48,19 @@ pub(super) async fn reconcile_read_manager_services(
     .await
 }
 
+/// Whether every operational manager of `kinds` was read successfully since `since`.
+pub(super) async fn reconciled_since(
+    db: &Database,
+    kinds: &[&str],
+    since: i64,
+) -> anyhow::Result<bool> {
+    let kinds = serde_json::to_string(kinds)?;
+    db.read("managers.bindings.reconciled_since", move |db| {
+        Ok(db.query_row("SELECT NOT EXISTS(SELECT 1 FROM manager_services s LEFT JOIN manager_reconciliations r ON r.service_id=s.id WHERE s.operational=1 AND s.kind IN (SELECT value FROM json_each(?1)) AND (r.error IS NOT NULL OR r.checked_at IS NULL OR r.checked_at<?2 OR r.generation<>s.generation))",params![kinds,since],|r|r.get::<_,bool>(0))?)
+    })
+    .await
+}
+
 pub(super) async fn reconcile_write_media_files(
     key: String,
     result: std::prelude::v1::Result<Vec<Claim>, ApiError>,
