@@ -154,7 +154,7 @@
 <div
   use:longPress={() => (actionsOpen = true)}
   data-playing={isPlaying}
-  class={`group/watchlist-item relative flex cursor-default items-stretch border-b border-line transition-[opacity,background-color] duration-(--animation-duration) hover:z-20 touch:select-none touch:[-webkit-touch-callout:none] ${sortable ? (dragging ? 'bg-accent-soft opacity-35 select-none' : 'select-none hover:bg-surface-soft') : canPlay ? 'hover:bg-surface-soft' : ''}`}
+  class={`group/watchlist-item relative flex cursor-default items-stretch border-b border-line transition-[opacity,background-color] duration-(--animation-duration) hover:z-20 touch:select-none touch:[-webkit-touch-callout:none] ${sortable ? 'select-none' : ''} ${sortable && dragging ? 'bg-accent-soft opacity-35' : isPlaying ? 'bg-accent-soft' : sortable || canPlay ? 'hover:bg-surface-soft' : ''}`}
 >
   <div
     role="button"

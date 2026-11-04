@@ -57,7 +57,7 @@
     <span
       aria-hidden="true"
       data-sidebar-resize={resizeWithSidebar ? 'x-pos' : undefined}
-      class="pointer-events-none absolute inset-y-0 right-0 z-0 w-0.75 bg-accent"
+      class="pointer-events-none absolute inset-y-0 left-0 z-0 w-0.75 bg-accent"
       data-nav-accent
     ></span>
   {/if}
