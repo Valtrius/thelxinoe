@@ -306,7 +306,25 @@ test.describe('mobile player gestures', () => {
       )
         fullscreenWarnings.push(message.text());
     });
+    await page.addInitScript(() => {
+      const request = Element.prototype.requestFullscreen;
+      // Whether a recent tap was active for each request.
+      const requests: boolean[] = [];
+      Object.assign(window, { fullscreenRequests: requests });
+      Element.prototype.requestFullscreen = function (options) {
+        requests.push(navigator.userActivation.isActive);
+        return request.call(this, options);
+      };
+    });
     const cdp = await page.context().newCDPSession(page);
+    const fullscreenRequests = async () =>
+      (
+        await cdp.send('Runtime.evaluate', {
+          expression: 'window.fullscreenRequests',
+          userGesture: false,
+          returnByValue: true,
+        })
+      ).result.value;
     const rotate = async (landscape: boolean) => {
       const native = await cdp.send('Runtime.evaluate', {
         expression: '!!document.fullscreenElement',
@@ -349,7 +367,11 @@ test.describe('mobile player gestures', () => {
       exact: true,
     });
     await expect(drawer).toBeVisible();
-    // Let transient user activation expire before rotating, as it does during normal viewing.
+    const player = page.getByRole('region', { name: 'Media player' });
+    const controls = page.locator('.player-controls');
+    await expect(controls).toHaveCSS('opacity', '0');
+    // Let transient user activation expire before rotating, as it does during
+    // normal viewing. Playwright locators and evaluations activate the page.
     await page.waitForTimeout(6000);
     const activation = await cdp.send('Runtime.evaluate', {
       expression: 'navigator.userActivation.isActive',
@@ -357,14 +379,15 @@ test.describe('mobile player gestures', () => {
       returnByValue: true,
     });
     expect(activation.result.value).toBe(false);
-    const player = page.getByRole('region', { name: 'Media player' });
-    const controls = page.locator('.player-controls');
-    await expect(controls).toHaveCSS('opacity', '0');
     await rotate(true);
     await expect(
       page.getByRole('button', { name: 'Exit fullscreen', exact: true }),
     ).toHaveCount(1);
     await expect(controls).toHaveCSS('opacity', '0', { timeout: 500 });
+    // Rotation asks for native fullscreen even without a tap. Emulated
+    // rotation is not a device rotation, so the browser refuses it here and
+    // the player fills the viewport instead.
+    expect(await fullscreenRequests()).toEqual([false]);
     await expect
       .poll(async () => (await player.boundingBox())!.width)
       .toBe(844);
