@@ -587,8 +587,12 @@ test('Home YouTube cards restart videos and mark them watched with undo', async 
     .toMatchObject({ media_id: 'youtube:abcdefghijk', position: 0 });
   await page.getByRole('button', { name: 'Close player', exact: true }).click();
 
-  await card.hover();
-  await actions.click();
+  // The card moves as the player leaves. A hover that lands before it settles
+  // leaves the pointer off the card, with its actions still out of reach.
+  await expect(async () => {
+    await card.hover();
+    await actions.click({ timeout: 1000 });
+  }).toPass({ timeout: 15000 });
   await menuItem('Mark watched').click();
   await expect(card).toHaveCount(0);
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
