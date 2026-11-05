@@ -18,6 +18,7 @@
   } from '@lucide/svelte';
   import SeekRange from '../SeekRange.svelte';
   import Button from '../ui/Button.svelte';
+  import Drawer from '../ui/Drawer.svelte';
   import { appearance, updateAppearance } from '../appearance';
   import { compactViewport } from '../responsive';
   import { choiceIndex } from '../media-state';
@@ -31,18 +32,21 @@
   import FavoriteToggle from './FavoriteToggle.svelte';
   import PlayingBars from './PlayingBars.svelte';
   import { musicPlayer } from './player.svelte';
+  import { MusicSession } from './media-session';
 
   let { choice, closed } = $props<{
     choice: MediaChoice;
     closed: () => void;
   }>();
-  let musicState = $state<MusicState | null>(null),
+  // Replaced ten times a second: only what changed in it may wake what reads it.
+  let musicState = $state.raw<MusicState | null>(null),
     error = $state(''),
     busy = $state(true),
     waitingTools = $state(false),
     muted = $state(false),
     queueOpen = $state(false),
-    sheetOpen = $state(false);
+    sheetOpen = $state(false),
+    sheetQueue = $state(false);
   let queue = $state<GaplessQueue>();
   let generation = 0;
   let disposed = false;
@@ -75,7 +79,13 @@
     // The chosen track keeps the file and position it was chosen with.
     const list = choices.map((entry: MediaChoice, i: number) =>
       i === index
-        ? { ...entry, ...selected, queue: undefined, shuffle: undefined }
+        ? {
+            ...entry,
+            ...selected,
+            queue: undefined,
+            shuffle: undefined,
+            parked: undefined,
+          }
         : { ...entry, queue: undefined },
     );
     const owned = new GaplessQueue(
@@ -91,6 +101,7 @@
         if (generation === revision) waitingTools = value;
       },
       selected.shuffle ? Math.floor(Math.random() * list.length) : index,
+      selected.parked,
     );
     queue = owned;
     if (selected.shuffle) owned.setShuffle(true);
@@ -109,7 +120,7 @@
   function stop() {
     generation++;
     release();
-    sheet?.close();
+    sheetOpen = false;
     musicPlayer.state = null;
     musicPlayer.current = null;
     musicPlayer.controls = null;
@@ -119,6 +130,7 @@
     disposed = true;
     stop();
     musicPlayer.stop = null;
+    session.close();
   });
   // A finished queue still shows its last track.
   const current = $derived<MediaChoice>(
@@ -129,6 +141,7 @@
       choice,
   );
   const loading = $derived(busy || !!musicState?.loading);
+  const buffering = $derived(!!musicState?.buffering);
   const finished = $derived(!!musicState?.finished);
   $effect(() => {
     musicPlayer.state = musicState;
@@ -152,11 +165,22 @@
         ? 'Waiting for playback tools…'
         : loading
           ? 'Preparing music…'
-          : finished
-            ? 'Queue finished'
-            : '',
+          : buffering
+            ? 'Buffering…'
+            : finished
+              ? 'Queue finished'
+              : '',
   );
   const paused = $derived(musicState?.paused ?? true);
+  const session = new MusicSession({
+    play: () => void queue?.resume(),
+    pause: () => void queue?.pause(),
+    previous: () => void queue?.previous(),
+    next: () => void queue?.skip(),
+    seek: (to) => void queue?.seek(to),
+  });
+  $effect(() => session.track(current));
+  $effect(() => session.progress(paused, position, duration));
   const repeatLabels: Record<RepeatMode, string> = {
     off: 'Repeat off',
     all: 'Repeat queue',
@@ -180,12 +204,6 @@
     queue?.setVolume(value);
     updateAppearance({ audio_volume: value });
   }
-  let sheet = $state<HTMLDialogElement>();
-  $effect(() => {
-    if (!sheet) return;
-    if (sheetOpen && compact && !sheet.open) sheet.showModal();
-    if ((!sheetOpen || !compact) && sheet.open) sheet.close();
-  });
   const fraction = (value: number) =>
     duration > 0 ? Math.min(1, Math.max(0, value / duration)) : 0;
 </script>
@@ -214,7 +232,7 @@
     disabled={!musicState || finished}
     onclick={() => void queue?.toggle()}
   >
-    {#if loading && !error}<LoaderCircle
+    {#if (loading || buffering) && !error}<LoaderCircle
         size={size === 'large' ? 26 : 20}
         class="animate-spin motion-reduce:animate-none"
       />{:else if paused}<Play
@@ -369,7 +387,10 @@
         type="button"
         class="flex min-w-0 flex-1 items-center gap-3 bg-transparent p-0 text-left text-inherit"
         aria-label="Open now playing"
-        onclick={() => (sheetOpen = true)}
+        onclick={() => {
+          sheetQueue = false;
+          sheetOpen = true;
+        }}
       >
         <MusicArt
           url={current.artwork_url}
@@ -498,20 +519,18 @@
     </div>
   {/if}
 </section>
-{#if compact}<dialog
-    bind:this={sheet}
-    class="theme-dark m-0 h-dvh max-h-none w-full max-w-none overflow-y-auto border-0 bg-background p-0 text-foreground backdrop:bg-black/60 desktop-shell:mt-8 desktop-shell:h-[calc(100dvh-32px)]"
+{#if compact}<Drawer
+    modal
+    side="bottom"
+    open={sheetOpen}
+    onClose={() => (sheetOpen = false)}
     aria-label="Now playing"
-    oncancel={(event) => {
-      event.preventDefault();
-      sheetOpen = false;
-    }}
-    onclose={() => (sheetOpen = false)}
+    class="theme-dark h-dvh w-full max-w-none backdrop:bg-black/60 desktop-shell:h-[calc(100dvh-32px)]"
   >
     <div
-      class="mx-auto grid max-w-md content-start gap-4 px-5 pt-3 pb-8 [text-shadow:0_0_2px_var(--background),0_0_6px_var(--background)]"
+      class="mx-auto flex h-full max-w-md flex-col gap-3 px-5 pt-3 pb-6 landscape:max-w-none [text-shadow:0_0_2px_var(--background),0_0_6px_var(--background)]"
     >
-      <div class="flex items-center justify-between">
+      <div class="flex shrink-0 items-center justify-between">
         <Button
           size="icon"
           variant="player"
@@ -535,49 +554,73 @@
           }}><X size={18} /></Button
         >
       </div>
-      <MusicArt
-        url={current.artwork_url}
-        class="aspect-square w-full border border-white/15 shadow-2xl"
-        sizes="28rem"
-      />
-      <div class="flex items-start gap-3">
-        <div class="min-w-0 flex-1">
-          <h2 class="mb-0 truncate text-lg">{current.title}</h2>
-          <p
-            class={[
-              'mb-0 truncate text-xs',
-              error ? 'text-danger' : 'text-muted',
-            ]}
-          >
-            {error || status || subtitle}
-          </p>
-        </div>
-        {#if !finished && current.id}<FavoriteToggle
-            id={current.id}
-            variant="player"
-            class="shrink-0 text-muted"
-          />{/if}
-      </div>
-      <div class="grid gap-1">
-        {@render seek('')}
+      <div class="flex min-h-0 flex-1 flex-col gap-3 landscape:flex-row">
         <div
-          class="flex justify-between text-[11px] text-muted tabular-nums"
-          aria-hidden="true"
+          class="grid min-h-0 min-w-0 flex-1 place-items-center [container-type:size]"
         >
-          <span>{time(position)}</span><span>{time(duration)}</span>
+          {#if sheetQueue && upcoming.length}<div
+              class="grid size-full grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] gap-1.5"
+            >
+              <p
+                class="mb-0 text-[10px] font-[650] tracking-[0.17em] text-muted uppercase"
+              >
+                Up next · {upcoming.length}
+              </p>
+              <div class="overflow-y-auto border border-line bg-surface">
+                {@render queueList((musicState?.index ?? 0) + 1)}
+              </div>
+            </div>{:else}<MusicArt
+              url={current.artwork_url}
+              class="size-[min(100cqw,100cqh)] border border-white/15 shadow-2xl"
+              sizes="28rem"
+            />{/if}
+        </div>
+        <div
+          class="grid shrink-0 grid-cols-[minmax(0,1fr)] content-center gap-3 landscape:max-h-full landscape:min-w-0 landscape:flex-1 landscape:overflow-y-auto"
+        >
+          <div class="flex items-start gap-3">
+            <div class="min-w-0 flex-1">
+              <h2 class="mb-0 truncate text-lg">{current.title}</h2>
+              <p
+                class={[
+                  'mb-0 truncate text-xs',
+                  error ? 'text-danger' : 'text-muted',
+                ]}
+              >
+                {error || status || subtitle}
+              </p>
+            </div>
+            {#if !finished && current.id}<FavoriteToggle
+                id={current.id}
+                variant="player"
+                class="shrink-0 text-muted"
+              />{/if}
+          </div>
+          <div class="grid gap-1">
+            {@render seek('')}
+            <div
+              class="flex justify-between text-[11px] text-muted tabular-nums"
+              aria-hidden="true"
+            >
+              <span>{time(position)}</span><span>{time(duration)}</span>
+            </div>
+          </div>
+          {@render transport('large')}
+          <div class="flex items-center gap-1">
+            {@render volumeControl('min-w-0 flex-1')}
+            <Button
+              size="icon"
+              variant="player"
+              class={sheetQueue ? 'text-accent' : 'text-muted'}
+              aria-label="Queue"
+              aria-pressed={sheetQueue}
+              title="Queue"
+              disabled={!upcoming.length}
+              onclick={() => (sheetQueue = !sheetQueue)}
+              ><ListMusic size={18} /></Button
+            >
+          </div>
         </div>
       </div>
-      {@render transport('large')}
-      {@render volumeControl('')}
-      {#if upcoming.length}<div>
-          <p
-            class="mb-1.5 text-[10px] font-[650] tracking-[0.17em] text-muted uppercase"
-          >
-            Up next · {upcoming.length}
-          </p>
-          <div class="border border-line bg-surface">
-            {@render queueList((musicState?.index ?? 0) + 1)}
-          </div>
-        </div>{/if}
     </div>
-  </dialog>{/if}
+  </Drawer>{/if}

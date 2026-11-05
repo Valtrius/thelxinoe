@@ -22,6 +22,8 @@ export type MediaChoice = {
   duration?: number;
   /** The queue starts shuffled. */
   shuffle?: boolean;
+  /** The queue opens as it was left, and reads nothing until it plays. */
+  parked?: { repeat: 'off' | 'all' | 'one'; shuffled: boolean };
 };
 /** Media that is playing, or still starting in a desktop MPV window. */
 export type PlayingMedia = { id: string; launching: boolean };

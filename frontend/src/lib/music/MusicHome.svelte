@@ -69,17 +69,20 @@
     openArtist: (id: string) => void;
     openAlbum: (id: string, artist?: string | null) => void;
     viewChanged: (view: View, query: string) => void;
-    filtersChanged: (view: View, query: string) => void;
+    filtersChanged: (query: string) => void;
   }>();
   const views: [View, string, string][] = [
     ['artists', 'Artists', 'artist'],
     ['albums', 'Albums', 'album'],
     ['tracks', 'Tracks', 'track'],
   ];
+  const isView = (value?: string): value is View =>
+    views.some(([known]) => known === value);
+  // An address without a list opens the one the user last chose.
+  const viewKey = 'music-view';
+  const lastView = $derived($appearance.provider_preferences[viewKey]);
   const view = $derived<View>(
-    views.some(([value]) => value === routeView)
-      ? (routeView as View)
-      : 'artists',
+    isView(routeView) ? routeView : isView(lastView) ? lastView : 'artists',
   );
   const kind = $derived(views.find(([value]) => value === view)![2]);
   const sorts: Record<View, [Sort, string][]> = {
@@ -134,7 +137,7 @@
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       sent = search;
-      filtersChanged(view, search);
+      filtersChanged(search);
     }, 250);
   }
   onDestroy(() => {
@@ -338,6 +341,7 @@
       selected = next;
       clearTimeout(searchTimer);
       viewChanged(next, search);
+      updateAppearance({ provider_preferences: { [viewKey]: next } });
     }}
   />
   <div

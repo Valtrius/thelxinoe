@@ -56,6 +56,8 @@ export type MusicState = {
   finished: boolean;
   /** The track at `index` is still being read. */
   loading: boolean;
+  /** The streamed track at `index` waits for more of its file. */
+  buffering: boolean;
 };
 const memoryCodecs = [
   'flac',
@@ -65,9 +67,66 @@ const memoryCodecs = [
   'pcm_s32le',
 ];
 /**
- * A music queue. Tracks that fit in memory are decoded and scheduled back to
- * back on one audio clock, so albums play without gaps. Other tracks stream
- * through an audio element and start as the one before them ends.
+ * Seconds a download may take. A track due now waits briefly for the first
+ * byte; its rate is judged after `sampleNow`, or `sampleAhead` for one due later,
+ * whose rate has time to settle. It may finish this `rest` past when it is due,
+ * and never `overdue` past it, as a rate says nothing of a file's end stalling.
+ */
+const downloadPatience = {
+  firstByte: 1.5,
+  sampleNow: 0.5,
+  sampleAhead: 3,
+  rest: 1.5,
+  overdue: 3.5,
+};
+/** A track due to start is decoded this many seconds before it plays. */
+const decodeMargin = 3;
+/** A stream reads its own file until this many seconds from its end; then the next track loads. */
+const loadAhead = 60;
+/** How many seconds from a stream's end the track after it goes on the audio clock. */
+const followStream = 1.5;
+/** The server ends a session two minutes after its last heartbeat. */
+const sessionLifetime = 100_000;
+const android = /Android/.test(navigator.userAgent);
+let silence: string | undefined;
+/**
+ * Android lists a page's playback from its audio elements alone, not from Web
+ * Audio. This one loops silence for as long as nothing else stands for the
+ * queue; ten seconds is long enough for Android to treat it as music.
+ */
+function silentElement() {
+  if (!silence) {
+    const rate = 8000;
+    const samples = rate * 10;
+    const header = new DataView(new ArrayBuffer(44));
+    const tag = (at: number, value: string) =>
+      [...value].forEach((c, i) => header.setUint8(at + i, c.charCodeAt(0)));
+    tag(0, 'RIFF');
+    header.setUint32(4, 36 + samples, true);
+    tag(8, 'WAVEfmt ');
+    header.setUint32(16, 16, true);
+    header.setUint16(20, 1, true);
+    header.setUint16(22, 1, true);
+    header.setUint32(24, rate, true);
+    header.setUint32(28, rate, true);
+    header.setUint16(32, 1, true);
+    header.setUint16(34, 8, true);
+    tag(36, 'data');
+    header.setUint32(40, samples, true);
+    silence = URL.createObjectURL(
+      new Blob([header, new Uint8Array(samples).fill(128)], {
+        type: 'audio/wav',
+      }),
+    );
+  }
+  const element = new Audio(silence);
+  element.loop = true;
+  return element;
+}
+/**
+ * A music queue. Tracks that fit in memory and arrive in time are decoded and
+ * scheduled back to back on one audio clock, so albums play without gaps. Other
+ * tracks stream through an audio element, which starts on a few seconds of file.
  */
 export class GaplessQueue {
   private context = new AudioContext();
@@ -93,12 +152,25 @@ export class GaplessQueue {
   private heartbeat: ReturnType<typeof setInterval>;
   private lastCurrent?: Entry;
   private preparation = new AbortController();
+  private presence = android ? silentElement() : undefined;
+  /** The element the system pauses and resumes for the queue while it plays. */
+  private sounding?: HTMLAudioElement;
+  /** The queue plays unless paused, by the user or the system. */
+  private playing = true;
+  private lastHeartbeat = Date.now();
+  /** Where the next track read starts, after a session ended under the queue. */
+  private resumeAt = 0;
+  /** The session of the track being read, which has no entry to keep it alive. */
+  private reading?: string;
+  /** Opened as it was left: nothing is read until it plays. */
+  private parked = false;
   constructor(
     choices: MediaChoice[],
     private changed: (s: MusicState) => void,
     private failed: (e: unknown) => void,
     private waiting?: (value: boolean) => void,
     start = 0,
+    parked?: MediaChoice['parked'],
   ) {
     this.choices = [...choices];
     this.order = [...choices];
@@ -107,9 +179,17 @@ export class GaplessQueue {
     this.volume.connect(this.context.destination);
     this.timer = setInterval(() => this.update(), 100);
     this.heartbeat = setInterval(() => void this.keepalive(), 10000);
+    if (this.presence) this.followSystem(this.presence);
+    if (parked) {
+      this.parked = true;
+      this.playing = false;
+      this.repeat = parked.repeat;
+      this.shuffled = parked.shuffled;
+      this.resumeAt = this.choices[this.index]?.position ?? 0;
+    }
   }
   async start() {
-    await this.load();
+    if (!this.parked) await this.load();
     // The second track loads while the first plays.
     if (this.closed) return;
     this.initialized = true;
@@ -121,7 +201,7 @@ export class GaplessQueue {
       this.schedule(this.context.currentTime + 0.02);
       this.update();
     };
-    await this.context.resume();
+    if (!this.parked) await this.context.resume();
   }
   /** What plays after the choice at `at`. */
   private advance(at: number) {
@@ -138,6 +218,8 @@ export class GaplessQueue {
     const at = this.next;
     const choice = this.choices[at];
     this.next = this.advance(at);
+    const resumeAt = this.resumeAt;
+    this.resumeAt = 0;
     const pending = { signal: this.preparation.signal, waiting: this.waiting };
     const info = await playbackRequest(
       () => api<MediaInfo>(`/catalog/${choice.id}/playback`),
@@ -163,15 +245,16 @@ export class GaplessQueue {
         subtitle: 'off',
         capabilities: capabilities(source?.probe),
       },
-      first ? undefined : 0,
+      first ? undefined : resumeAt,
       pending,
     );
     let entry: Entry | undefined;
+    this.reading = playback.id;
     try {
       if (stale()) return;
       const buffer =
         memory && playback.mode === 'direct'
-          ? await this.decode(playback, stale)
+          ? await this.decode(playback, source.size, stale)
           : undefined;
       if (stale()) return;
       entry = {
@@ -203,18 +286,70 @@ export class GaplessQueue {
       }
       this.entries.push(entry);
     } finally {
+      this.reading = undefined;
       if (!entry && this.ownsSession())
         await api(`/playback/${playback.id}`, 'DELETE').catch(() => {});
     }
   }
-  /** The track decoded in memory, or nothing when it is too large for that. */
-  private async decode(playback: Playback, stale: () => boolean) {
-    const response = await fetch(mediaUrl(playback.url), {
-      signal: this.preparation.signal,
-    });
-    if (!response.ok) throw new Error('Unable to load music');
-    const bytes = await response.arrayBuffer();
-    if (stale() || bytes.byteLength > 64 * 1024 * 1024) return undefined;
+  /**
+   * The whole file, or nothing once the rate it arrives at shows it would not
+   * make it before the track is due: the track then streams instead.
+   */
+  private async download(playback: Playback, size: number) {
+    const download = new AbortController();
+    const abort = () => download.abort();
+    this.preparation.signal.addEventListener('abort', abort, { once: true });
+    const started = performance.now();
+    let flowing = started;
+    let dueSince = started;
+    let received = 0;
+    let late = false;
+    const check = setInterval(() => {
+      const { firstByte, sampleNow, sampleAhead, rest, overdue } =
+        downloadPatience;
+      const now = performance.now();
+      const head = this.entries[0];
+      const due = head
+        ? Math.max(0, this.duration(head) - this.position(head) - decodeMargin)
+        : 0;
+      if (due) dueSince = now;
+      const waited = (now - flowing) / 1000;
+      if ((now - dueSince) / 1000 < overdue) {
+        if (received) {
+          if (waited < (due ? sampleAhead : sampleNow)) return;
+          if (((size - received) * waited) / received <= due + rest) return;
+        } else if (due || waited < firstByte) return;
+      }
+      late = true;
+      download.abort();
+    }, 100);
+    try {
+      const response = await fetch(mediaUrl(playback.url), {
+        signal: download.signal,
+      });
+      if (!response.ok) throw new Error('Unable to load music');
+      const reader = response.body!.getReader();
+      const chunks: Uint8Array[] = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return await new Blob(chunks as BlobPart[]).arrayBuffer();
+        if (!received) flowing = performance.now();
+        chunks.push(value);
+        received += value.length;
+      }
+    } catch (e) {
+      if (late) return undefined;
+      throw e;
+    } finally {
+      clearInterval(check);
+      this.preparation.signal.removeEventListener('abort', abort);
+    }
+  }
+  /** The track decoded in memory, or nothing when it should stream instead. */
+  private async decode(playback: Playback, size: number, stale: () => boolean) {
+    const bytes = await this.download(playback, size);
+    if (!bytes || stale() || bytes.byteLength > 64 * 1024 * 1024)
+      return undefined;
     const buffer = await this.context.decodeAudioData(bytes);
     return buffer.length * buffer.numberOfChannels * 4 > 128 * 1024 * 1024
       ? undefined
@@ -239,7 +374,50 @@ export class GaplessQueue {
       stream.ended = true;
       this.update();
     };
+    element.onerror = () => {
+      if (this.closed || !this.entries.some((e) => e.stream === stream)) return;
+      this.failed(new Error('Playback was interrupted.'));
+      void this.close();
+    };
+    this.followSystem(element);
     return stream;
+  }
+  /**
+   * A call or another app's music pauses this page's elements but not its Web
+   * Audio, and resumes them after. The whole queue follows.
+   */
+  private followSystem(element: HTMLAudioElement) {
+    element.onpause = () => {
+      if (this.sounding === element && !element.ended) void this.pause();
+    };
+    element.onplay = () => {
+      if (!this.playing) void this.resume();
+    };
+  }
+  /** Keep the session on the stream, or else on silence, as the queue plays. */
+  private sound() {
+    const head = this.entries[0];
+    const finished = !head && !this.choices[this.index];
+    const element =
+      !this.playing || finished
+        ? undefined
+        : head?.stream?.started
+          ? head.stream.element
+          : this.presence;
+    const previous = this.sounding;
+    if (element === previous) return;
+    this.sounding = element;
+    const { presence } = this;
+    if (!presence) return;
+    if (element === presence) void presence.play().catch(() => {});
+    // A session whose last element is gone ends, and its controls with it. One
+    // paused on silence stays for as long as the player is open.
+    else if (finished && previous)
+      void presence
+        .play()
+        .catch(() => {})
+        .finally(() => presence.pause());
+    else if (previous === presence) presence.pause();
   }
   private async attach(entry: Entry, url: string, at: number) {
     const stream = entry.stream!;
@@ -261,7 +439,9 @@ export class GaplessQueue {
         element.canPlayType('application/vnd.apple.mpegurl'))
     ) {
       element.src = mediaUrl(url);
-      element.onloadedmetadata = () => (element.currentTime = from);
+      element.onloadedmetadata = from
+        ? () => (element.currentTime = from)
+        : null;
       return;
     }
     const hls = new HlsPlayer({
@@ -286,6 +466,9 @@ export class GaplessQueue {
     if (!stream) return;
     stream.element.onended = null;
     stream.element.onloadedmetadata = null;
+    stream.element.onerror = null;
+    stream.element.onpause = null;
+    stream.element.onplay = null;
     stream.element.pause();
     stream.hls?.destroy();
     stream.hls = undefined;
@@ -308,19 +491,36 @@ export class GaplessQueue {
       ? entry.stream.ended
       : !!entry.node && this.context.currentTime >= entry.end;
   }
+  /** The stream holds all it has left to play, so nothing can stall it now. */
+  private buffered({ buffered, currentTime, duration }: HTMLAudioElement) {
+    for (let i = 0; i < buffered.length; i++)
+      if (buffered.start(i) <= currentTime && buffered.end(i) >= duration - 0.1)
+        return true;
+    return false;
+  }
   /**
    * Schedule decoded tracks back to back from `when`. A streamed track ends
-   * the chain: what follows it starts once it has ended.
+   * the chain until its end is near and in memory, which tells when it comes.
+   * Otherwise, or if the next one streams too, that one starts once it has ended.
    */
   private schedule(when: number) {
     for (const [i, entry] of this.entries.entries()) {
       if (entry.stream) {
         if (i > 0) return;
-        if (!entry.stream.started && this.context.state === 'running') {
+        const { element } = entry.stream;
+        if (
+          !entry.stream.started &&
+          this.playing &&
+          this.context.state === 'running'
+        ) {
           entry.stream.started = true;
-          void entry.stream.element.play().catch(() => {});
+          void element.play().catch(() => {});
         }
-        return;
+        const left = element.duration - element.currentTime;
+        if (!(left < followStream) || element.paused || !this.buffered(element))
+          return;
+        when = this.context.currentTime + left;
+        continue;
       }
       if (entry.node) {
         when = entry.end;
@@ -335,6 +535,8 @@ export class GaplessQueue {
         replayGain(entry.playback.probe, entry.playback.replay_gain),
         this.volume,
       );
+      // Timers slow down on a hidden page; this still catches the end on time.
+      entry.node.source.onended = () => this.update();
       entry.end = entry.node.end;
       when = entry.end;
     }
@@ -345,7 +547,11 @@ export class GaplessQueue {
     return {
       id: choice?.id ?? '',
       title: choice?.title ?? '',
-      position: current ? this.position(current) : 0,
+      position: current
+        ? this.position(current)
+        : this.parked
+          ? this.resumeAt
+          : 0,
       duration: current ? this.duration(current) : 0,
       paused: !current || this.context.state !== 'running',
       index: this.index,
@@ -354,7 +560,12 @@ export class GaplessQueue {
       repeat: this.repeat,
       queue: this.choices,
       finished: !choice,
-      loading: !current && !!choice,
+      loading: !current && !!choice && !this.parked,
+      buffering:
+        !!current?.stream?.started &&
+        !current.stream.ended &&
+        this.context.state === 'running' &&
+        current.stream.element.readyState < HTMLMediaElement.HAVE_FUTURE_DATA,
     };
   }
   private update() {
@@ -371,10 +582,15 @@ export class GaplessQueue {
         this.schedule(this.context.currentTime + 0.02);
     }
     if (this.entries.length) this.index = this.entries[0].at;
+    if (this.entries[0]?.stream && this.entries[1] && !this.entries[1].node)
+      this.schedule(0);
+    const head = this.entries[0];
     if (
+      !this.parked &&
       this.entries.length < 2 &&
       !this.loading &&
-      this.next < this.choices.length
+      this.next < this.choices.length &&
+      (!head?.stream || this.duration(head) - this.position(head) <= loadAhead)
     ) {
       this.loading = true;
       void this.load()
@@ -411,6 +627,7 @@ export class GaplessQueue {
         void this.report(current, playing ? 'playing' : 'paused', position);
       }
     }
+    this.sound();
     this.changed(this.snapshot(current));
   }
   private report(entry: Entry, state: string, position: number) {
@@ -432,14 +649,47 @@ export class GaplessQueue {
           : undefined,
       );
     return entry.reports.catch((e) => {
-      if (!this.closed && sessionRefused(e)) {
-        this.failed(e);
-        void this.close();
-      }
+      if (sessionRefused(e)) this.refused(e);
     });
+  }
+  private lapsed() {
+    return Date.now() - this.lastHeartbeat >= sessionLifetime;
+  }
+  /**
+   * The server refused a session. Under a paused queue, or after it heard
+   * nothing for too long, that ended it and no more: the track is read again.
+   */
+  private refused(e: unknown) {
+    if (this.closed) return;
+    if (!this.playing) this.lastHeartbeat = 0;
+    else if (this.wake()) this.update();
+    else {
+      this.failed(e);
+      void this.close();
+    }
+  }
+  /**
+   * A page frozen in the background misses its heartbeats and the server ends
+   * its sessions. The track is read again from where it stopped.
+   */
+  private wake() {
+    if (!this.lapsed()) return false;
+    this.lastHeartbeat = Date.now();
+    this.reading = undefined;
+    const current = this.entries[0];
+    if (!current) return false;
+    this.resumeAt = this.position(current);
+    this.discard(this.entries);
+    this.entries = [];
+    this.lastCurrent = undefined;
+    this.next = this.index;
+    this.generation++;
+    return true;
   }
   private async keepalive() {
     if (this.closed || !this.ownsSession()) return;
+    // Playing on reads the track again; a report now would be refused.
+    if (!this.playing && this.lapsed()) return;
     try {
       for (const e of this.entries) {
         if (this.closed || !this.ownsSession()) return;
@@ -447,6 +697,10 @@ export class GaplessQueue {
           api(`/playback/${e.playback.id}/keepalive`, 'POST'),
         );
       }
+      const { reading } = this;
+      if (reading && !this.closed && this.ownsSession())
+        await inBackground(() => api(`/playback/${reading}/keepalive`, 'POST'));
+      this.lastHeartbeat = Date.now();
       const current = this.entries[0];
       if (current)
         await this.report(
@@ -455,28 +709,44 @@ export class GaplessQueue {
           this.position(current),
         );
     } catch (e) {
-      if (!this.closed && sessionRefused(e)) {
-        this.failed(e);
-        await this.close();
-      }
+      if (sessionRefused(e)) this.refused(e);
     }
   }
-  async toggle() {
+  toggle() {
+    return !this.parked && this.context.state === 'running'
+      ? this.pause()
+      : this.resume();
+  }
+  async pause() {
+    this.playing = false;
+    this.sounding = undefined;
+    this.presence?.pause();
+    this.entries[0]?.stream?.element.pause();
+    await this.context.suspend();
+    this.update();
+  }
+  /** Play on; a finished queue plays again from its start. */
+  async resume() {
+    this.parked = false;
+    this.wake();
+    if (!this.entries.length && !this.choices[this.index]) return this.jump(0);
+    this.playing = true;
+    this.sounding = undefined;
+    await this.context.resume();
     const stream = this.entries[0]?.stream;
-    if (this.context.state === 'running') {
-      stream?.element.pause();
-      await this.context.suspend();
-    } else {
-      await this.context.resume();
-      if (stream?.started) await stream.element.play().catch(() => {});
-      else this.schedule(this.context.currentTime + 0.02);
-    }
+    if (stream?.started) await stream.element.play().catch(() => {});
+    else this.schedule(this.context.currentTime + 0.02);
     this.update();
   }
   setVolume(value: number) {
     this.volume.gain.value = Math.max(0, Math.min(1, value));
   }
   async seek(position: number) {
+    if (this.parked || this.wake()) {
+      this.resumeAt = Math.max(0, position);
+      this.update();
+      return;
+    }
     const current = this.entries[0];
     if (!current) return;
     current.activity.setActive(false);
@@ -543,6 +813,10 @@ export class GaplessQueue {
   /** Play the choice at `at` from its start. */
   async jump(at: number) {
     if (this.closed || at < 0 || at >= this.choices.length) return;
+    this.parked = false;
+    this.wake();
+    this.resumeAt = 0;
+    this.playing = true;
     this.stopCurrent();
     this.discard(this.entries.slice(1));
     this.entries = [];
@@ -556,7 +830,9 @@ export class GaplessQueue {
   }
   /** Play the next track; repeating one track does not hold this back. */
   async skip() {
-    if (!this.entries.length) return;
+    if (!this.wake() && !this.entries.length && !this.parked) return;
+    this.parked = false;
+    this.resumeAt = 0;
     const target =
       this.index + 1 < this.choices.length
         ? this.index + 1
@@ -578,6 +854,7 @@ export class GaplessQueue {
   /** Move to what is loaded next, keeping it instead of reading it again. */
   private async jumpAhead() {
     const current = this.entries[0]!;
+    this.playing = true;
     this.stopCurrent();
     this.entries.shift();
     this.lastCurrent = undefined;
@@ -601,7 +878,7 @@ export class GaplessQueue {
   /** Restart the track, or a few seconds in, play the one before it. */
   async previous() {
     const current = this.entries[0];
-    const position = current ? this.position(current) : 0;
+    const position = current ? this.position(current) : this.resumeAt;
     const earlier =
       this.index > 0
         ? this.index - 1
@@ -612,7 +889,7 @@ export class GaplessQueue {
       await this.seek(0);
       return;
     }
-    await this.jump(earlier < 0 ? this.index : earlier);
+    await this.jump(earlier < 0 || position > 3 ? this.index : earlier);
   }
   /** Add tracks after the playing one, or at the end. */
   insert(items: MediaChoice[], next: boolean) {
@@ -642,6 +919,7 @@ export class GaplessQueue {
     this.order = this.order.filter((choice) => choice !== removed);
     if (at === this.index) {
       if (at < this.choices.length) return this.jump(at);
+      this.parked = false;
       this.stopCurrent();
       this.discard(this.entries.slice(1));
       this.entries = [];
@@ -693,6 +971,14 @@ export class GaplessQueue {
     this.preparation.abort();
     clearInterval(this.timer);
     clearInterval(this.heartbeat);
+    this.sounding = undefined;
+    if (this.presence) {
+      this.presence.onpause = null;
+      this.presence.onplay = null;
+      this.presence.pause();
+      this.presence.removeAttribute('src');
+      this.presence.load();
+    }
     const entries = this.entries;
     this.entries = [];
     const positions = entries.map((e) => this.position(e));

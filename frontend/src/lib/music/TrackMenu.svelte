@@ -14,6 +14,7 @@
   import { api } from '../api';
   import Button from '../ui/Button.svelte';
   import MenuBackdrop, { ignoreBackdrop } from '../ui/MenuBackdrop.svelte';
+  import MenuSubContent from '../ui/MenuSubContent.svelte';
   import { showToast } from '../providers/toasts';
   import { musicPlayer } from './player.svelte';
   import { trackChoice, type MusicItem } from './library';
@@ -32,8 +33,6 @@
     playlists = $state<{ id: string; name: string }[] | null>(null);
   const itemClass =
     'flex h-8 w-full cursor-default items-center gap-[0.55rem] whitespace-nowrap px-[0.55rem] text-left text-[0.7rem] text-muted outline-none data-[disabled]:opacity-45 data-[highlighted]:bg-accent-soft data-[highlighted]:text-foreground [&_svg]:size-[0.85rem] [&_svg]:shrink-0 compact:h-11 compact:text-[13px]';
-  const contentClass =
-    'z-50 grid min-w-48 border border-line-strong bg-surface-strong p-1.5 shadow-2xl';
   // Requested when the menu opens, so rows don't each read the playlists.
   async function loadPlaylists() {
     if (playlists) return;
@@ -101,7 +100,7 @@
       sideOffset={4}
       preventScroll={false}
       onInteractOutside={ignoreBackdrop}
-      class={contentClass}
+      class="z-50 grid min-w-48 border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
     >
       {#if track.available}
         <DropdownMenu.Item class={itemClass} onSelect={play}
@@ -120,7 +119,7 @@
         <DropdownMenu.SubTrigger class={itemClass}
           ><ListMusic />Add to playlist</DropdownMenu.SubTrigger
         >
-        <DropdownMenu.SubContent class={contentClass}>
+        <MenuSubContent class="min-w-48">
           {#if !playlists}<p
               class="mb-0 flex items-center gap-2 px-[0.55rem] py-1.5 text-[0.7rem] text-muted"
             >
@@ -135,9 +134,10 @@
             </p>{:else}{#each playlists as playlist (playlist.id)}<DropdownMenu.Item
                 class={itemClass}
                 onSelect={() => void addTo(playlist)}
-                >{playlist.name}</DropdownMenu.Item
+                ><span class="truncate">{playlist.name}</span
+                ></DropdownMenu.Item
               >{/each}{/if}
-        </DropdownMenu.SubContent>
+        </MenuSubContent>
       </DropdownMenu.Sub>
       {#if openAlbum || (openArtist && track.artist_id)}
         <DropdownMenu.Separator class="my-1 h-px bg-line" />
