@@ -828,6 +828,68 @@ test('music URLs keep the artist above an album, open a track on its album and m
   });
 });
 
+test.describe('a track menu on a phone', () => {
+  test.use({ hasTouch: true, viewport: { width: 360, height: 640 } });
+
+  test('its playlists open inside the screen', async ({ page }, testInfo) => {
+    const fixture = await installUiFixture(page, { section: 'Music' });
+    await page.route('**/api/v1/catalog?**', (route) =>
+      route.fulfill({
+        json: {
+          items: [
+            {
+              id: 'track',
+              title: 'Track',
+              kind: 'track',
+              available: true,
+              metadata: {},
+            },
+          ],
+          total: 1,
+        },
+      }),
+    );
+    await page.route('**/api/v1/playlists', (route) =>
+      route.fulfill({
+        json: {
+          items: [
+            { id: 'short', name: 'Road trip', owner_id: 'layout-fixture' },
+            {
+              id: 'long',
+              name: 'A playlist with a name far wider than any phone can show on one line',
+              owner_id: 'layout-fixture',
+            },
+          ],
+        },
+      }),
+    );
+    await page.goto('/#library/music?view=tracks');
+    await page
+      .getByRole('button', { name: 'Actions for Track', exact: true })
+      .tap();
+    await page.getByRole('menuitem', { name: 'Add to playlist' }).tap();
+    const road = page.getByRole('menuitem', { name: 'Road trip' });
+    await expect(road).toBeVisible();
+    const items = [
+      road,
+      page.getByRole('menuitem', { name: /^A playlist with a name/ }),
+    ];
+    for (const item of items) {
+      const box = (await item.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(360);
+      expect(box.y + box.height).toBeLessThanOrEqual(640);
+    }
+    await testInfo.attach('track-menu-playlists', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+});
+
 test('a music list keeps paging after a search replaces it while a page loads', async ({
   page,
 }) => {

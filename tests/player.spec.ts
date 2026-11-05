@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type Route } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
@@ -300,6 +300,14 @@ async function fixture(
     failProgress?: 'network' | number;
     chapters?: { start: number; title: string | null }[];
     trickplay?: boolean;
+    /** Answers for the music track's file. */
+    track?: (route: Route) => unknown;
+    /** A second track follows in the music queue. */
+    queue?: boolean;
+    /** The music track's artwork is far larger than the screen. */
+    artwork?: boolean;
+    /** The music queue opens as it was left, this far into its track. */
+    parked?: number;
   } = {},
 ) {
   const metadata = gate(!!options.hold),
@@ -596,7 +604,7 @@ async function fixture(
         });
       return route.fulfill({
         json: {
-          id: 'fixture',
+          id: input.media_id === 'second' ? 'second' : 'fixture',
           qualities: options.qualities,
           quality: options.local
             ? undefined
@@ -817,7 +825,15 @@ async function fixture(
     }),
   );
   await page.route('**/fixture/track.wav', (route) =>
-    route.fulfill({ contentType: 'audio/wav', body: wav }),
+    options.track
+      ? options.track(route)
+      : route.fulfill({ contentType: 'audio/wav', body: wav }),
+  );
+  await page.route('https://fixture.invalid/art.svg', (route) =>
+    route.fulfill({
+      contentType: 'image/svg+xml',
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="6000"><rect width="3000" height="6000" fill="teal"/></svg>',
+    }),
   );
   await page.route('**/fixture/subtitles.vtt', (route) =>
     route.fulfill({
@@ -842,7 +858,22 @@ async function fixture(
           options.app
             ? "mount(App, { target: document.querySelector('#fixture-root') })"
             : `mount(${options.music ? 'MusicDock' : 'Player'}, { target: document.querySelector('#fixture-root'), props: {
-          choice: { id: 'fixture', title: ${JSON.stringify(title)}, kind: ${JSON.stringify(options.music ? 'track' : 'movie')} }, closed: () => unmount(app, { outro: true })
+          choice: {
+            id: 'fixture',
+            title: ${JSON.stringify(title)},
+            kind: ${JSON.stringify(options.music ? 'track' : 'movie')},
+            artwork_url: ${options.artwork ? "'https://fixture.invalid/art.svg'" : 'undefined'},
+            queue: ${
+              options.queue
+                ? `[{ id: 'fixture', title: ${JSON.stringify(title)}, kind: 'track' }, { id: 'second', title: 'Second track', kind: 'track' }]`
+                : 'undefined'
+            },
+            ...${
+              options.parked === undefined
+                ? '{}'
+                : `{ position: ${options.parked}, duration: 30, parked: { repeat: 'off', shuffled: false } }`
+            },
+          }, closed: () => unmount(app, { outro: true })
         }})`
         };
       </script></body></html>`,
@@ -1088,6 +1119,7 @@ test('failed progress reports keep the gapless music queue playing until the ser
   await expect(music.getByRole('alert')).toHaveCount(0);
   state.failProgress = 404;
   await music.getByRole('button', { name: 'Pause', exact: true }).click();
+  await music.getByRole('button', { name: 'Play', exact: true }).click();
   await expect(music.getByRole('alert')).toContainText(
     'Playback session refused.',
   );
@@ -1121,6 +1153,701 @@ test('moving to the next track silences the playing one without waiting for its 
   await expect.poll(position).toBeLessThan(1);
   release();
   expect(state.errors).toEqual([]);
+});
+
+/** A tone of `seconds`, as a file the music player can decode or stream. */
+const toneFile = (seconds: number) =>
+  execFileSync(
+    'ffmpeg',
+    [
+      '-v',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:sample_rate=8000',
+      '-t',
+      String(seconds),
+      '-c:a',
+      'pcm_s16le',
+      '-f',
+      'wav',
+      'pipe:1',
+    ],
+    { windowsHide: true },
+  );
+type MusicProbe = {
+  elements: HTMLAudioElement[];
+  ends: number[];
+  starts: { when: number; at: number }[];
+  context?: AudioContext;
+  handlers: Record<string, (details?: { seekTime?: number }) => void>;
+};
+/** Records the music player's audio elements, schedules and system controls. */
+async function probeMusic(page: Page) {
+  await page.addInitScript(() => {
+    const probe: MusicProbe = {
+      elements: [],
+      ends: [],
+      starts: [],
+      handlers: {},
+    };
+    Object.assign(window, { musicProbe: probe });
+    const NativeContext = window.AudioContext;
+    window.AudioContext = class extends NativeContext {
+      constructor(options?: AudioContextOptions) {
+        super(options);
+        probe.context = this;
+      }
+    };
+    const NativeAudio = window.Audio;
+    window.Audio = function (src?: string) {
+      const element = new NativeAudio(src);
+      probe.elements.push(element);
+      element.addEventListener('ended', () =>
+        probe.ends.push(probe.context!.currentTime),
+      );
+      return element;
+    } as unknown as typeof Audio;
+    const start = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (
+      ...args: [number?, number?, number?]
+    ) {
+      probe.starts.push({ when: args[0] ?? 0, at: this.context.currentTime });
+      return start.apply(this, args);
+    };
+    const set = navigator.mediaSession.setActionHandler;
+    navigator.mediaSession.setActionHandler = function (action, handler) {
+      if (handler) probe.handlers[action] = handler as never;
+      else delete probe.handlers[action];
+      return set.call(this, action, handler);
+    };
+  });
+  const read = <T>(pick: (probe: MusicProbe) => T) =>
+    page.evaluate(`(${pick})(window.musicProbe)`) as Promise<Awaited<T>>;
+  return {
+    read,
+    action: (name: string, details?: { seekTime: number }) =>
+      page.evaluate(
+        ([name, details]) =>
+          (window as unknown as { musicProbe: MusicProbe }).musicProbe.handlers[
+            name as string
+          ](details as never),
+        [name, details] as const,
+      ),
+    metadata: () =>
+      page.evaluate(() => navigator.mediaSession.metadata?.title ?? null),
+    playing: () =>
+      read((probe) => probe.elements.filter((e) => !e.paused).length),
+  };
+}
+const musicPosition = (page: Page) =>
+  page
+    .getByLabel('Music position')
+    .first()
+    .evaluate((input: HTMLInputElement) => Number(input.value));
+
+test('a track whose file arrives too slowly streams, and the next follows it on the audio clock', async ({
+  page,
+}) => {
+  const probe = await probeMusic(page);
+  const file = toneFile(6);
+  const stream = gate(true);
+  let downloads = 0;
+  const state = await fixture(page, {
+    music: true,
+    gapless: true,
+    track: async (route) => {
+      if (route.request().resourceType() === 'fetch') {
+        // The first download never arrives; the next track's does.
+        if (++downloads === 1) return;
+        return route.fulfill({ contentType: 'audio/wav', body: file });
+      }
+      await stream.promise;
+      return route.fulfill({ contentType: 'audio/wav', body: file });
+    },
+  });
+  const music = page.getByRole('region', { name: 'Music player' });
+  // It waits for a few seconds of the file, never for all of it.
+  await expect(music.getByRole('status')).toContainText('Buffering');
+  await expect(music.getByLabel('Music position')).toBeEnabled();
+  stream.release();
+  await expect.poll(() => musicPosition(page)).toBeGreaterThan(0.5);
+  await expect(music.getByRole('status')).not.toContainText('Buffering');
+  expect(downloads).toBe(1);
+  // Repeating the queue makes its only track the next one, read in full.
+  await music.getByRole('button', { name: 'Repeat off', exact: true }).click();
+  await expect.poll(() => downloads).toBe(2);
+  await expect
+    .poll(() => probe.read((p) => p.ends.length), { timeout: 15000 })
+    .toBe(1);
+  const { starts, ends } = await probe.read((p) => ({
+    starts: p.starts,
+    ends: p.ends,
+  }));
+  // Put on the clock before the stream ended, for the moment it ended.
+  expect(starts[0].when - starts[0].at).toBeGreaterThan(1);
+  expect(Math.abs(starts[0].when - ends[0])).toBeLessThan(0.3);
+  expect(state.errors).toEqual([]);
+});
+
+test('a stream whose end has not arrived holds the next track until it ends', async ({
+  page,
+}) => {
+  const probe = await probeMusic(page);
+  const file = toneFile(4);
+  let downloads = 0;
+  const state = await fixture(page, {
+    music: true,
+    gapless: true,
+    track: (route) => {
+      if (route.request().resourceType() === 'fetch' && ++downloads === 1)
+        return;
+      return route.fulfill({ contentType: 'audio/wav', body: file });
+    },
+  });
+  const music = page.getByRole('region', { name: 'Music player' });
+  await expect.poll(() => musicPosition(page)).toBeGreaterThan(0.2);
+  // Nothing past what plays has arrived, so the stream may yet stall.
+  await page.evaluate(() =>
+    Object.defineProperty(
+      (window as unknown as { musicProbe: MusicProbe }).musicProbe.elements[0],
+      'buffered',
+      { get: () => ({ length: 0 }) },
+    ),
+  );
+  await music.getByRole('button', { name: 'Repeat off', exact: true }).click();
+  await expect.poll(() => downloads).toBe(2);
+  await expect
+    .poll(() => probe.read((p) => p.starts.length), { timeout: 15000 })
+    .toBeGreaterThan(0);
+  const { starts, ends } = await probe.read((p) => ({
+    starts: p.starts,
+    ends: p.ends,
+  }));
+  expect(ends).toHaveLength(1);
+  expect(starts[0].at).toBeGreaterThanOrEqual(ends[0] - 0.05);
+  expect(state.errors).toEqual([]);
+});
+
+test('a next track whose first byte is slow is still read in full while there is time', async ({
+  page,
+}) => {
+  const probe = await probeMusic(page);
+  let downloads = 0;
+  const state = await fixture(page, {
+    music: true,
+    gapless: true,
+    queue: true,
+    track: async (route) => {
+      if (++downloads === 2)
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+      return route.fulfill({ contentType: 'audio/wav', body: wav });
+    },
+  });
+  await expect.poll(() => downloads).toBe(2);
+  await expect
+    .poll(() => probe.read((p) => p.starts.length), { timeout: 10000 })
+    .toBe(2);
+  // Nothing fell back to streaming, so the seam stays exact.
+  expect(await probe.read((p) => p.elements.length)).toBe(0);
+  const { starts } = await probe.read((p) => ({ starts: p.starts }));
+  expect(starts[1].when - starts[0].when).toBeCloseTo(30, 1);
+  expect(state.errors).toEqual([]);
+});
+
+/** Reads of the track file from the `from`th on stop just short of its end. */
+const stallLastBytes = (page: Page, from: number) =>
+  page.addInitScript(
+    ([from, size]) => {
+      const native = window.fetch;
+      let reads = 0;
+      window.fetch = (input, init) =>
+        String(input).includes('/fixture/track.wav') && ++reads >= from
+          ? Promise.resolve(
+              new Response(
+                new ReadableStream({
+                  start(controller) {
+                    controller.enqueue(new Uint8Array(Math.floor(size * 0.99)));
+                    init!.signal!.addEventListener('abort', () =>
+                      controller.error(init!.signal!.reason),
+                    );
+                  },
+                }),
+              ),
+            )
+          : native(input, init);
+    },
+    [from, wav.length],
+  );
+
+test('a file whose last bytes never arrive streams instead of holding the track back', async ({
+  page,
+}) => {
+  const probe = await probeMusic(page);
+  await stallLastBytes(page, 1);
+  const state = await fixture(page, { music: true, gapless: true });
+  await expect
+    .poll(() => musicPosition(page), { timeout: 8000 })
+    .toBeGreaterThan(0.2);
+  expect(await probe.read((p) => p.elements.length)).toBe(1);
+  expect(state.errors).toEqual([]);
+});
+
+test('a next track whose last bytes never arrive streams once its turn comes', async ({
+  page,
+}) => {
+  const probe = await probeMusic(page);
+  await stallLastBytes(page, 2);
+  const state = await fixture(page, {
+    music: true,
+    gapless: true,
+    queue: true,
+  });
+  const music = page.getByRole('region', { name: 'Music player' });
+  await expect.poll(() => musicPosition(page)).toBeGreaterThan(0.2);
+  expect(await probe.read((p) => p.elements.length)).toBe(0);
+  await music.getByLabel('Music position').fill('28');
+  await expect
+    .poll(() => probe.read((p) => p.elements.length), { timeout: 8000 })
+    .toBe(1);
+  await expect.poll(() => probe.playing(), { timeout: 8000 }).toBe(1);
+  await expect(music).toContainText('Second track');
+  expect(state.errors).toEqual([]);
+});
+
+test('a next track still being read keeps its session', async ({ page }) => {
+  await page.clock.install();
+  const kept: string[] = [];
+  page.on('request', (request) => {
+    const session = /\/playback\/([^/]+)\/keepalive$/.exec(request.url())?.[1];
+    if (session) kept.push(session);
+  });
+  let downloads = 0;
+  const state = await fixture(page, {
+    music: true,
+    gapless: true,
+    queue: true,
+    track: (route) => {
+      if (++downloads === 1)
+        return route.fulfill({ contentType: 'audio/wav', body: wav });
+    },
+  });
+  await expect.poll(() => downloads).toBe(2);
+  await page.clock.fastForward(10_000);
+  await expect.poll(() => kept).toContain('second');
+  expect(state.errors).toEqual([]);
+});
+
+test('a stream that fails tells the user instead of waiting forever', async ({
+  page,
+}) => {
+  const state = await fixture(page, {
+    music: true,
+    gapless: true,
+    track: (route) =>
+      route.request().resourceType() === 'fetch'
+        ? undefined
+        : route.fulfill({ status: 500, body: '' }),
+  });
+  await expect(
+    page.getByRole('region', { name: 'Music player' }).getByRole('alert'),
+  ).toContainText('Playback was interrupted.');
+  expect(state.errors).toEqual([]);
+});
+
+test('resuming after the page slept past its sessions reads the track again from where it stopped', async ({
+  page,
+}) => {
+  await page.clock.install();
+  const state = await fixture(page, { music: true, gapless: true });
+  const music = page.getByRole('region', { name: 'Music player' });
+  await expect.poll(() => musicPosition(page)).toBeGreaterThan(1);
+  await music.getByRole('button', { name: 'Pause', exact: true }).click();
+  const paused = await musicPosition(page);
+  expect(state.starts).toHaveLength(1);
+  // A frozen page runs no heartbeat; the server has ended the session since.
+  await page.clock.setSystemTime(Date.now() + 5 * 60_000);
+  await music.getByRole('button', { name: 'Play', exact: true }).click();
+  await expect.poll(() => state.starts.length).toBe(2);
+  expect(state.starts[1].position).toBeCloseTo(paused, 0);
+  await expect.poll(() => musicPosition(page)).toBeGreaterThan(paused);
+  await expect(music.getByRole('alert')).toHaveCount(0);
+  expect(state.errors).toEqual([]);
+});
+
+/** The server refuses what the track's first session reports from now on. */
+const endFirstSession = (page: Page, state: { starts: unknown[] }) =>
+  page.route(/\/api\/v1\/playback\/[^/]+\/(keepalive|progress)$/, (route) =>
+    state.starts.length < 2
+      ? route.fulfill({
+          status: 404,
+          json: { error: { code: 'not_found', message: 'Session ended.' } },
+        })
+      : route.fallback(),
+  );
+
+test('a paused queue whose session the server ended plays on from where it stopped', async ({
+  page,
+}) => {
+  await page.clock.install();
+  const state = await fixture(page, { music: true, gapless: true });
+  const music = page.getByRole('region', { name: 'Music player' });
+  await expect.poll(() => musicPosition(page)).toBeGreaterThan(1);
+  await music.getByRole('button', { name: 'Pause', exact: true }).click();
+  const paused = await musicPosition(page);
+  await endFirstSession(page, state);
+  let refused = false;
+  page.on('response', (response) => {
+    if (response.url().endsWith('/keepalive') && response.status() === 404)
+      refused = true;
+  });
+  await page.clock.fastForward(10_000);
+  await expect.poll(() => refused).toBe(true);
+  await expect(music.getByRole('alert')).toHaveCount(0);
+  await music.getByRole('button', { name: 'Play', exact: true }).click();
+  await expect.poll(() => state.starts.length).toBe(2);
+  expect(state.starts[1].position).toBeCloseTo(paused, 0);
+  await expect.poll(() => musicPosition(page)).toBeGreaterThan(paused);
+  await expect(music.getByRole('alert')).toHaveCount(0);
+  expect(state.errors).toEqual([]);
+});
+
+for (const playing of [false, true])
+  test(`a ${playing ? 'playing' : 'paused'} queue that lost the server for longer than its session reads its track again`, async ({
+    page,
+  }) => {
+    await page.clock.install();
+    const state = await fixture(page, { music: true, gapless: true });
+    const music = page.getByRole('region', { name: 'Music player' });
+    await expect.poll(() => musicPosition(page)).toBeGreaterThan(1);
+    if (!playing)
+      await music.getByRole('button', { name: 'Pause', exact: true }).click();
+    let unanswered = 0;
+    const offline = (route: Route) => {
+      unanswered++;
+      return route.abort();
+    };
+    await page.route('**/keepalive', offline);
+    // Heartbeats keep running with nothing to answer them.
+    for (let i = 0; i < 4; i++) await page.clock.fastForward(30_000);
+    // Once its session has lapsed, a paused queue stops asking.
+    await expect.poll(() => unanswered).toBe(playing ? 4 : 3);
+    await page.unroute('**/keepalive', offline);
+    await endFirstSession(page, state);
+    if (playing) await page.clock.fastForward(10_000);
+    else await music.getByRole('button', { name: 'Play', exact: true }).click();
+    await expect.poll(() => state.starts.length).toBe(2);
+    await expect(
+      music.getByRole('button', { name: 'Pause', exact: true }),
+    ).toBeVisible();
+    await expect(music.getByRole('alert')).toHaveCount(0);
+    expect(state.errors).toEqual([]);
+  });
+
+test('a queue opened as it was left reads nothing until it plays, and its controls work', async ({
+  page,
+}) => {
+  const state = await fixture(page, {
+    music: true,
+    gapless: true,
+    queue: true,
+    parked: 12,
+  });
+  const music = page.getByRole('region', { name: 'Music player' });
+  const play = music.getByRole('button', { name: 'Play', exact: true });
+  await expect(play).toBeEnabled();
+  await expect.poll(() => musicPosition(page)).toBeCloseTo(12, 0);
+  await expect(music.getByRole('status')).not.toContainText('Preparing');
+  expect(state.starts).toEqual([]);
+  await music.getByLabel('Music position').fill('20');
+  await expect.poll(() => musicPosition(page)).toBeCloseTo(20, 0);
+  expect(state.starts).toEqual([]);
+  await play.click();
+  await expect.poll(() => state.starts.length).toBeGreaterThan(0);
+  expect(state.starts[0].position).toBeCloseTo(20, 0);
+  await expect(
+    music.getByRole('button', { name: 'Pause', exact: true }),
+  ).toBeVisible();
+  await expect.poll(() => musicPosition(page)).toBeGreaterThan(20);
+  expect(state.errors).toEqual([]);
+});
+
+test('skipping a queue opened as it was left starts the next track from its beginning', async ({
+  page,
+}) => {
+  const state = await fixture(page, {
+    music: true,
+    gapless: true,
+    queue: true,
+    parked: 12,
+  });
+  const music = page.getByRole('region', { name: 'Music player' });
+  await expect(
+    music.getByRole('button', { name: 'Play', exact: true }),
+  ).toBeEnabled();
+  await music.getByRole('button', { name: 'Next track', exact: true }).click();
+  await expect.poll(() => state.starts.length).toBeGreaterThan(0);
+  expect(state.starts[0]).toMatchObject({ media_id: 'second', position: 0 });
+  await expect(music).toContainText('Second track');
+  await expect(
+    music.getByRole('button', { name: 'Pause', exact: true }),
+  ).toBeVisible();
+  expect(state.errors).toEqual([]);
+});
+
+test('the system hears what plays while no silent stand-in plays outside Android', async ({
+  page,
+}) => {
+  const probe = await probeMusic(page);
+  await fixture(page, { music: true, gapless: true });
+  await expect.poll(() => musicPosition(page)).toBeGreaterThan(0.2);
+  await expect.poll(probe.metadata).toBe(title);
+  expect(await probe.read((p) => p.elements.length)).toBe(0);
+});
+
+test.describe('music in the Android status drawer', () => {
+  test.use({
+    userAgent:
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
+  });
+
+  test('a decoded track keeps a session the system can pause and resume until the player closes', async ({
+    page,
+  }) => {
+    const probe = await probeMusic(page);
+    const state = await fixture(page, {
+      music: true,
+      gapless: true,
+      queue: true,
+    });
+    const music = page.getByRole('region', { name: 'Music player' });
+    const pause = music.getByRole('button', { name: 'Pause', exact: true });
+    const play = music.getByRole('button', { name: 'Play', exact: true });
+    await expect(pause).toBeVisible();
+    await expect.poll(probe.metadata).toBe(title);
+    await expect.poll(probe.playing).toBe(1);
+    await expect
+      .poll(() => page.evaluate(() => navigator.mediaSession.playbackState))
+      .toBe('playing');
+
+    // A call pauses the page's elements and resumes them after.
+    await page.evaluate(() =>
+      (
+        window as unknown as { musicProbe: MusicProbe }
+      ).musicProbe.elements[0].pause(),
+    );
+    await expect(play).toBeVisible();
+    const held = await musicPosition(page);
+    await page.waitForTimeout(400);
+    expect(await musicPosition(page)).toBeCloseTo(held, 1);
+    await page.evaluate(() =>
+      (
+        window as unknown as { musicProbe: MusicProbe }
+      ).musicProbe.elements[0].play(),
+    );
+    await expect(pause).toBeVisible();
+    await expect.poll(() => musicPosition(page)).toBeGreaterThan(held);
+
+    // The drawer's controls drive the queue; paused, it stays there.
+    await probe.action('pause');
+    await expect(play).toBeVisible();
+    await expect.poll(probe.playing).toBe(0);
+    await expect
+      .poll(() => page.evaluate(() => navigator.mediaSession.playbackState))
+      .toBe('paused');
+    await expect.poll(probe.metadata).toBe(title);
+    await probe.action('play');
+    await expect(pause).toBeVisible();
+    await expect.poll(probe.playing).toBe(1);
+    await probe.action('seekto', { seekTime: 12 });
+    await expect.poll(() => musicPosition(page)).toBeGreaterThanOrEqual(12);
+    await probe.action('nexttrack');
+    await expect.poll(probe.metadata).toBe('Second track');
+
+    // A finished queue keeps its controls, and plays again from them.
+    await probe.action('nexttrack');
+    await expect(music.getByRole('status')).toContainText('Queue finished');
+    await expect.poll(probe.playing).toBe(0);
+    await expect.poll(probe.metadata).toBe('Second track');
+    await probe.action('play');
+    await expect.poll(probe.metadata).toBe(title);
+    await expect(pause).toBeVisible();
+    await expect.poll(probe.playing).toBe(1);
+
+    await music
+      .getByRole('button', { name: 'Close player', exact: true })
+      .click();
+    await expect.poll(probe.metadata).toBeNull();
+    await expect.poll(probe.playing).toBe(0);
+    expect(await probe.read((p) => Object.keys(p.handlers))).toEqual([]);
+    expect(state.errors).toEqual([]);
+  });
+});
+
+test.describe('music on a phone', () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
+
+  test('now playing slides with the animation duration the user chose', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      const moves: { transforms: string[]; duration: number }[] = [];
+      Object.assign(window, { sheetMoves: moves });
+      const animate = Element.prototype.animate;
+      Element.prototype.animate = function (keyframes, options) {
+        const frames = keyframes as Keyframe[];
+        if (this.tagName === 'DIALOG' && frames[0]?.transform)
+          moves.push({
+            transforms: frames.map((frame) => String(frame.transform)),
+            duration: (options as KeyframeAnimationOptions).duration as number,
+          });
+        return animate.call(this, keyframes, options);
+      };
+    });
+    await fixture(page, { music: true, gapless: true });
+    await page.evaluate(() =>
+      (
+        globalThis as typeof globalThis & {
+          __acceptAppearance: (value: {
+            animation_duration_ms: number;
+          }) => void;
+        }
+      ).__acceptAppearance({ animation_duration_ms: 400 }),
+    );
+    const moves = () =>
+      page.evaluate(
+        () => (window as unknown as { sheetMoves: unknown[] }).sheetMoves,
+      );
+    const opener = page.getByRole('button', { name: 'Open now playing' });
+    await opener.tap();
+    const sheet = page.getByRole('dialog', { name: 'Now playing' });
+    await expect(sheet).toBeVisible();
+    await expect
+      .poll(moves)
+      .toEqual([{ transforms: ['translateY(100%)', 'none'], duration: 400 }]);
+    await expect
+      .poll(() =>
+        sheet.evaluate((dialog) => dialog.getBoundingClientRect().top),
+      )
+      .toBe(0);
+    await sheet.getByRole('button', { name: 'Close now playing' }).tap();
+    // It stays on screen while it leaves.
+    expect(
+      await page
+        .locator('dialog[aria-label="Now playing"]')
+        .evaluate((dialog: HTMLDialogElement) => dialog.open),
+    ).toBe(true);
+    await expect(sheet).toBeHidden();
+    expect((await moves()).at(-1)).toMatchObject({ duration: 400 });
+    await expect(opener).toBeFocused();
+  });
+
+  test('now playing always fits the screen, whatever the artwork and the queue', async ({
+    page,
+  }, testInfo) => {
+    const state = await fixture(page, {
+      music: true,
+      gapless: true,
+      queue: true,
+      artwork: true,
+    });
+    await page.getByRole('button', { name: 'Open now playing' }).tap();
+    const sheet = page.getByRole('dialog', { name: 'Now playing' });
+    await expect
+      .poll(() =>
+        sheet.evaluate((dialog) => dialog.getBoundingClientRect().top),
+      )
+      .toBe(0);
+    const inScreen = async (width: number, height: number) => {
+      const { scroll, parts } = await sheet.evaluate((dialog) => ({
+        scroll: dialog.scrollHeight - dialog.clientHeight,
+        parts: [...dialog.querySelectorAll('button, input, img, h2')].map(
+          (part) => ({
+            name: part.outerHTML.slice(0, 60),
+            ...part.getBoundingClientRect().toJSON(),
+          }),
+        ),
+      }));
+      expect(scroll).toBe(0);
+      expect(parts.length).toBeGreaterThan(5);
+      for (const part of parts) {
+        expect(part.left, part.name).toBeGreaterThanOrEqual(0);
+        expect(part.top, part.name).toBeGreaterThanOrEqual(0);
+        expect(part.right, part.name).toBeLessThanOrEqual(width);
+        expect(part.bottom, part.name).toBeLessThanOrEqual(height);
+      }
+    };
+    const art = sheet.locator('img');
+    for (const [width, height] of [
+      [390, 844],
+      [360, 560],
+      [320, 480],
+      [700, 360],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await expect(art).toBeVisible();
+      await inScreen(width, height);
+      const box = (await art.boundingBox())!;
+      expect(box.width).toBeCloseTo(box.height, 0);
+      expect(box.height).toBeGreaterThan(100);
+      await testInfo.attach(`now-playing-${width}x${height}`, {
+        body: await page.screenshot(),
+        contentType: 'image/png',
+      });
+    }
+    await page.setViewportSize({ width: 360, height: 560 });
+    // The queue takes the artwork's place instead of growing the page.
+    const queue = sheet.getByRole('button', { name: 'Queue', exact: true });
+    await queue.tap();
+    await expect(queue).toHaveAttribute('aria-pressed', 'true');
+    await expect(sheet.getByText('Up next · 1')).toBeVisible();
+    await expect(art).toHaveCount(0);
+    await expect(
+      sheet.getByRole('button', { name: 'Play Second track' }),
+    ).toBeVisible();
+    await inScreen(360, 560);
+    await testInfo.attach('now-playing-queue', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    await queue.tap();
+    await expect(art).toBeVisible();
+    expect(state.errors).toEqual([]);
+  });
+
+  test('the favorite button of now playing holds still while music plays', async ({
+    page,
+  }) => {
+    let reads = 0;
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname.endsWith('/state')) reads++;
+    });
+    const state = await fixture(page, { music: true, gapless: true });
+    await page.getByRole('button', { name: 'Open now playing' }).tap();
+    const favorite = page
+      .getByRole('dialog', { name: 'Now playing' })
+      .getByRole('button', { name: /Favorites$/ });
+    await expect(favorite).toBeEnabled();
+    await expect.poll(() => musicPosition(page)).toBeGreaterThan(0.5);
+    const changes = await favorite.evaluate(
+      (button) =>
+        new Promise<number>((resolve) => {
+          let count = 0;
+          const observer = new MutationObserver((mutations) => {
+            count += mutations.length;
+          });
+          observer.observe(button, { attributes: true, subtree: true });
+          setTimeout(() => {
+            observer.disconnect();
+            resolve(count);
+          }, 1000);
+        }),
+    );
+    expect(changes).toBe(0);
+    expect(reads).toBe(1);
+    expect(state.errors).toEqual([]);
+  });
 });
 
 test('web playback records active time but excludes paused time and seeking', async ({

@@ -14,26 +14,28 @@
   }>();
   let favorite = $state<boolean | null>(null),
     busy = $state(false);
+  // Only another id reads the flags again, not another object holding this one.
+  const media = $derived(id);
   $effect(() => {
-    const media = id;
+    const reading = media;
     favorite = null;
-    loadFlags(media).then(
+    loadFlags(reading).then(
       (flags) => {
-        if (id === media) favorite = flags.favorite;
+        if (media === reading) favorite = flags.favorite;
       },
       () => {},
     );
   });
   async function toggle() {
     if (favorite === null) return;
-    const media = id;
+    const changing = media;
     busy = true;
     try {
-      const flags = await setFlag(media, 'favorite', !favorite);
-      if (id === media) favorite = flags.favorite;
+      const flags = await setFlag(changing, 'favorite', !favorite);
+      if (media === changing) favorite = flags.favorite;
     } catch (e) {
       showToast({
-        key: `favorite:${media}`,
+        key: `favorite:${changing}`,
         tone: 'error',
         title: 'Favorites',
         message: String(e),

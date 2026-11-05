@@ -134,6 +134,7 @@
     nativeRuns,
   } from './lib/native-playback';
   import { musicPlayer } from './lib/music/player.svelte';
+  import { forgetMusic, saveMusic, savedMusic } from './lib/music/resume';
   import { dismissToastByKey, showToast } from './lib/providers/toasts';
   import { youtubeVideoIdFromInput } from './lib/providers/youtube-video-input';
   import { captureSharedYoutubeVideo } from './lib/providers/youtube-share';
@@ -237,6 +238,7 @@
     if (!user) return;
     route = allowedRoute(savedRoute(user), user, desktop, $providers);
     writeLocation(route, true);
+    music ??= savedMusic(user.id);
     navigationReady = true;
   }
   $effect(() => {
@@ -248,6 +250,35 @@
     const allowed = allowedRoute(route, user, desktop, $providers);
     if (routeHref(allowed) !== routeHref(route)) go(allowed, true);
     document.title = `${section} · Thelxinoe`;
+  });
+  // The queue comes back when this device opens the app again, until the dock
+  // is closed. Playing, its place is saved every five seconds.
+  const musicUser = $derived(navigationReady ? user?.id : undefined);
+  const musicList = $derived(musicPlayer.state?.queue);
+  const musicPlace = $derived.by(() => {
+    const state = musicPlayer.state;
+    return (
+      state &&
+      [
+        state.index,
+        state.repeat,
+        state.shuffle,
+        state.loading,
+        state.finished,
+        state.paused ? state.position : Math.floor(state.position / 5),
+      ].join()
+    );
+  });
+  $effect(() => {
+    void musicList;
+    void musicPlace;
+    if (!musicUser) return;
+    if (!music) {
+      forgetMusic(musicUser);
+      return;
+    }
+    const state = untrack(() => musicPlayer.state);
+    if (state) saveMusic(musicUser, state);
   });
   const attentionUserId = $derived(user?.id);
   $effect(() => {
@@ -480,6 +511,7 @@
         return;
       }
     }
+    if (user) forgetMusic(user.id);
     teardownSession();
   }
   function teardownSession() {

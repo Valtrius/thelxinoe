@@ -18,7 +18,7 @@
     ...rest
   }: Omit<HTMLDialogAttributes, 'children' | 'class' | 'open'> & {
     modal?: boolean;
-    side?: 'left' | 'right';
+    side?: 'left' | 'right' | 'bottom';
     open: boolean;
     onClose: () => void;
     children: Snippet;
@@ -39,7 +39,11 @@
     const opening = open;
     if (!opening && !dialog.open) return;
     const current = ++generation;
-    const hidden = `translateX(${side === 'left' ? -100 : 100}%)`;
+    const hidden = {
+      left: 'translateX(-100%)',
+      right: 'translateX(100%)',
+      bottom: 'translateY(100%)',
+    }[side];
     const from = dialog.open ? getComputedStyle(dialog).transform : hidden;
     const backdrop = dialog.open
       ? getComputedStyle(dialog, '::backdrop').opacity

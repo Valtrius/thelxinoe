@@ -73,9 +73,9 @@
     if (opener.section !== 'Music') return opener.section;
     return opener.item ? undefined : 'Music';
   }
-  const listRoute = (view: string, query: string): AppRoute => ({
+  const listRoute = (view: string | undefined, query: string): AppRoute => ({
     ...home,
-    view: view === 'artists' ? undefined : view,
+    view,
     query: query || undefined,
   });
   const openArtist = (id: string) => go({ ...home, item: id });
@@ -92,7 +92,7 @@
     {openArtist}
     {openAlbum}
     viewChanged={(view, query) => go(listRoute(view, query), true)}
-    filtersChanged={(view, query) => updateFilters(listRoute(view, query))}
+    filtersChanged={(query) => updateFilters(listRoute(route.view, query))}
   />{:else if error}<Notice variant="error" role="alert"
     >{error}<Button variant="ghost" size="sm" onclick={() => attempt++}
       >Reload</Button

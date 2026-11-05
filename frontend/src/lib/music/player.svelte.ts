@@ -3,8 +3,8 @@ import type { MediaChoice } from '../playback';
 
 /** What the music dock plays, for pages that mark the playing track and add to its queue. */
 class MusicPlayer {
-  state = $state<MusicState | null>(null);
-  current = $state<MediaChoice | null>(null);
+  state = $state.raw<MusicState | null>(null);
+  current = $state.raw<MediaChoice | null>(null);
   /** Present while a queue exists. */
   controls = $state<{
     insert: (items: MediaChoice[], next: boolean) => void;

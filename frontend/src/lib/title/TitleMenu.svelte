@@ -26,6 +26,7 @@
   } from '@lucide/svelte';
   import Button from '../ui/Button.svelte';
   import MenuBackdrop, { ignoreBackdrop } from '../ui/MenuBackdrop.svelte';
+  import MenuSubContent from '../ui/MenuSubContent.svelte';
   import { startActivity } from '../activity';
   import { refreshAttention } from '../attention';
   import { relativeTime } from '../providers/utils';
@@ -364,15 +365,13 @@
                 <DropdownMenu.SubTrigger class={itemClass}
                   ><Play />Play edition</DropdownMenu.SubTrigger
                 >
-                <DropdownMenu.SubContent
-                  class="z-50 grid min-w-44 border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
-                >
+                <MenuSubContent class="min-w-44">
                   {#each present as file (file.id)}<DropdownMenu.Item
                       class={itemClass}
                       onSelect={() => play(file.id)}
                       >{file.edition || 'Original edition'}</DropdownMenu.Item
                     >{/each}
-                </DropdownMenu.SubContent>
+                </MenuSubContent>
               </DropdownMenu.Sub>
             {/if}
             {#if tmdbLink && tmdb && manageable}
