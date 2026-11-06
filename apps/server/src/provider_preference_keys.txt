@@ -1,0 +1,10 @@
+youtube-feed-layout
+youtube-watchlist-sidebar-open
+youtube-selected-watchlist-id
+library-movies-view
+library-shows-view
+movie-deletion
+music-view
+music-sort
+music-selected-playlist-id
+music-playlist-sidebar-open
