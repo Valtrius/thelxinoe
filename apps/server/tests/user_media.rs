@@ -520,10 +520,11 @@ async fn shared_playlists_keep_owner_edits_and_private_favorites() {
     )
     .await;
     let path = format!("/playlists/{}", created["id"].as_str().unwrap());
+    ok(&state, &alice, &path, "PATCH", json!({"access":"read"})).await;
     let list = ok(&state, &bob, &path, "GET", Value::Null).await;
     assert_eq!(list["owner"], "alice");
-    assert_eq!(list["items"].as_array().unwrap().len(), 3);
-    assert_eq!(list["items"][2]["id"], "a");
+    assert_eq!(list["items"].as_array().unwrap().len(), 2);
+    assert_eq!(list["items"][1]["id"], "b");
     assert_eq!(
         call(
             &state,
@@ -556,7 +557,7 @@ async fn shared_playlists_keep_owner_edits_and_private_favorites() {
         ok(&state, &alice, &path, "GET", Value::Null).await["favorite"],
         false
     );
-    let edit = json!({"name":"Reordered","items":["b","a"],"revision":1});
+    let edit = json!({"name":"Reordered","items":["b","a"],"revision":2});
     ok(&state, &alice, &path, "PUT", edit.clone()).await;
     assert_eq!(
         call(&state, &alice, &path, "PUT", edit).await.0,
@@ -584,6 +585,218 @@ async fn shared_playlists_keep_owner_edits_and_private_favorites() {
         )
         .await
         .0,
+        StatusCode::BAD_REQUEST
+    );
+}
+#[tokio::test]
+async fn playlist_owners_choose_who_sees_adds_and_edits() {
+    let (_temp, state) = fixture().await;
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('c','root','track','c','c',1)", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (alice, _) = login(&state, "alice").await;
+    let (bob, _) = login(&state, "bob").await;
+    let created = ok(&state, &alice, "/playlists", "POST", json!({"name":"Mix"})).await;
+    let path = format!("/playlists/{}", created["id"].as_str().unwrap());
+    let items = format!("{path}/items");
+    let access = |level: &str| json!({"access":level});
+    let listed = async |token: &str, id: &str| {
+        ok(&state, token, "/playlists", "GET", Value::Null).await["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|playlist| playlist["id"] == id)
+            .cloned()
+    };
+    let order = async || {
+        ok(&state, &alice, &path, "GET", Value::Null).await["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|track| track["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let id = created["id"].as_str().unwrap();
+
+    // Names are unique per owner, ignoring case.
+    for name in ["Mix", " mix "] {
+        assert_eq!(
+            call(&state, &alice, "/playlists", "POST", json!({"name":name}))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+    }
+    ok(&state, &bob, "/playlists", "POST", json!({"name":"Mix"})).await;
+    let other = ok(
+        &state,
+        &alice,
+        "/playlists",
+        "POST",
+        json!({"name":"Other"}),
+    )
+    .await;
+    let other = format!("/playlists/{}", other["id"].as_str().unwrap());
+    assert_eq!(
+        call(&state, &alice, &other, "PATCH", json!({"name":"MIX"}))
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    ok(&state, &alice, &other, "PATCH", json!({"name":"OTHER"})).await;
+
+    // Private: to anyone else it does not exist.
+    assert!(listed(&bob, id).await.is_none());
+    for (route, method, body) in [
+        (path.as_str(), "GET", Value::Null),
+        (path.as_str(), "PATCH", json!({"name":"Hijack"})),
+        (path.as_str(), "DELETE", Value::Null),
+        (items.as_str(), "POST", json!({"items":["a"]})),
+    ] {
+        assert_eq!(
+            call(&state, &bob, route, method, body).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let added = ok(
+        &state,
+        &alice,
+        &items,
+        "POST",
+        json!({"items":["a","b","a"]}),
+    )
+    .await;
+    assert_eq!(added["added"], 2);
+    assert_eq!(listed(&alice, id).await.unwrap()["can_edit"], true);
+
+    // Read: everyone sees it and plays it, and nothing else.
+    ok(&state, &alice, &path, "PATCH", access("read")).await;
+    let seen = listed(&bob, id).await.unwrap();
+    assert_eq!(
+        (&seen["is_owner"], &seen["can_add"], &seen["can_edit"]),
+        (&json!(false), &json!(false), &json!(false))
+    );
+    assert_eq!(
+        call(&state, &bob, &items, "POST", json!({"items":["c"]}))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+
+    // Add: tracks can come in, and only that.
+    ok(&state, &alice, &path, "PATCH", access("add")).await;
+    assert_eq!(listed(&bob, id).await.unwrap()["can_add"], true);
+    let added = ok(&state, &bob, &items, "POST", json!({"items":["a","c"]})).await;
+    assert_eq!(added["added"], 1);
+    assert_eq!(order().await, ["a", "b", "c"]);
+    let track = format!("{items}/c");
+    for (route, method, body) in [
+        (track.as_str(), "DELETE", Value::Null),
+        (&format!("{track}/move"), "POST", json!({"before":"a"})),
+        (path.as_str(), "PATCH", json!({"sort_mode":"title"})),
+    ] {
+        assert_eq!(
+            call(&state, &bob, route, method, body).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    // Edit: tracks and their order, but the playlist itself stays the owner's.
+    ok(&state, &alice, &path, "PATCH", access("edit")).await;
+    ok(
+        &state,
+        &bob,
+        &format!("{track}/move"),
+        "POST",
+        json!({"before":"a"}),
+    )
+    .await;
+    assert_eq!(order().await, ["c", "a", "b"]);
+    ok(
+        &state,
+        &bob,
+        &format!("{items}/c/move"),
+        "POST",
+        json!({"before":"b"}),
+    )
+    .await;
+    assert_eq!(order().await, ["a", "c", "b"]);
+    ok(
+        &state,
+        &bob,
+        &format!("{items}/a/move"),
+        "POST",
+        json!({"before":null}),
+    )
+    .await;
+    assert_eq!(order().await, ["c", "b", "a"]);
+    ok(&state, &bob, &format!("{items}/b"), "DELETE", Value::Null).await;
+    assert_eq!(order().await, ["c", "a"]);
+    let sorted = ok(
+        &state,
+        &bob,
+        &path,
+        "PATCH",
+        json!({"sort_mode":"added","sort_direction":"desc"}),
+    )
+    .await;
+    assert!(sorted["revision"].as_i64().unwrap() > 1);
+    assert_eq!(
+        ok(&state, &alice, &path, "GET", Value::Null).await["sort_mode"],
+        "added"
+    );
+    for (method, body) in [
+        ("PATCH", json!({"name":"Hijack"})),
+        ("PATCH", access("private")),
+        ("DELETE", Value::Null),
+    ] {
+        assert_eq!(
+            call(&state, &bob, &path, method, body).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    // The add menu asks which playlists already hold a track.
+    let holding = ok(&state, &bob, "/playlists?track=a", "GET", Value::Null).await;
+    assert!(
+        holding["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|playlist| playlist["id"] == id && playlist["contains"] == true)
+    );
+    assert!(
+        ok(&state, &bob, "/playlists", "GET", Value::Null).await["items"][0]
+            .get("contains")
+            .is_none()
+    );
+
+    // A released desktop's whole-playlist save keeps the access and each track once.
+    let revision = ok(&state, &alice, &path, "GET", Value::Null).await["revision"].clone();
+    ok(
+        &state,
+        &alice,
+        &path,
+        "PUT",
+        json!({"name":"Mix","items":["b","a","b"],"revision":revision}),
+    )
+    .await;
+    assert_eq!(order().await, ["b", "a"]);
+    assert_eq!(
+        ok(&state, &alice, &path, "GET", Value::Null).await["access"],
+        "edit"
+    );
+
+    // Only tracks can be added.
+    assert_eq!(
+        call(&state, &alice, &items, "POST", json!({"items":["movie"]}))
+            .await
+            .0,
         StatusCode::BAD_REQUEST
     );
 }

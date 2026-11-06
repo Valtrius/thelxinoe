@@ -335,7 +335,7 @@ async fn watchlist_library_skips_a_single_list_and_restores_folders_per_user() {
         for (video, position) in [("bbbbbbbbbbb", 0), ("aaaaaaaaaaa", 1)] {
             db.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES('alice',?1,?2,?3,1)", rusqlite::params![default_list,video,position])?;
         }
-        db.execute("INSERT INTO playlists(id,owner_id,name,created_at,updated_at) VALUES('mix','alice','Music mix',1,1)", [])?;
+        db.execute("INSERT INTO playlists(id,owner_id,name,access,created_at,updated_at) VALUES('mix','alice','Music mix','read',1,1)", [])?;
         Ok(())
     }).await.unwrap();
     let mut tokens = Vec::new();
@@ -1248,9 +1248,9 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
         for (id,kind,parent) in [("artist","artist",None),("album","album",Some("artist")),("one","track",Some("album")),("two","track",Some("album"))] {
             db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES (?1,'music',?2,?3,?1,?1,1)",rusqlite::params![id,kind,parent])?;
         }
-        db.execute("INSERT INTO playlists(id,owner_id,name,created_at,updated_at) VALUES ('mix','alice','Shared mix',1,1)",[])?;
-        for (position,media) in ["two","one","two"].iter().enumerate() {
-            db.execute("INSERT INTO playlist_items VALUES ('mix',?1,?2)",rusqlite::params![position as i64,media])?;
+        db.execute("INSERT INTO playlists(id,owner_id,name,access,created_at,updated_at) VALUES ('mix','alice','Shared mix','read',1,1)",[])?;
+        for (position,media) in ["two","one"].iter().enumerate() {
+            db.execute("INSERT INTO playlist_items(playlist_id,media_id,position,added_at) VALUES ('mix',?1,?2,1)",rusqlite::params![media,position as i64])?;
         }
         Ok(())
     }).await.unwrap();
@@ -1289,19 +1289,19 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
     for path in ["/Playlists/mix/Items", "/Items?ParentId=mix"] {
         let (status, page) = call(&state, path, "GET", Value::Null, &bob).await;
         assert_eq!(status, StatusCode::OK, "{page}");
-        assert_eq!(page["TotalRecordCount"], 3);
+        assert_eq!(page["TotalRecordCount"], 2);
         let rows = page["Items"].as_array().unwrap();
         assert_eq!(
             rows.iter()
                 .map(|v| v["Id"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            vec!["two", "one", "two"]
+            vec!["two", "one"]
         );
-        assert_ne!(rows[0]["PlaylistItemId"], rows[2]["PlaylistItemId"]);
+        assert_ne!(rows[0]["PlaylistItemId"], rows[1]["PlaylistItemId"]);
     }
     let (status, page) = call(
         &state,
-        "/Playlists/mix/Items?StartIndex=2&Limit=1",
+        "/Playlists/mix/Items?StartIndex=1&Limit=1",
         "GET",
         Value::Null,
         &bob,
@@ -1309,7 +1309,28 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(page["Items"].as_array().unwrap().len(), 1);
-    assert_eq!(page["Items"][0]["Id"], "two");
+    assert_eq!(page["Items"][0]["Id"], "one");
+    // A private playlist exists only for its owner.
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute("UPDATE playlists SET access='private' WHERE id='mix'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for (headers, expected) in [(&bob, StatusCode::NOT_FOUND), (&alice, StatusCode::OK)] {
+        let (status, _) = call(&state, "/Playlists/mix/Items", "GET", Value::Null, headers).await;
+        assert_eq!(status, expected);
+    }
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute("UPDATE playlists SET access='read' WHERE id='mix'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     // Like Jellyfin, only an explicit Limit shortens a list, however long it is.
     state.db.write("test.fixture", |db| {
         let tx = db.transaction()?;
@@ -1319,9 +1340,9 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
         for number in 1..=600 {
             tx.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'shows','episode','long-1',?1,?2,?3,?3)",rusqlite::params![format!("long-e{number}"),format!("Episode {number:03}"),number])?;
         }
-        tx.execute("INSERT INTO playlists(id,owner_id,name,created_at,updated_at) VALUES ('long-mix','alice','Long mix',1,1)",[])?;
+        tx.execute("INSERT INTO playlists(id,owner_id,name,access,created_at,updated_at) VALUES ('long-mix','alice','Long mix','read',1,1)",[])?;
         for position in 0..150 {
-            tx.execute("INSERT INTO playlist_items VALUES ('long-mix',?1,?2)",rusqlite::params![position,["one","two"][position as usize % 2]])?;
+            tx.execute("INSERT INTO playlist_items(playlist_id,media_id,position,added_at) VALUES ('long-mix',?1,?2,1)",rusqlite::params![format!("long-e{}", position + 1),position])?;
         }
         tx.commit()?;
         Ok(())

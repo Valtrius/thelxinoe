@@ -5,7 +5,6 @@
     Film,
     Tv,
     Music,
-    ListMusic,
     ChartNoAxesCombined,
     Settings,
   } from '@lucide/svelte';
@@ -26,7 +25,6 @@
     Movies: Film,
     Shows: Tv,
     Music,
-    Playlists: ListMusic,
     YouTube: 'youtube',
     Twitch: 'twitch',
     Kick: 'kick',

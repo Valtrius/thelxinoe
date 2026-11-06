@@ -6,17 +6,18 @@
   import { api } from './api';
   import Button from './ui/Button.svelte';
 
-  let { id, kind, userId } = $props<{
+  let { id, kind } = $props<{
     id: string;
     kind: string;
-    userId: string;
   }>();
   type Flags = { favorite: boolean; watch_later: boolean; watched: boolean };
   let flags = $state<Flags | null>(null),
     error = $state(''),
     busy = $state(false),
     playlist = $state('');
-  let playlists = $state<{ id: string; name: string; owner_id: string }[]>([]),
+  let playlists = $state<
+      { id: string; name: string; can_add: boolean; contains?: boolean }[]
+    >([]),
     generation = 0;
   $effect(() => {
     const media = id,
@@ -34,9 +35,11 @@
       if (request !== generation) return;
       flags = result;
       if (type === 'track') {
-        const list = await api<{ items: typeof playlists }>('/playlists');
+        const list = await api<{ items: typeof playlists }>(
+          `/playlists?track=${encodeURIComponent(media)}`,
+        );
         if (request === generation)
-          playlists = list.items.filter((p) => p.owner_id === userId);
+          playlists = list.items.filter((p) => p.can_add);
       }
     } catch (e) {
       if (request === generation) error = String(e);
@@ -63,16 +66,10 @@
     busy = true;
     error = '';
     try {
-      const value = await api<{
-        name: string;
-        description: string;
-        revision: number;
-        items: { id: string }[];
-      }>(`/playlists/${playlist}`);
-      await api(`/playlists/${playlist}`, 'PUT', {
-        ...value,
-        items: [...value.items.map((i) => i.id), id],
-      });
+      await api(`/playlists/${playlist}/items`, 'POST', { items: [id] });
+      playlists = playlists.map((p) =>
+        p.id === playlist ? { ...p, contains: true } : p,
+      );
       playlist = '';
     } catch (e) {
       error = String(e);
@@ -111,8 +108,11 @@
       >{/if}
     {#if kind === 'track' && playlists.length}<FormField
         >Playlist<select class={formControlClass} bind:value={playlist}
-          ><option value="">Choose your playlist</option
-          >{#each playlists as p (p.id)}<option value={p.id}>{p.name}</option
+          ><option value="">Choose a playlist</option
+          >{#each playlists as p (p.id)}<option
+              value={p.id}
+              disabled={p.contains}
+              >{p.contains ? `In ${p.name}` : p.name}</option
             >{/each}</select
         ></FormField
       ><Button

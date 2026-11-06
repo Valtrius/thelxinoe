@@ -710,7 +710,7 @@ export async function installUiFixture(
       return json({ items: [], media_mount: '/media' });
     if (path === '/catalog/lookup')
       return json({ media_id: null, title: null, status: null });
-    if (['/catalog/collections', '/me/attention'].includes(path))
+    if (['/catalog/collections', '/me/attention', '/playlists'].includes(path))
       return json({ items: [] });
     if (path === '/requests/capabilities')
       return json({ movies: false, tv: false, music: false });

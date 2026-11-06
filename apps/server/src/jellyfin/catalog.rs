@@ -126,11 +126,11 @@ pub async fn browse(
         return Ok(value);
     }
     if let Some(id) = id {
-        if is_playlist(state, id).await? {
+        if is_playlist(state, p, id).await? {
             return playlists(state, p, Some(id), query).await;
         }
     } else if let Some(parent) = query.get("parentid")
-        && is_playlist(state, parent).await?
+        && is_playlist(state, p, parent).await?
     {
         return playlist_items(state, p, parent, query).await;
     }
@@ -353,9 +353,9 @@ fn timestamp(value: &str) -> Option<i64> {
         })
 }
 
-pub async fn is_playlist(state: &AppState, id: &str) -> Result<bool> {
+pub async fn is_playlist(state: &AppState, p: &Principal, id: &str) -> Result<bool> {
     let id = canonical(id);
-    Ok(storage::is_playlist(id, &state.db).await?)
+    Ok(storage::is_playlist(id, p.user.id.clone(), &state.db).await?)
 }
 pub async fn playlist_items(
     state: &AppState,
@@ -364,7 +364,7 @@ pub async fn playlist_items(
     query: &Query,
 ) -> Result<Value> {
     let id = canonical(id);
-    let (revision, tracks) = storage::playlist_items(id, &state.db)
+    let (revision, tracks) = storage::playlist_items(id, p.user.id.clone(), &state.db)
         .await?
         .ok_or_else(ApiError::not_found)?;
     let (start, limit) = page(query)?;

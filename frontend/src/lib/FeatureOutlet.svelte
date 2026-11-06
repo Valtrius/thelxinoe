@@ -36,11 +36,8 @@
 </script>
 
 {#snippet loading()}
-  {#if route.section === 'Settings' || route.section === 'Playlists'}
-    <ContentSkeleton
-      label={`Loading ${route.section.toLowerCase()}`}
-      variant={route.section === 'Settings' ? 'settings' : 'rows'}
-    />
+  {#if route.section === 'Settings'}
+    <ContentSkeleton label="Loading settings" variant="settings" />
   {:else if route.section === 'Statistics'}
     <ContentSkeleton label="Loading statistics" variant="statistics" />
   {:else if (route.section === 'Discover' && route.detail) || (['Movies', 'Shows', 'Music'].includes(route.section) && route.item)}
@@ -138,7 +135,9 @@
         />{/key}
     {:catch error}{@render failed(error)}{/await}
   {:else if route.section === 'Music'}
-    {#await pages.music()}{@render loading()}{:then { default: MusicSection }}
+    {#await pages.music()}<div class="p-6 narrow:p-4 compact:p-3">
+        {@render loading()}
+      </div>{:then { default: MusicSection }}
       <MusicSection {route} {user} {play} {go} {updateFilters} />
     {:catch error}{@render failed(error)}{/await}
   {:else if route.section === 'Movies' || route.section === 'Shows'}
@@ -155,16 +154,6 @@
         />
       {:catch error}{@render failed(error)}{/await}
     {/key}
-  {:else if route.section === 'Playlists'}
-    {#await pages.playlists()}{@render loading()}{:then { default: Playlists }}
-      <Playlists
-        userId={user.id}
-        {play}
-        selectedId={route.playlist}
-        selectedChanged={(playlist, replace) =>
-          go({ ...route, playlist }, replace)}
-      />
-    {:catch error}{@render failed(error)}{/await}
   {:else if route.section === 'Statistics'}
     {#await pages.statistics()}{@render loading()}{:then { default: StatisticsView }}
       <StatisticsView

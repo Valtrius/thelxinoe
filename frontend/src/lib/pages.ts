@@ -21,7 +21,6 @@ export const pages = {
   library: cached(() => import('./LibraryView.svelte')),
   music: cached(() => import('./music/MusicSection.svelte')),
   title: cached(() => import('./title/TitlePage.svelte')),
-  playlists: cached(() => import('./Playlists.svelte')),
   statistics: cached(() => import('./statistics/StatisticsView.svelte')),
   providers: cached(() => import('./providers/ProviderView.svelte')),
   settings: cached(() => import('./settings/SettingsPage.svelte')),
@@ -141,7 +140,6 @@ export async function preloadPage(route: AppRoute) {
     await pages.title();
   else if (route.section === 'Music') await pages.music();
   else if (['Movies', 'Shows'].includes(route.section)) await pages.library();
-  else if (route.section === 'Playlists') await pages.playlists();
   else if (route.section === 'Statistics') await pages.statistics();
   // The platform's view loads beside its page, not once the account arrives.
   else

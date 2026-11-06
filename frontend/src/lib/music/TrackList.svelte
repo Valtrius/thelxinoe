@@ -10,7 +10,6 @@
   let {
     tracks,
     album = false,
-    userId,
     play,
     details,
     openAlbum,
@@ -19,7 +18,6 @@
     tracks: MusicItem[];
     /** An album's tracklist: numbered, by disc. Other lists show each track's cover and album. */
     album?: boolean;
-    userId: string;
     play: (track: MusicItem) => void;
     details: (track: MusicItem) => void;
     openAlbum?: (track: MusicItem) => void;
@@ -28,13 +26,13 @@
   const discs = $derived(album && new Set(tracks.map(discNumber)).size > 1);
 </script>
 
-<div class="min-w-0 border border-line bg-surface">
+<div data-sidebar-panel class="min-w-0 border border-line bg-surface">
   {#if album}<div
       class="flex h-7.5 items-center gap-3 border-b border-line pr-2.5 pl-2.5 text-[10px] font-[550] tracking-[0.08em] text-muted uppercase"
       aria-hidden="true"
     >
       <span class="w-6 text-right">#</span><span class="flex-1">Title</span
-      ><Clock size={13} class="mr-1" />
+      ><Clock data-sidebar-resize="xy-pos" size={13} class="mr-1" />
     </div>{/if}
   <ol class="m-0 list-none p-0" aria-label={album ? 'Tracks' : 'Tracks list'}>
     {#each tracks as track, index (track.id)}
@@ -107,7 +105,6 @@
         >
           <TrackMenu
             {track}
-            {userId}
             play={() => play(track)}
             details={() => details(track)}
             openAlbum={openAlbum && track.parent_id

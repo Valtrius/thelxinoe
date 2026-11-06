@@ -551,7 +551,7 @@ test('the music dock slides in and out on the animation clock and comes back for
     page.evaluate(
       () => (window as unknown as { dock: Dock }).dock.slides.length,
     );
-  const workspace = page.locator('[data-feed-scroll]');
+  const workspace = page.locator('.workspace-scroll');
   const height = async () => (await workspace.boundingBox())!.height;
   const fullHeight = await height();
 

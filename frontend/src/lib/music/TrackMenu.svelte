@@ -1,6 +1,7 @@
 <script lang="ts">
   import { DropdownMenu } from 'bits-ui';
   import {
+    Check,
     Disc3,
     Ellipsis,
     Info,
@@ -11,17 +12,16 @@
     MicVocal,
     Play,
   } from '@lucide/svelte';
-  import { api } from '../api';
   import Button from '../ui/Button.svelte';
   import MenuBackdrop, { ignoreBackdrop } from '../ui/MenuBackdrop.svelte';
   import MenuSubContent from '../ui/MenuSubContent.svelte';
-  import { showToast } from '../providers/toasts';
   import { musicPlayer } from './player.svelte';
-  import { trackChoice, type MusicItem } from './library';
+  import type { MusicItem } from './library';
+  import type { Playlist } from './playlists.svelte';
+  import { addToPlaylist, addablePlaylists, queueTrack } from './track-actions';
 
-  let { track, userId, play, details, openAlbum, openArtist } = $props<{
+  let { track, play, details, openAlbum, openArtist } = $props<{
     track: MusicItem;
-    userId: string;
     play: () => void;
     details: () => void;
     /** Left out on the album's own page. */
@@ -30,50 +30,13 @@
     openArtist?: () => void;
   }>();
   let open = $state(false),
-    playlists = $state<{ id: string; name: string }[] | null>(null);
+    playlists = $state<Playlist[] | null>(null);
   const itemClass =
     'flex h-8 w-full cursor-default items-center gap-[0.55rem] whitespace-nowrap px-[0.55rem] text-left text-[0.7rem] text-muted outline-none data-[disabled]:opacity-45 data-[highlighted]:bg-accent-soft data-[highlighted]:text-foreground [&_svg]:size-[0.85rem] [&_svg]:shrink-0 compact:h-11 compact:text-[13px]';
   // Requested when the menu opens, so rows don't each read the playlists.
   async function loadPlaylists() {
-    if (playlists) return;
-    try {
-      const list = await api<{
-        items: { id: string; name: string; owner_id: string }[];
-      }>('/playlists');
-      playlists = list.items.filter((p) => p.owner_id === userId);
-    } catch {
-      playlists = [];
-    }
-  }
-  async function addTo(playlist: { id: string; name: string }) {
-    try {
-      const value = await api<{
-        name: string;
-        description: string;
-        revision: number;
-        items: { id: string }[];
-      }>(`/playlists/${playlist.id}`);
-      await api(`/playlists/${playlist.id}`, 'PUT', {
-        ...value,
-        items: [...value.items.map((i) => i.id), track.id],
-      });
-      showToast({
-        key: `playlist:${playlist.id}`,
-        tone: 'success',
-        title: playlist.name,
-        message: `Added ${track.title}.`,
-      });
-    } catch (e) {
-      showToast({
-        key: `playlist:${playlist.id}`,
-        tone: 'error',
-        title: playlist.name,
-        message: String(e),
-      });
-    }
-  }
-  function queue(next: boolean) {
-    musicPlayer.controls?.insert([trackChoice(track)], next);
+    playlists = null;
+    playlists = await addablePlaylists(track.id);
   }
 </script>
 
@@ -107,10 +70,14 @@
           ><Play />Play</DropdownMenu.Item
         >
         {#if musicPlayer.controls}
-          <DropdownMenu.Item class={itemClass} onSelect={() => queue(true)}
+          <DropdownMenu.Item
+            class={itemClass}
+            onSelect={() => queueTrack(track, true)}
             ><ListStart />Play next</DropdownMenu.Item
           >
-          <DropdownMenu.Item class={itemClass} onSelect={() => queue(false)}
+          <DropdownMenu.Item
+            class={itemClass}
+            onSelect={() => queueTrack(track, false)}
             ><ListEnd />Add to queue</DropdownMenu.Item
           >
         {/if}
@@ -119,7 +86,9 @@
         <DropdownMenu.SubTrigger class={itemClass}
           ><ListMusic />Add to playlist</DropdownMenu.SubTrigger
         >
-        <MenuSubContent class="min-w-48">
+        <MenuSubContent
+          class="max-w-80 min-w-48 compact:max-w-[calc(100vw-1rem)]"
+        >
           {#if !playlists}<p
               class="mb-0 flex items-center gap-2 px-[0.55rem] py-1.5 text-[0.7rem] text-muted"
             >
@@ -130,11 +99,15 @@
             </p>{:else if !playlists.length}<p
               class="mb-0 px-[0.55rem] py-1.5 text-[0.7rem] text-muted"
             >
-              Create a playlist in Playlists first.
+              No playlists to add to.
             </p>{:else}{#each playlists as playlist (playlist.id)}<DropdownMenu.Item
                 class={itemClass}
-                onSelect={() => void addTo(playlist)}
-                ><span class="truncate">{playlist.name}</span
+                disabled={playlist.contains}
+                onSelect={() => void addToPlaylist(playlist, [track])}
+                >{#if playlist.contains}<Check />{/if}<span class="truncate"
+                  >{playlist.contains
+                    ? `In ${playlist.name}`
+                    : playlist.name}</span
                 ></DropdownMenu.Item
               >{/each}{/if}
         </MenuSubContent>

@@ -21,6 +21,7 @@
   import MusicArt from './MusicArt.svelte';
   import FavoriteToggle from './FavoriteToggle.svelte';
   import ManageButton from './ManageButton.svelte';
+  import AddToPlaylist from './AddToPlaylist.svelte';
   import {
     albumTracks,
     artistTracks,
@@ -140,6 +141,7 @@
 <BackButton label={backLabel} {back} />
 <article class="grid min-w-0 gap-7" aria-label={artist.title}>
   <div
+    data-sidebar-panel
     class="relative isolate min-h-65 overflow-hidden border border-line bg-surface"
   >
     {#if art}<img
@@ -155,6 +157,7 @@
       class="flex min-h-65 items-end gap-6 p-6.5 compact:flex-col compact:items-start compact:gap-4 compact:p-5"
     >
       <MusicArt
+        data-sidebar-resize="xy-pos"
         url={art}
         class="size-37.5 border border-white/15 shadow-xl compact:size-28"
         sizes="10rem"
@@ -192,6 +195,10 @@
             ><Shuffle size={15} />Shuffle</Button
           >
           <FavoriteToggle id={artist.id} />
+          <AddToPlaylist
+            tracks={() => artistTracks(artist.id)}
+            disabled={!tracks}
+          />
           {#if admin}<ManageButton
               id={artist.id}
               kind="artist"

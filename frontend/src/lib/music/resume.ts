@@ -1,21 +1,34 @@
 import { serverUrl } from '../api';
 import type { MusicState } from '../gapless';
-import type { MediaChoice } from '../playback';
+import type { FollowedPlaylist, MediaChoice } from '../playback';
 
 const key = (user: string) => `thelxinoe:${serverUrl()}:${user}:music`;
 
 export function forgetMusic(user: string) {
   localStorage.removeItem(key(user));
 }
-export function saveMusic(user: string, state: MusicState) {
+export function saveMusic(
+  user: string,
+  state: MusicState,
+  playlist: FollowedPlaylist | null,
+) {
   if (state.finished) return forgetMusic(user);
   // A track being read has no position yet: the last one saved still holds.
   if (state.loading) return;
-  const { queue, index, position, duration, repeat, shuffle } = state;
+  const { queue, index, position, duration, repeat, shuffle, leaving } = state;
   try {
     localStorage.setItem(
       key(user),
-      JSON.stringify({ queue, index, position, duration, repeat, shuffle }),
+      JSON.stringify({
+        queue,
+        index,
+        position,
+        duration,
+        repeat,
+        shuffle,
+        leaving,
+        playlist,
+      }),
     );
   } catch {
     forgetMusic(user);
@@ -33,7 +46,12 @@ export function savedMusic(user: string): MediaChoice | null {
       duration: saved.duration || track.duration,
       queueIndex: saved.index,
       queue: saved.queue,
-      parked: { repeat: saved.repeat, shuffled: saved.shuffle },
+      parked: {
+        repeat: saved.repeat,
+        shuffled: saved.shuffle,
+        leaving: saved.leaving,
+      },
+      playlist: saved.playlist ?? undefined,
     };
   } catch {
     return null;

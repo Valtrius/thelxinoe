@@ -19,7 +19,6 @@ export function pageIdentity(route: AppRoute): string {
     route.item,
     route.ancestors,
     route.view,
-    route.playlist,
     route.watchlist,
   ]);
 }
@@ -336,7 +335,7 @@ export class PageTransition {
   async change(
     update: () => Promise<void>,
     restore: () => Promise<void>,
-    region?: 'settings' | 'service' | 'music',
+    region?: 'settings' | 'service' | 'music' | 'music-page',
   ) {
     const root = this.root;
     const content = () =>

@@ -196,6 +196,8 @@ function applyGridMetrics(
 }
 
 export function scaleCardScope(node: HTMLElement, initialColumns: number) {
+  // The sidebar's scope sizes these grids together with its sidebar.
+  if (node.closest('[data-sidebar-media-scope]')) return;
   let columns = initialColumns;
   let frame: number | null = null;
   let lastWidth: number | null = null;
@@ -309,8 +311,9 @@ export function scaleYoutubeMediaScope(
     );
   }
 
-  function scrollbarGutter() {
-    return feed ? Math.max(0, feed.offsetWidth - feed.clientWidth) : 0;
+  // The feed's scrollbar and padding, which the cards don't scale into.
+  function feedInset() {
+    return feed ? Math.max(0, feed.offsetWidth - contentWidth(feed)) : 0;
   }
 
   function apply(
@@ -456,7 +459,7 @@ export function scaleYoutubeMediaScope(
       frame = null;
       const width = node.clientWidth;
       const height = node.clientHeight;
-      const gutter = scrollbarGutter();
+      const gutter = feedInset();
       const widthChanged =
         lastWidth === null || Math.abs(width - lastWidth) >= 0.5;
       // Height only sizes the watchlist sidebar. Without it (mobile), the
@@ -470,7 +473,7 @@ export function scaleYoutubeMediaScope(
   }
 
   const synchronize = () =>
-    apply(node.clientWidth, node.clientHeight, scrollbarGutter());
+    apply(node.clientWidth, node.clientHeight, feedInset());
 
   function containsTarget(target: Node) {
     return (
@@ -495,14 +498,14 @@ export function scaleYoutubeMediaScope(
       )
     ) {
       refreshTargets();
-      apply(node.clientWidth, node.clientHeight, scrollbarGutter());
+      apply(node.clientWidth, node.clientHeight, feedInset());
     }
   });
   resizeObserver.observe(node);
   mutationObserver.observe(node, { childList: true, subtree: true });
   mediaLayoutSynchronizers.add(synchronize);
   refreshTargets();
-  apply(node.clientWidth, node.clientHeight, scrollbarGutter());
+  apply(node.clientWidth, node.clientHeight, feedInset());
 
   return {
     update(next: YoutubeScaleOptions) {
@@ -519,7 +522,7 @@ export function scaleYoutubeMediaScope(
       options = next;
       const width = node.clientWidth;
       const height = node.clientHeight;
-      const gutter = scrollbarGutter();
+      const gutter = feedInset();
       apply(
         width,
         height,

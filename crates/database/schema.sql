@@ -256,16 +256,22 @@ CREATE TABLE playlists (
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     revision INTEGER NOT NULL DEFAULT 1,
+    access TEXT NOT NULL DEFAULT 'private' CHECK(access IN ('private','read','add','edit')),
+    sort_mode TEXT NOT NULL DEFAULT 'manual' CHECK(sort_mode IN ('manual','added','title','artist')),
+    sort_direction TEXT NOT NULL DEFAULT 'asc' CHECK(sort_direction IN ('asc','desc')),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE playlist_items (
     playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
-    position INTEGER NOT NULL,
     media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    PRIMARY KEY(playlist_id, position)
+    position INTEGER NOT NULL,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY(playlist_id, media_id)
 ) STRICT;
+
+CREATE INDEX playlist_items_by_position ON playlist_items(playlist_id, position);
 
 CREATE TABLE playlist_favorites (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

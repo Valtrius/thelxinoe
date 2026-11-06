@@ -156,6 +156,37 @@ pub(super) async fn browse(
     }).await
 }
 
+/// A playlist's tracks in their manual order, without what only their own page shows, so a
+/// long playlist stays a small response.
+pub(super) async fn playlist_tracks(db: &Database, playlist: String) -> anyhow::Result<Vec<Value>> {
+    db.read("library.playlist_tracks", move |db| {
+        const TITLE: &str =
+            "COALESCE(json_extract(?.metadata,'$.title'),json_extract(?.metadata,'$.name'),?.title)";
+        let title = |alias: &str| TITLE.replace('?', alias);
+        let mut query = db.prepare(&format!(
+            "SELECT m.id,m.kind,{},m.parent_id,m.year,m.sort_number,'{{}}',
+                EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1),
+                (SELECT CAST(json_extract(f.probe,'$.format.duration') AS REAL) FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.id LIMIT 1),
+                NULL,NULL,NULL,{},{},album.parent_id,i.added_at
+            FROM playlist_items i JOIN media m ON m.id=i.media_id
+            LEFT JOIN media album ON album.id=m.parent_id
+            LEFT JOIN media artist ON artist.id=album.parent_id
+            WHERE i.playlist_id=?1 ORDER BY i.position",
+            title("m"),
+            title("album"),
+            title("artist"),
+        ))?;
+        Ok(query
+            .query_map([playlist], |r| {
+                let mut item = music_row(r)?;
+                item["added_at"] = json!(r.get::<_, i64>(15)?);
+                Ok(item)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+    .await
+}
+
 /// A browsed row with the music facts its kind carries, read after `media_row`'s columns.
 fn music_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let mut item = media_row(r)?;

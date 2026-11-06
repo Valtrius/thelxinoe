@@ -13,20 +13,17 @@ for (const [section, view, kind] of [
   ['Music', 'artists', 'artist'],
   ['Music', 'albums', 'album'],
   ['Music', 'tracks', 'track'],
-  ['Playlists', undefined, undefined],
 ] as const) {
   test(`${section}${view ? ` ${view}` : ''} reserves content while its first response is pending`, async ({
     page,
   }, testInfo) => {
     const fixture = await installUiFixture(page, { section });
     const gate = responseGate();
-    const endpoint =
-      section === 'Playlists' ? '**/api/v1/playlists' : '**/api/v1/catalog?**';
+    const endpoint = '**/api/v1/catalog?**';
     const title = kind ? `Fixture ${kind} 0` : 'Fixture movie 0';
     await page.route(endpoint, async (route) => {
       await gate.promise;
-      if (section === 'Playlists') await route.fulfill({ json: { items: [] } });
-      else if (kind) {
+      if (kind) {
         const params = new URL(route.request().url()).searchParams;
         const total = params.get('kind') === kind ? 1 : 0;
         await route.fulfill({
@@ -63,22 +60,13 @@ for (const [section, view, kind] of [
       await expect(page.getByText('No music yet', { exact: true })).toHaveCount(
         0,
       );
-      await expect(
-        page.getByText('Create a playlist or save tracks from Music.', {
-          exact: true,
-        }),
-      ).toHaveCount(0);
       await testInfo.attach('pending-content', {
         body: await page.screenshot(),
         contentType: 'image/png',
       });
       gate.release();
       await expect(loading).toHaveCount(0);
-      if (section === 'Playlists')
-        await expect(
-          page.getByText('Create a playlist or save tracks from Music.'),
-        ).toBeVisible();
-      else if (view === 'tracks')
+      if (view === 'tracks')
         await expect(
           page.getByRole('button', { name: `Play ${title}`, exact: true }),
         ).toBeVisible();
@@ -661,7 +649,7 @@ for (const startup of [
 test('a restored session reads the server and the session together and loads its page code meanwhile', async ({
   page,
 }) => {
-  const fixture = await installUiFixture(page, { section: 'Playlists' });
+  const fixture = await installUiFixture(page, { section: 'Music' });
   const health = responseGate();
   const ticket = responseGate();
   const asked = new Set<string>();
@@ -683,20 +671,17 @@ test('a restored session reads the server and the session together and loads its
     await ticket.promise;
     await route.fallback();
   });
-  await page.route('**/api/v1/playlists', (route) =>
-    route.fulfill({ json: { items: [] } }),
-  );
   try {
     await page.goto('/');
     await expect.poll(() => asked.size).toBe(3);
     health.release();
     // The page's code downloads while the session's data waits.
     await expect
-      .poll(() => code.some((path) => /\/Playlists-[\w-]+\.js$/.test(path)))
+      .poll(() => code.some((path) => /\/MusicSection-[\w-]+\.js$/.test(path)))
       .toBe(true);
     ticket.release();
     await expect(
-      page.getByRole('button', { name: 'New playlist', exact: true }),
+      page.getByRole('button', { name: 'Open playlists', exact: true }),
     ).toBeVisible();
     expect(fixture.errors).toEqual([]);
     expect(fixture.unexpected).toEqual([]);

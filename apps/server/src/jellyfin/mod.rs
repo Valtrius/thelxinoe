@@ -348,7 +348,7 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
                 return Err(ApiError::forbidden());
             }
             let can_edit = item.as_ref().is_some_and(|i| i.kind == "watchlist");
-            if !can_edit && !catalog::is_playlist(&state, &canonical(parts[1])).await? {
+            if !can_edit && !catalog::is_playlist(&state, &p, &canonical(parts[1])).await? {
                 return Err(ApiError::not_found());
             }
             return Ok(axum::Json(json!({"UserId":p.user.id,"CanEdit":can_edit})).into_response());
@@ -379,7 +379,7 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
             let id = canonical(id);
             if let Some(item) = online::resolve(&state, &p, &id).await? {
                 online::set_flag(&state, &p, &item, favorite, method == "POST").await?;
-            } else if favorite && catalog::is_playlist(&state, &id).await? {
+            } else if favorite && catalog::is_playlist(&state, &p, &id).await? {
                 crate::playlists::favorite_for(&state, &p, &id, method == "POST").await?;
             } else {
                 crate::user_media::set_for(

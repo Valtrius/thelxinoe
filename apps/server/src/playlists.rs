@@ -4,12 +4,12 @@ mod storage;
 use crate::{
     AppState,
     error::{ApiError, Result},
-    security,
-    user_media::{card, validate_tracks},
+    library, security,
+    user_media::validate_tracks,
 };
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
 };
 use rusqlite::{OptionalExtension, params};
@@ -17,9 +17,49 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use thelxinoe_core::{Principal, id, now};
 
-pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
+/// Why a playlist change was refused.
+enum Refusal {
+    Invalid,
+    Forbidden,
+    Missing,
+    Stale,
+    NameTaken,
+}
+impl From<Refusal> for ApiError {
+    fn from(refusal: Refusal) -> Self {
+        match refusal {
+            Refusal::Invalid => {
+                ApiError::bad("Use catalog music tracks and at most 100 owned playlists")
+            }
+            Refusal::Forbidden => ApiError::forbidden(),
+            Refusal::Missing => ApiError::not_found(),
+            Refusal::Stale => ApiError::conflict("This playlist changed; reload before editing"),
+            Refusal::NameTaken => ApiError::conflict("You already have a playlist with this name"),
+        }
+    }
+}
+fn name_valid(name: &str) -> bool {
+    !name.trim().is_empty() && name.len() <= 160
+}
+async fn changed(state: &AppState, id: &str) -> Result<()> {
+    state
+        .emit(None, "playlists.changed", json!({"id":id}))
+        .await?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct Listing {
+    /// Also says whether each playlist holds this track.
+    track: Option<String>,
+}
+pub async fn list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(input): Query<Listing>,
+) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    let items = storage::list(&state.db, p).await?;
+    let items = storage::list(&state.db, p, input.track).await?;
     Ok(Json(json!({"items":items})))
 }
 
@@ -29,9 +69,13 @@ pub async fn detail(
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    let result = storage::detail(&state.db, id, p).await?;
-    Ok(Json(result.ok_or_else(ApiError::not_found)?))
+    let mut playlist = storage::detail(&state.db, id.clone(), p.user.id.clone())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    playlist["items"] = json!(library::playlist_tracks(&state, &p, id).await?);
+    Ok(Json(playlist))
 }
+/// A whole playlist, as released desktops save it.
 #[derive(Deserialize)]
 pub struct Save {
     name: String,
@@ -60,38 +104,99 @@ pub async fn update(
     save(&state, p, Some(id), input).await.map(Json)
 }
 async fn save(state: &AppState, p: Principal, key: Option<String>, input: Save) -> Result<Value> {
-    if input.name.trim().is_empty()
-        || input.name.len() > 160
-        || input.description.len() > 2000
-        || input.items.len() > 500
-    {
+    if !name_valid(&input.name) || input.description.len() > 2000 {
         return Err(ApiError::bad(
-            "Enter a name, a description up to 2,000 characters and up to 500 tracks",
+            "Enter a name up to 160 characters and a description up to 2,000",
         ));
     }
     let creating = key.is_none();
     let key = key.unwrap_or_else(id);
     let playlist = key.clone();
-    let result = storage::save(creating, key, &state.db, p, input).await?;
-    match result {
-        400 => {
-            return Err(ApiError::bad(
-                "Use catalog music tracks and at most 100 owned playlists",
-            ));
-        }
-        403 => return Err(ApiError::forbidden()),
-        404 => return Err(ApiError::not_found()),
-        409 => {
-            return Err(ApiError::conflict(
-                "This playlist changed; reload before editing",
-            ));
-        }
-        _ => {}
-    }
-    state
-        .emit(None, "playlists.changed", json!({"id":playlist}))
-        .await?;
+    storage::save(creating, key, &state.db, p, input).await??;
+    changed(state, &playlist).await?;
     Ok(json!({"id":playlist}))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Change {
+    name: Option<String>,
+    access: Option<String>,
+    sort_mode: Option<String>,
+    sort_direction: Option<String>,
+}
+pub async fn change(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(input): Json<Change>,
+) -> Result<Json<Value>> {
+    let p = security::principal(&state, &headers).await?;
+    if input.name.as_deref().is_some_and(|name| !name_valid(name))
+        || input
+            .access
+            .as_deref()
+            .is_some_and(|access| !["private", "read", "add", "edit"].contains(&access))
+        || input
+            .sort_mode
+            .as_deref()
+            .is_some_and(|mode| !["manual", "added", "title", "artist"].contains(&mode))
+        || input
+            .sort_direction
+            .as_deref()
+            .is_some_and(|direction| !["asc", "desc"].contains(&direction))
+    {
+        return Err(ApiError::bad("Invalid playlist settings"));
+    }
+    let revision = storage::change(&state.db, id.clone(), p.user.id, input).await??;
+    changed(&state, &id).await?;
+    Ok(Json(json!({"revision":revision})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tracks {
+    items: Vec<String>,
+}
+pub async fn add_items(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(input): Json<Tracks>,
+) -> Result<Json<Value>> {
+    let p = security::principal(&state, &headers).await?;
+    let (added, revision) =
+        storage::add_items(&state.db, id.clone(), p.user.id, input.items).await??;
+    if added > 0 {
+        changed(&state, &id).await?;
+    }
+    Ok(Json(json!({"added":added,"revision":revision})))
+}
+pub async fn remove_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, media)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    let p = security::principal(&state, &headers).await?;
+    let revision = storage::remove_item(&state.db, id.clone(), p.user.id, media).await??;
+    changed(&state, &id).await?;
+    Ok(Json(json!({"revision":revision})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Move {
+    /// The track it now comes before; none moves it to the end.
+    before: Option<String>,
+}
+pub async fn move_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, media)): Path<(String, String)>,
+    Json(input): Json<Move>,
+) -> Result<Json<Value>> {
+    let p = security::principal(&state, &headers).await?;
+    let revision =
+        storage::move_item(&state.db, id.clone(), p.user.id, media, input.before).await??;
+    changed(&state, &id).await?;
+    Ok(Json(json!({"revision":revision})))
 }
 pub async fn remove(
     State(state): State<AppState>,
@@ -99,17 +204,8 @@ pub async fn remove(
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    let key = id.clone();
-    let code = storage::remove(&state.db, p, key).await?;
-    if code == 404 {
-        return Err(ApiError::not_found());
-    }
-    if code == 403 {
-        return Err(ApiError::forbidden());
-    }
-    state
-        .emit(None, "playlists.changed", json!({"id":id}))
-        .await?;
+    storage::remove(&state.db, p, id.clone()).await??;
+    changed(&state, &id).await?;
     Ok(Json(json!({"deleted":true})))
 }
 #[derive(Deserialize)]

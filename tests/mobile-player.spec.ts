@@ -88,12 +88,10 @@ test('desktop watchlists retain hover actions and immediate row dragging', async
     .getByRole('button', { name: 'Open watchlists', exact: true })
     .click();
   const sidebar = page.locator('[data-youtube-watchlist-frame]');
-  const rows = sidebar.locator('[data-watchlist-video-id]');
+  const rows = sidebar.locator('[data-list-item-key]');
   const ids = () =>
     rows.evaluateAll((elements) =>
-      elements.map(
-        (element) => (element as HTMLElement).dataset.watchlistVideoId!,
-      ),
+      elements.map((element) => (element as HTMLElement).dataset.listItemKey!),
     );
   const initial = await ids();
   await expect(sidebar.getByRole('button', { name: /^Reorder / })).toHaveCount(
@@ -537,11 +535,11 @@ test.describe('mobile player gestures', () => {
       name: 'YouTube watchlists',
       exact: true,
     });
-    const rows = drawer.locator('[data-watchlist-video-id]');
+    const rows = drawer.locator('[data-list-item-key]');
     const ids = () =>
       rows.evaluateAll((elements) =>
         elements.map(
-          (element) => (element as HTMLElement).dataset.watchlistVideoId!,
+          (element) => (element as HTMLElement).dataset.listItemKey!,
         ),
       );
     const initial = await ids();

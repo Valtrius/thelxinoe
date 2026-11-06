@@ -676,48 +676,140 @@ export async function mediaApi(s, c) {
         })),
       next_before: null,
     });
+  const playlistView = (p) => {
+    const me = viewer(s);
+    const owns = p.owner_id === me.id;
+    return {
+      id: p.id,
+      name: p.name,
+      description: p.description,
+      owner_id: p.owner_id,
+      owner: p.owner,
+      revision: p.revision,
+      favorite: p.favorite,
+      count: p.items.length,
+      access: p.access,
+      sort_mode: p.sort_mode,
+      sort_direction: p.sort_direction,
+      is_owner: owns,
+      can_add: owns || ['add', 'edit'].includes(p.access),
+      can_edit: owns || p.access === 'edit',
+    };
+  };
+  const playlistVisible = (p) =>
+    p.owner_id === viewer(s).id || p.access !== 'private';
+  const playlistName = (name, except) => {
+    const clash = s.playlists.some(
+      (p) =>
+        p !== except &&
+        p.owner_id === viewer(s).id &&
+        p.name.toLowerCase() === name.toLowerCase(),
+    );
+    return clash
+      ? fail(409, 'You already have a playlist with this name')
+      : null;
+  };
   if (path === '/playlists') {
     if (method === 'POST') {
+      const clash = playlistName(body.name);
+      if (clash) return clash;
       const id = `playlist-${++s.sequence}`;
       s.playlists.push({
         id,
         name: body.name,
-        description: body.description ?? '',
+        description: '',
         owner_id: viewer(s).id,
         owner: viewer(s).username,
         revision: 1,
         favorite: false,
-        items: (body.items ?? [])
-          .map((id) => s.library.find((item) => item.id === id))
-          .filter(Boolean),
+        access: 'private',
+        sort_mode: 'manual',
+        sort_direction: 'asc',
+        items: [],
       });
-      return json(s.playlists.at(-1));
+      return json({ id });
     }
+    const track = query.get('track');
     return json({
-      items: s.playlists.map((p) => ({ ...p, count: p.items.length })),
+      items: s.playlists
+        .filter(playlistVisible)
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((p) => ({
+          ...playlistView(p),
+          ...(track && { contains: p.items.some((i) => i.id === track) }),
+        })),
     });
   }
-  const playlist = path.match(/^\/playlists\/([^/]+)(?:\/(favorite))?$/);
+  const playlist = path.match(
+    /^\/playlists\/([^/]+)(?:\/(favorite)|\/items(?:\/([^/]+)(\/move)?)?)?$/,
+  );
   if (playlist) {
     const p = s.playlists.find((p) => p.id === playlist[1]);
-    if (!p) return fail(404, 'Playlist not found');
+    if (!p || !playlistVisible(p)) return fail(404, 'Playlist not found');
+    const rights = playlistView(p);
+    const media = playlist[3] && decodeURIComponent(playlist[3]);
+    if (path.endsWith('/favorite')) {
+      p.favorite = body.favorite ?? !p.favorite;
+      return json(rights);
+    }
+    if (path.endsWith('/items')) {
+      if (!rights.can_add) return fail(403, 'Not allowed');
+      const added = [...new Set(body.items)]
+        .filter((id) => !p.items.some((i) => i.id === id))
+        .map((id) => s.library.find((i) => i.id === id))
+        .filter(Boolean);
+      p.items.push(...added);
+      for (const item of added) (p.added ??= {})[item.id] = now();
+      if (added.length) p.revision++;
+      return json({ added: added.length, revision: p.revision });
+    }
+    if (media) {
+      if (!rights.can_edit) return fail(403, 'Not allowed');
+      const moved = p.items.find((i) => i.id === media);
+      if (!moved) return fail(404, 'Track not found');
+      p.items = p.items.filter((i) => i !== moved);
+      if (playlist[4]) {
+        const at = p.items.findIndex((i) => i.id === body.before);
+        p.items.splice(at < 0 ? p.items.length : at, 0, moved);
+      }
+      p.revision++;
+      return json({ revision: p.revision });
+    }
     if (method === 'DELETE') {
+      if (!rights.is_owner) return fail(403, 'Not allowed');
       s.playlists = s.playlists.filter((item) => item !== p);
       return json({ deleted: true });
     }
-    if (method === 'PUT' || method === 'POST') {
-      if (playlist[2]) p.favorite = body.favorite ?? !p.favorite;
-      else {
-        if (body.name !== undefined) p.name = body.name;
-        if (body.description !== undefined) p.description = body.description;
-        if (body.items)
-          p.items = body.items
-            .map((id) => s.library.find((item) => item.id === id))
-            .filter(Boolean);
-        p.revision++;
+    if (method === 'PATCH') {
+      if (
+        body.sort_mode !== undefined || body.sort_direction !== undefined
+          ? !rights.can_edit
+          : !rights.is_owner
+      )
+        return fail(403, 'Not allowed');
+      if (body.name !== undefined) {
+        const clash = playlistName(body.name, p);
+        if (clash) return clash;
       }
+      for (const key of ['name', 'access', 'sort_mode', 'sort_direction'])
+        if (body[key] !== undefined) p[key] = body[key];
+      p.revision++;
+      return json({ revision: p.revision });
     }
-    return json({ ...p, count: p.items.length });
+    return json({
+      ...rights,
+      items: p.items.map((item, position) => {
+        const album = s.library.find((entry) => entry.id === item.parent_id);
+        const artist = s.library.find((entry) => entry.id === album?.parent_id);
+        return {
+          ...card(item),
+          album: album?.title ?? null,
+          artist: artist?.title ?? null,
+          artist_id: artist?.id ?? null,
+          added_at: p.added?.[item.id] ?? 1000 + position,
+        };
+      }),
+    });
   }
   // Service scenarios can remove Seerr or a manager.
   if (path === '/seerr/status') {

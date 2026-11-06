@@ -115,219 +115,6 @@ test('library filters retain workspace scroll when the results still fit it', as
   expect(fixture.unexpected).toEqual([]);
 });
 
-for (const decision of [
-  'unchanged',
-  'saved',
-  'replace',
-  'racing replace',
-] as const) {
-  test(`retained playlist draft keeps its original revision with ${decision} changes`, async ({
-    page,
-  }, testInfo) => {
-    const fixture = await installUiFixture(page, { section: 'Playlists' });
-    let playlist = {
-      id: 'shared',
-      name: 'Shared playlist',
-      description: '',
-      owner_id: 'layout-fixture',
-      owner: 'Viewer',
-      favorite: false,
-      count: 1,
-      revision: 1,
-      items: [
-        {
-          id: 'original',
-          kind: 'track',
-          title: 'Original track',
-          available: true,
-        },
-      ],
-    };
-    const writes: { revision: number; name: string; items: string[] }[] = [];
-    const conflictReload = responseGate();
-    let conflictReloadStarted = false;
-    await page.route('**/api/v1/playlists**', async (route) => {
-      const path = new URL(route.request().url()).pathname;
-      if (route.request().method() === 'PUT') {
-        const body = route.request().postDataJSON();
-        writes.push(body);
-        if (decision === 'racing replace' && writes.length === 1)
-          playlist = {
-            ...playlist,
-            revision: 3,
-            count: 3,
-            items: [
-              ...playlist.items,
-              {
-                id: 'later',
-                kind: 'track',
-                title: 'Later track',
-                available: true,
-              },
-            ],
-          };
-        if (body.revision !== playlist.revision)
-          return route.fulfill({
-            status: 409,
-            json: {
-              error: {
-                code: 'conflict',
-                message: 'This playlist changed; reload before editing',
-              },
-            },
-          });
-        playlist = {
-          ...playlist,
-          name: body.name,
-          revision: playlist.revision + 1,
-          items: body.items.map((id: string) => ({
-            id,
-            kind: 'track',
-            title:
-              id === 'remote'
-                ? 'Remote track'
-                : id === 'later'
-                  ? 'Later track'
-                  : 'Original track',
-            available: true,
-          })),
-        };
-        return route.fulfill({ json: { id: playlist.id } });
-      }
-      if (
-        decision === 'racing replace' &&
-        writes.length === 1 &&
-        path.endsWith('/shared')
-      ) {
-        conflictReloadStarted = true;
-        await conflictReload.promise;
-      }
-      return route.fulfill({
-        json: path.endsWith('/playlists') ? { items: [playlist] } : playlist,
-      });
-    });
-    await page.goto('/#playlists/shared');
-    const name = page.getByLabel('Playlist name', { exact: true });
-    await name.fill('Local draft');
-    await page.getByRole('link', { name: 'Movies', exact: true }).click();
-    if (decision !== 'unchanged')
-      playlist = {
-        ...playlist,
-        revision: 2,
-        count: 2,
-        items: [
-          ...playlist.items,
-          {
-            id: 'remote',
-            kind: 'track',
-            title: 'Remote track',
-            available: true,
-          },
-        ],
-      };
-    await page.goBack();
-    await expect(name).toHaveValue('Local draft');
-    if (decision !== 'unchanged') {
-      await expect(page.getByRole('alert')).toContainText('changed elsewhere');
-      await expect(
-        page.getByRole('button', { name: 'Save playlist', exact: true }),
-      ).toBeDisabled();
-      await page.getByRole('link', { name: 'Movies', exact: true }).click();
-      await page.goBack();
-      await expect(page.getByRole('alert')).toContainText('changed elsewhere');
-      expect(writes).toEqual([]);
-      await page.getByText('Saved playlist', { exact: true }).click();
-      await expect(page.getByRole('alert')).toContainText('Remote track');
-      await page.screenshot({
-        path: testInfo.outputPath('playlist-conflict.png'),
-      });
-      if (decision === 'saved') {
-        await page
-          .getByRole('button', { name: 'Use saved playlist', exact: true })
-          .click();
-        await expect(name).toHaveValue('Shared playlist');
-        await expect(
-          page.getByText('2. Remote track', { exact: true }),
-        ).toBeVisible();
-        await name.fill('Merged name');
-        await page
-          .getByRole('button', { name: 'Save playlist', exact: true })
-          .click();
-      } else {
-        await page
-          .getByRole('button', { name: 'Replace with my draft', exact: true })
-          .click();
-        if (decision === 'racing replace') {
-          await expect.poll(() => conflictReloadStarted).toBe(true);
-          await page.screenshot({
-            path: testInfo.outputPath('playlist-conflict-refresh-pending.png'),
-          });
-          await expect(page.getByRole('alert')).toHaveCount(1);
-          await expect(name).toHaveValue('Local draft');
-          await expect(
-            page.getByRole('button', {
-              name: 'Replace with my draft',
-              exact: true,
-            }),
-          ).toBeDisabled();
-          conflictReload.release();
-          await expect(page.getByRole('alert')).toContainText('Later track');
-          await expect(name).toHaveValue('Local draft');
-          await expect(
-            page.getByRole('button', { name: 'Save playlist', exact: true }),
-          ).toBeDisabled();
-          expect(writes).toHaveLength(1);
-          expect(writes[0]).toMatchObject({ revision: 2, items: ['original'] });
-          await page
-            .getByRole('button', { name: 'Use saved playlist', exact: true })
-            .click();
-          await expect(
-            page.getByText('3. Later track', { exact: true }),
-          ).toBeVisible();
-          await name.fill('Merged name');
-          await page
-            .getByRole('button', { name: 'Save playlist', exact: true })
-            .click();
-        }
-      }
-    } else
-      await page
-        .getByRole('button', { name: 'Save playlist', exact: true })
-        .click();
-    await expect
-      .poll(() => writes.length)
-      .toBe(decision === 'racing replace' ? 2 : 1);
-    const saved = writes.at(-1)!;
-    expect(saved.revision).toBe(
-      decision === 'unchanged' ? 1 : decision === 'racing replace' ? 3 : 2,
-    );
-    expect(saved.items).toEqual(
-      decision === 'saved'
-        ? ['original', 'remote']
-        : decision === 'racing replace'
-          ? ['original', 'remote', 'later']
-          : ['original'],
-    );
-    await expect(name).toHaveValue(
-      decision === 'saved' || decision === 'racing replace'
-        ? 'Merged name'
-        : 'Local draft',
-    );
-    await expect(
-      page.getByText('Unsaved playlist draft', { exact: true }),
-    ).toHaveCount(0);
-    await testInfo.attach('playlist-revision-decision', {
-      body: JSON.stringify({ decision, writes, playlist }),
-      contentType: 'application/json',
-    });
-    await page.screenshot({
-      path: testInfo.outputPath('playlist-conflict-resolved.png'),
-    });
-    expect(fixture.errors).toEqual([]);
-    expect(fixture.unexpected).toEqual([]);
-  });
-}
-
 async function routeYoutubeWatchlists(page: Page, names: string[]) {
   await page.route('**/api/v1/online/youtube', (route) =>
     route.fulfill({
@@ -578,7 +365,7 @@ test('the server alone removes a watched video from an auto-remove watchlist', a
   await page.clock.install();
   await page.goto('/#online/youtube/watchlists/1');
   await expect.poll(events.connected).toBe(true);
-  const row = page.locator(`[data-watchlist-video-id="${video.videoId}"]`);
+  const row = page.locator(`[data-list-item-key="${video.videoId}"]`);
   await row.hover();
   await row.getByRole('button', { name: 'Mark watched', exact: true }).click();
   // The watched video stays listed past the removal delay; the client never
@@ -849,19 +636,22 @@ test.describe('a track menu on a phone', () => {
         },
       }),
     );
-    await page.route('**/api/v1/playlists', (route) =>
+    await page.route(/\/api\/v1\/playlists(\?|$)/, (route) =>
       route.fulfill({
         json: {
           items: [
-            { id: 'short', name: 'Road trip', owner_id: 'layout-fixture' },
+            { id: 'short', name: 'Road trip', can_add: true },
             {
               id: 'long',
               name: 'A playlist with a name far wider than any phone can show on one line',
-              owner_id: 'layout-fixture',
+              can_add: true,
             },
           ],
         },
       }),
+    );
+    await page.route('**/api/v1/playlists/*', (route) =>
+      route.fulfill({ json: { revision: 1, items: [] } }),
     );
     await page.goto('/#library/music?view=tracks');
     await page
@@ -918,7 +708,7 @@ test('a music list keeps paging after a search replaces it while a page loads', 
   });
   const scrollToEnd = () =>
     page
-      .locator('.workspace-scroll')
+      .locator('[data-music-scroll]')
       .evaluate((element) => element.scrollTo(0, element.scrollHeight));
   await page.goto('/#library/music?view=tracks');
   await expect(
@@ -935,81 +725,6 @@ test('a music list keeps paging after a search replaces it while a page loads', 
   held.release();
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
-});
-
-test('playlist drafts survive leaving the editor and can be discarded explicitly', async ({
-  page,
-}, testInfo) => {
-  const fixture = await installUiFixture(page, { section: 'Playlists' });
-  await page.route('**/api/v1/playlists**', (route) =>
-    route.fulfill({ json: { items: [] } }),
-  );
-  await page.goto('/#playlists/new');
-  const name = page.getByLabel('Playlist name', { exact: true });
-  await name.fill('Unfinished playlist');
-  await page.getByRole('link', { name: 'Movies', exact: true }).click();
-  await expect(page.locator('.page-header h1')).toHaveText('Movies');
-  await page.goBack();
-  await expect(name).toHaveValue('Unfinished playlist');
-  await expect(
-    page.getByText('Unsaved playlist draft', { exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole('button', { name: 'Discard changes', exact: true })
-    .click();
-  await expect(name).toHaveValue('');
-  expect(fixture.errors).toEqual([]);
-  expect(fixture.unexpected).toEqual([]);
-  await testInfo.attach('retained-draft', {
-    body: await page.screenshot(),
-    contentType: 'image/png',
-  });
-});
-
-test('saving a new playlist replaces its creation URL and clears the new draft', async ({
-  page,
-}, testInfo) => {
-  const fixture = await installUiFixture(page, { section: 'Playlists' });
-  let playlist: Record<string, unknown> | undefined;
-  await page.route('**/api/v1/playlists**', (route) => {
-    if (route.request().method() === 'POST') {
-      playlist = {
-        ...route.request().postDataJSON(),
-        id: 'created',
-        owner_id: 'layout-fixture',
-        owner: 'Viewer',
-        count: 0,
-        revision: 1,
-        items: [],
-      };
-      return route.fulfill({ json: { id: 'created' } });
-    }
-    return route.fulfill({
-      json: route.request().url().endsWith('/playlists')
-        ? { items: playlist ? [playlist] : [] }
-        : playlist,
-    });
-  });
-  await page.goto('/#playlists/new');
-  const name = page.getByLabel('Playlist name', { exact: true });
-  await name.fill('Created playlist');
-  await page
-    .getByRole('button', { name: 'Save playlist', exact: true })
-    .click();
-  await expect(page).toHaveURL(/#playlists\/created$/);
-  await expect(name).toHaveValue('Created playlist');
-  await page.getByRole('button', { name: 'New playlist', exact: true }).click();
-  await expect(name).toHaveValue('');
-  await page.goBack();
-  await expect(name).toHaveValue('Created playlist');
-  await page.reload();
-  await expect(name).toHaveValue('Created playlist');
-  expect(fixture.errors).toEqual([]);
-  expect(fixture.unexpected).toEqual([]);
-  await testInfo.attach('created-playlist-route', {
-    body: await page.screenshot(),
-    contentType: 'image/png',
-  });
 });
 
 test('service selection is addressable and restored by browser history', async ({
