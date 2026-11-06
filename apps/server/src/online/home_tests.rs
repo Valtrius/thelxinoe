@@ -4,6 +4,60 @@ use rusqlite::params;
 use serde_json::{Value, json};
 
 #[tokio::test]
+async fn marking_a_video_unwatched_rewinds_it_unless_the_mark_is_undone() {
+    let (_temp, state, alice) = fixture().await;
+    state.db.write("test.home", |db| {
+        db.execute("INSERT INTO youtube_videos(user_id,video_id,title,channel_id,published_at,duration,broadcast,is_short,available,privacy) VALUES('alice','aaaaaaaaaaa','Video','direct',100,600,'none',0,1,'public')", [])?;
+        db.execute("INSERT INTO youtube_state(user_id,video_id,position,updated_at) VALUES('alice','aaaaaaaaaaa',40,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    let edit = async |body: Value| {
+        let path = "/api/v1/online/youtube/videos/aaaaaaaaaaa";
+        let response = call(&state, path, "PUT", body, &alice).await;
+        assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+        state
+            .db
+            .read("test.home", |db| {
+                Ok(db.query_row(
+                    "SELECT watched,position FROM youtube_state WHERE user_id='alice'",
+                    [],
+                    |r| Ok((r.get::<_, bool>(0)?, r.get::<_, f64>(1)?)),
+                )?)
+            })
+            .await
+            .unwrap()
+    };
+    let resuming = async || {
+        call(
+            &state,
+            "/api/v1/online/youtube/home",
+            "GET",
+            Value::Null,
+            &alice,
+        )
+        .await
+        .2["continue_watching"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(edit(json!({"watched":true})).await, (true, 40.));
+    assert_eq!(
+        edit(json!({"watched":false,"position":40})).await,
+        (false, 40.)
+    );
+    assert_eq!(resuming().await, 1);
+    assert_eq!(edit(json!({"pinned":true})).await, (false, 40.));
+    edit(json!({"watched":true})).await;
+    assert_eq!(edit(json!({"watched":false})).await, (false, 0.));
+    assert_eq!(resuming().await, 0);
+    assert_eq!(
+        edit(json!({"watched":false,"position":-5})).await,
+        (false, 0.)
+    );
+}
+
+#[tokio::test]
 async fn home_progress_includes_direct_videos_and_keeps_unstarted_subscriptions_private() {
     let (_temp, state, alice) = fixture().await;
     state.db.write("test.home", |db| {

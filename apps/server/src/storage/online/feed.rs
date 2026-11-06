@@ -51,7 +51,7 @@ pub(super) async fn edit_for(
             if count>=1000 {return Ok(2);}
         }
         tx.execute("INSERT INTO youtube_state(user_id,video_id,updated_at) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",params![user,video,now()])?;
-        tx.execute("UPDATE youtube_state SET pinned=COALESCE(?1,pinned),watched=COALESCE(?2,watched),updated_at=?3 WHERE user_id=?4 AND video_id=?5",params![input.pinned,input.watched,now(),user,video])?;
+        tx.execute("UPDATE youtube_state SET pinned=COALESCE(?1,pinned),watched=COALESCE(?2,watched),position=COALESCE(MAX(?6,0),CASE WHEN ?2=0 THEN 0 ELSE position END),updated_at=?3 WHERE user_id=?4 AND video_id=?5",params![input.pinned,input.watched,now(),user,video,input.position])?;
         if let Some(watchlist)=input.watchlist {
             if watchlist {
                 let list=super::super::watchlists::default_list(&tx,&user)?;

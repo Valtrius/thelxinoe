@@ -1325,7 +1325,10 @@ export async function onlineApi(s, c) {
     if (method === 'PUT') {
       if (body.watched !== undefined) {
         video.isWatched = body.watched;
-        video.watchedPercentage = body.watched ? 100 : 0;
+        if (!body.watched) video.positionSeconds = body.position ?? 0;
+        video.watchedPercentage = body.watched
+          ? 100
+          : (video.positionSeconds / video.durationSeconds) * 100 || 0;
         if (body.watched)
           for (const list of s.watchlists)
             if (list.autoRemoveWatched) {
