@@ -458,7 +458,7 @@ test('episode analysis saves responsive toggles, reverts a failed edit and persi
       config = route.request().postDataJSON();
       return route.fulfill({ json: { saved: true } });
     }
-    return route.fulfill({ json: { config, items: [] } });
+    return route.fulfill({ json: { config } });
   });
   await page.goto('/');
   const local = page.getByRole('switch', {
@@ -950,6 +950,186 @@ test('job filters reach the server and details show every timestamp', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
+const analyzedEpisode = (
+  media_id: string,
+  fields: Record<string, unknown> = {},
+) => ({
+  media_id,
+  file_id: `${media_id}-file`,
+  title: `Tulsa King · ${media_id}`,
+  status: 'found',
+  error: null,
+  analyzed_at: 1789984800,
+  segments: [] as { kind: string; start: number; end: number }[],
+  ...fields,
+});
+
+test('episode analysis shows what was found, per show and per episode', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'analysis',
+  });
+  const queries: URL[] = [];
+  let runningStatus = 'running';
+  const coverage = {
+    episodes: 4,
+    intro: 1,
+    credits: 1,
+    nothing: 1,
+    failed: 1,
+    waiting: 1,
+  };
+  await page.route('**/api/v1/admin/segments', (route) =>
+    route.fulfill({ json: { config: { local: true, external: false } } }),
+  );
+  await page.route('**/api/v1/admin/segments/analysis*', (route) => {
+    const url = new URL(route.request().url());
+    queries.push(url);
+    const status = url.searchParams.get('status');
+    const items = [
+      analyzedEpisode('S04E01', {
+        status: runningStatus,
+        analyzed_at: null,
+      }),
+      analyzedEpisode('S04E02', {
+        status: 'failed',
+        error: 'Audio analysis timed out',
+      }),
+      analyzedEpisode('S04E03', {
+        segments: [
+          { kind: 'Recap', start: 0, end: 48 },
+          { kind: 'Intro', start: 127, end: 188 },
+          { kind: 'Credits', start: 2410, end: 2470 },
+          { kind: 'Credits', start: 2500, end: 3700 },
+        ],
+      }),
+      ...(Number(url.searchParams.get('limit')) > 100
+        ? [analyzedEpisode('S04E04', { status: 'nothing' })]
+        : []),
+    ];
+    return route.fulfill({
+      json: {
+        items: items.filter(
+          (item) =>
+            !status ||
+            item.status === status ||
+            (status === 'waiting' && item.status === 'running'),
+        ),
+        shows: [
+          { id: 'tulsa', title: 'Tulsa King', ...coverage },
+          ...Array.from({ length: 11 }, (_, index) => ({
+            id: `other-${index}`,
+            title: `Other show ${index}`,
+            ...coverage,
+            nothing: 0,
+          })),
+        ],
+        totals: { ...coverage, episodes: 48, intro: 12 },
+      },
+    });
+  });
+  await page.goto('/');
+
+  await expect(
+    page.getByText('48 episodes · 12 intros · 1 credit · 1 nothing found'),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Refresh analysis' }),
+  ).toHaveCount(0);
+
+  const shows = page.getByRole('table', { name: 'Coverage by show' });
+  await expect(shows.getByRole('row')).toHaveCount(11);
+  await page.getByRole('button', { name: 'Show all 12 shows' }).click();
+  await expect(shows.getByRole('row')).toHaveCount(13);
+
+  const episodes = page.getByRole('table', { name: 'Analyzed episodes' });
+  const found = episodes.getByRole('row', { name: /S04E03/ });
+  await expect(found.getByText('2:07–3:08')).toBeVisible();
+  await expect(found.getByText('40:10–41:10')).toBeVisible();
+  await expect(found.getByText('Recap 0:00–0:48')).toBeVisible();
+  await expect(found.getByText('Found', { exact: true })).toBeVisible();
+  await expect(found.getByRole('link', { name: /S04E03/ })).toHaveAttribute(
+    'href',
+    '#library/shows/S04E03',
+  );
+  const failed = episodes.getByRole('row', { name: /S04E02/ });
+  await expect(failed.getByText('Audio analysis timed out')).toBeVisible();
+
+  // Showing more keeps the filters, and a refresh rereads every listed episode.
+  await page.getByRole('button', { name: 'Show more episodes' }).click();
+  await expect(episodes.getByRole('row', { name: /S04E04/ })).toBeVisible();
+  await expect(
+    episodes
+      .getByRole('row', { name: /S04E04/ })
+      .getByText('Nothing found', { exact: true }),
+  ).toBeVisible();
+  expect(queries.at(-1)?.searchParams.get('limit')).toBe('103');
+  const running = episodes.getByRole('row', { name: /S04E01/ });
+  await expect(running.getByText('Analyzing')).toBeVisible();
+  runningStatus = 'found';
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect(running.getByText('Found', { exact: true })).toBeVisible();
+  expect(queries.at(-1)?.searchParams.get('limit')).toBe('103');
+
+  // A show narrows the episodes and the counts, and pressing it again clears it.
+  const choices = page.getByRole('group', { name: 'Episode status' });
+  await shows.getByRole('button', { name: 'Tulsa King' }).click();
+  await expect
+    .poll(() => queries.at(-1)?.searchParams.get('show'))
+    .toBe('tulsa');
+  expect(queries.at(-1)?.searchParams.has('limit')).toBe(false);
+  await expect(choices.getByRole('button', { name: 'All 4' })).toBeVisible();
+  await expect(page.getByLabel('Show', { exact: true })).toHaveValue('tulsa');
+  await shows.getByRole('button', { name: 'Tulsa King' }).click();
+  await expect.poll(() => queries.at(-1)?.searchParams.has('show')).toBe(false);
+  await expect(choices.getByRole('button', { name: 'All 48' })).toBeVisible();
+
+  await choices.getByRole('button', { name: 'Failed 1' }).click();
+  await expect
+    .poll(() => queries.at(-1)?.searchParams.get('status'))
+    .toBe('failed');
+  await expect(episodes.getByRole('row', { name: /S04E02/ })).toBeVisible();
+  await expect(episodes.getByRole('row', { name: /S04E03/ })).toHaveCount(0);
+  await choices.getByRole('button', { name: 'All 48' }).click();
+
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(episodes.getByRole('link', { name: /S04E03/ })).toBeVisible();
+    // However many times an episode has, its cells and status stay on screen.
+    expect(
+      await episodes.evaluate((table) => {
+        const right = table.getBoundingClientRect().right;
+        return [...table.querySelectorAll('tbody td')].filter(
+          (cell) => cell.getBoundingClientRect().right > right + 1,
+        ).length;
+      }),
+    ).toBe(0);
+    for (const table of [shows, episodes])
+      expect(
+        await table.evaluate(
+          (element) => element.scrollWidth <= element.clientWidth + 1,
+        ),
+      ).toBe(true);
+    expect(
+      await page.evaluate(
+        () =>
+          document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+    await shows.screenshot({
+      path: testInfo.outputPath(`analysis-shows-${width}.png`),
+    });
+    await episodes.screenshot({
+      path: testInfo.outputPath(`analysis-episodes-${width}.png`),
+    });
+  }
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('audit filters preserve real actions and older-page queries', async ({
   page,
 }, testInfo) => {
@@ -1103,7 +1283,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
 }, testInfo) => {
   const fixture = await installUiFixture(page, { role: 'admin' });
   const responses: Record<string, unknown> = {
-    '/admin/segments': { config: { local: true, external: false }, items: [] },
+    '/admin/segments': { config: { local: true, external: false } },
     '/admin/backups': {
       items: [],
       destination: '/backups',

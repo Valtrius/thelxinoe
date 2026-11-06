@@ -4,12 +4,11 @@
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
-  import Button from './ui/Button.svelte';
+  import EpisodeAnalysis from './EpisodeAnalysis.svelte';
   import SettingsCard from './ui/SettingsCard.svelte';
   import SettingRow from './ui/SettingRow.svelte';
-  import StatusChip from './ui/StatusChip.svelte';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
-  import { cardBlockClass, cardTableClass } from './ui/styles';
+  import { cardBlockClass } from './ui/styles';
   let { admin = false } = $props<{ admin?: boolean }>();
   const ids = $props.id();
   const kinds = ['Intro', 'Recap', 'Credits', 'Preview'];
@@ -24,31 +23,14 @@
     Preview: 'Ask',
   });
   let config = $state({ local: true, external: false }),
-    items = $state<
-      { media_id: string; title: string; state: string; error: string | null }[]
-    >([]),
     busy = $state(true),
     savingConfig = $state(false),
     savingPreferences = $state(false),
     message = $state('');
-  const pending = $derived(
-    items.filter((item) => !['complete', 'failed'].includes(item.state)).length,
-  );
-  const tone = (state: string) =>
-    state === 'complete'
-      ? 'ok'
-      : state === 'failed'
-        ? 'bad'
-        : state === 'pending' || state === 'queued'
-          ? 'warn'
-          : 'info';
   async function refresh() {
     if (admin) {
-      const result = await api<{ config: typeof config; items: typeof items }>(
-        '/admin/segments',
-      );
+      const result = await api<{ config: typeof config }>('/admin/segments');
       config = result.config;
-      items = result.items;
     } else {
       preferences = await api('/me/segments');
     }
@@ -120,14 +102,6 @@
     autoSave
     saving={savingConfig}
   >
-    {#snippet actions()}
-      <Button
-        variant="secondary"
-        size="form"
-        disabled={busy || savingConfig}
-        onclick={() => work(async () => {})}>Refresh analysis</Button
-      >
-    {/snippet}
     {#if !busy && !message}
       <AutoSaveForm
         label="Episode analysis settings"
@@ -173,38 +147,5 @@
       </p>
     {/snippet}
   </SettingsCard>
-  <SettingsCard title="Analysis queue">
-    {#snippet actions()}
-      <span class="text-xs text-muted"
-        >{items.length}
-        {items.length === 1 ? 'episode' : 'episodes'}{pending
-          ? ` · ${pending} pending`
-          : ''}</span
-      >
-    {/snippet}
-    {#if items.length}
-      <table class={cardTableClass}>
-        <thead><tr><th>Episode</th><th class="w-32">State</th></tr></thead>
-        <tbody>
-          {#each items as item, i (`${item.media_id}-${i}`)}
-            <tr>
-              <td
-                >{item.title}{#if item.error}<small class="mt-1 text-danger"
-                    >{item.error}</small
-                  >{/if}</td
-              >
-              <td
-                ><StatusChip tone={tone(item.state)}>{item.state}</StatusChip
-                ></td
-              >
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    {:else}
-      <p class="m-0 {cardBlockClass} text-xs text-muted">
-        No episodes queued for analysis.
-      </p>
-    {/if}
-  </SettingsCard>
+  <EpisodeAnalysis />
 {/if}

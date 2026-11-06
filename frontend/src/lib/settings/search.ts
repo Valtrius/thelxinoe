@@ -135,11 +135,15 @@ export const settingsSearchIndex: Record<
     {
       title: 'Detection',
       terms:
-        'intro credits detect recurring audio locally fingerprint theintrodb timestamps refresh analysis',
+        'intro credits detect recurring audio locally fingerprint theintrodb timestamps analysis',
     },
     {
-      title: 'Analysis queue',
-      terms: 'intro credits episodes queue state',
+      title: 'Analysis results',
+      terms: 'intro credits coverage shows nothing found totals',
+    },
+    {
+      title: 'Analyzed episodes',
+      terms: 'intro credits episodes queue state status waiting failed times',
     },
   ],
   providers: [

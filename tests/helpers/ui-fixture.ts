@@ -708,6 +708,19 @@ export async function installUiFixture(
         subtitles: false,
         replay_gain: 'track',
       });
+    if (path === '/admin/segments/analysis')
+      return json({
+        items: [],
+        shows: [],
+        totals: {
+          episodes: 0,
+          intro: 0,
+          credits: 0,
+          nothing: 0,
+          failed: 0,
+          waiting: 0,
+        },
+      });
     if (path === '/me/segments')
       return json({
         Intro: 'Ask',
