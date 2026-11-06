@@ -32,14 +32,7 @@
     onClose?: () => void;
     settingsSection?: string;
   }>();
-  const library = [
-    'Home',
-    'Discover',
-    'Movies',
-    'Shows',
-    'Music',
-    'Playlists',
-  ] as const;
+  const library = ['Home', 'Discover', 'Movies', 'Shows', 'Music'] as const;
   const providers = [
     { name: 'YouTube', platform: 'youtube' },
     { name: 'Twitch', platform: 'twitch' },

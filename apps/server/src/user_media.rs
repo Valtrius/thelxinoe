@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use thelxinoe_core::{Capability, Principal, now};
 
-pub(crate) use storage::{card, validate_tracks};
+pub(crate) use storage::validate_tracks;
 /// Released desktops (API 1) save the music queue before they play a track. They get
 /// an empty queue that is never stored, until API_MIN_VERSION drops them.
 pub async fn legacy_queue(

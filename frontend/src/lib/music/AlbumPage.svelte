@@ -12,6 +12,7 @@
   import MusicArt from './MusicArt.svelte';
   import FavoriteToggle from './FavoriteToggle.svelte';
   import ManageButton from './ManageButton.svelte';
+  import AddToPlaylist from './AddToPlaylist.svelte';
   import TrackList from './TrackList.svelte';
   import TrackDetails from './TrackDetails.svelte';
   import {
@@ -24,28 +25,18 @@
     type MusicItem,
   } from './library';
 
-  let {
-    album,
-    artistName,
-    admin,
-    userId,
-    play,
-    openArtist,
-    backLabel,
-    back,
-    focus,
-  } = $props<{
-    album: CatalogItem;
-    artistName: string;
-    admin: boolean;
-    userId: string;
-    play: (choice: MediaChoice) => void;
-    openArtist?: () => void;
-    backLabel?: string;
-    back: () => void;
-    /** A track the page was opened for. */
-    focus?: string;
-  }>();
+  let { album, artistName, admin, play, openArtist, backLabel, back, focus } =
+    $props<{
+      album: CatalogItem;
+      artistName: string;
+      admin: boolean;
+      play: (choice: MediaChoice) => void;
+      openArtist?: () => void;
+      backLabel?: string;
+      back: () => void;
+      /** A track the page was opened for. */
+      focus?: string;
+    }>();
   let tracks = $state<MusicItem[] | null>(null),
     error = $state(''),
     detailed = $state<MusicItem | null>(null);
@@ -117,6 +108,7 @@
     class="flex items-end gap-6 compact:flex-col compact:items-start compact:gap-4"
   >
     <MusicArt
+      data-sidebar-resize="xy-pos"
       url={album.artwork_url}
       class="size-50 border border-white/15 shadow-xl compact:size-36"
       sizes="13rem"
@@ -162,6 +154,7 @@
           ><Shuffle size={15} />Shuffle</Button
         >
         <FavoriteToggle id={album.id} />
+        <AddToPlaylist tracks={() => tracks ?? []} disabled={!tracks?.length} />
         {#if admin}<ManageButton
             id={album.id}
             kind="album"
@@ -178,7 +171,6 @@
     />{:else}<TrackList
       {tracks}
       album
-      {userId}
       play={(track) => start(track)}
       details={(track) => (detailed = track)}
       openArtist={openArtist ? () => openArtist() : undefined}
@@ -186,7 +178,6 @@
 </article>
 {#if detailed}<TrackDetails
     track={detailed}
-    {userId}
     {admin}
     play={(fileId) => start(detailed!, false, fileId)}
     close={() => (detailed = null)}

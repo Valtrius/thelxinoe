@@ -37,6 +37,7 @@
   import { emptyClass, eyebrowTextClass, toolbarMenuClass } from '../ui/styles';
   import TrackList from './TrackList.svelte';
   import TrackDetails from './TrackDetails.svelte';
+  import PlaylistToggle from './PlaylistToggle.svelte';
   import {
     albumTracks,
     catalogQuery,
@@ -54,7 +55,6 @@
     view: routeView,
     query,
     admin,
-    userId,
     play,
     openArtist,
     openAlbum,
@@ -64,7 +64,6 @@
     view?: string;
     query?: string;
     admin: boolean;
-    userId: string;
     play: (choice: MediaChoice) => void;
     openArtist: (id: string) => void;
     openAlbum: (id: string, artist?: string | null) => void;
@@ -252,7 +251,7 @@
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) void more();
       },
-      { root: node.closest('.workspace-scroll'), rootMargin: '150% 0px' },
+      { root: node.closest('[data-feed-scroll]'), rootMargin: '150% 0px' },
     );
     observer.observe(node);
     return { destroy: () => observer.disconnect() };
@@ -337,6 +336,7 @@
     value={selected}
     ariaLabel="Music lists"
     tall
+    resizeWithSidebar
     onChange={(next) => {
       selected = next;
       clearTimeout(searchTimer);
@@ -345,6 +345,8 @@
     }}
   />
   <div
+    data-sidebar-resize="xy-width"
+    data-sidebar-group
     class="relative flex h-9 min-w-45 max-w-90 flex-1 items-center border border-line bg-surface focus-within:border-line-strong"
   >
     <Search
@@ -403,8 +405,8 @@
   {#if counts[kind] !== undefined}<span class="ml-1.5 text-muted"
       >{plural(counts[kind], kind)}</span
     >{:else if busy}<Skeleton class="ml-1.5 w-16" />{/if}
-  {#if admin}<div class="ml-auto">
-      <DropdownMenu.Root bind:open={actionsOpen}>
+  <div class="ml-auto flex items-center gap-1.5">
+    {#if admin}<DropdownMenu.Root bind:open={actionsOpen}>
         <DropdownMenu.Trigger>
           {#snippet child({ props })}<Button
               {...props}
@@ -432,15 +434,15 @@
             >
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
-      </DropdownMenu.Root>
-    </div>{/if}
+      </DropdownMenu.Root>{/if}
+    <PlaylistToggle />
+  </div>
 </div>
 {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
 <div data-page-region="music">
   {#if shown.length}
     {#if view === 'tracks'}<TrackList
         tracks={shown}
-        {userId}
         play={(track) => void playTrack(track)}
         details={(track) => (detailed = track)}
         openAlbum={(track) => openAlbum(track.parent_id!, track.artist_id)}
@@ -506,7 +508,6 @@
 </div>
 {#if detailed}<TrackDetails
     track={detailed}
-    {userId}
     {admin}
     play={(fileId) => void playTrack(detailed!, fileId)}
     close={() => (detailed = null)}

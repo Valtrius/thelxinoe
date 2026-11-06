@@ -8,7 +8,6 @@ export const sectionNames = [
   'Movies',
   'Shows',
   'Music',
-  'Playlists',
   'YouTube',
   'Twitch',
   'Kick',
@@ -63,7 +62,8 @@ export function sectionRoute(
   name: string,
   settings: string = 'account',
 ): AppRoute {
-  const section = name === 'History' ? 'Statistics' : name;
+  const section =
+    name === 'History' ? 'Statistics' : name === 'Playlists' ? 'Music' : name;
   const normalized =
     settings === 'library'
       ? 'services'
@@ -123,11 +123,20 @@ export function readRoute(url: URL, fallback: AppRoute = homeRoute): AppRoute {
           query: query.get('q') ?? undefined,
           collection: query.get('collection') ?? undefined,
           view: query.get('view') ?? undefined,
+          playlist:
+            section === 'Music'
+              ? (query.get('playlist') ?? undefined)
+              : undefined,
         }
       : base;
   }
+  // Playlists were once a page of their own.
   if (parts[0] === 'playlists')
-    return { ...base, section: 'Playlists', playlist: parts[1] || undefined };
+    return {
+      ...base,
+      section: 'Music',
+      playlist: parts[1] && parts[1] !== 'new' ? parts[1] : undefined,
+    };
   if (parts[0] === 'online') {
     const section = (
       { youtube: 'YouTube', twitch: 'Twitch', kick: 'Kick' } as const
@@ -215,9 +224,8 @@ export function routeHref(route: AppRoute): string {
       if (route.query) query.set('q', route.query);
       if (route.collection) query.set('collection', route.collection);
       if (route.view) query.set('view', route.view);
-      break;
-    case 'Playlists':
-      path = `playlists${route.playlist ? '/' + encodeURIComponent(route.playlist) : ''}`;
+      if (route.section === 'Music' && route.playlist)
+        query.set('playlist', route.playlist);
       break;
     case 'YouTube':
     case 'Twitch':

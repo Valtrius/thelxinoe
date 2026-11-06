@@ -420,6 +420,49 @@ fn schema_2_names_each_jobs_subject_and_drops_checkpoints() -> Result<()> {
     Ok(())
 }
 
+// CHECK lists are not part of `shape`, so the added columns' are checked here.
+#[test]
+fn schema_6_keeps_playlists_readable_and_each_track_once() -> Result<()> {
+    let (_temp, conn) = upgraded(
+        5,
+        "INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('alice','alice','unused','user',1);
+        INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Music','music','/music');
+        INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('one','root','track','one','One',1),('two','root','track','two','Two',1);
+        INSERT INTO playlists(id,owner_id,name,created_at,updated_at) VALUES ('mix','alice','Mix',1,7);
+        INSERT INTO playlist_items(playlist_id,position,media_id) VALUES ('mix',0,'two'),('mix',1,'one'),('mix',2,'two');",
+    )?;
+    let items = conn
+        .prepare("SELECT media_id,added_at FROM playlist_items WHERE playlist_id='mix' ORDER BY position")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    assert_eq!(items, [("two".to_owned(), 7), ("one".to_owned(), 7)]);
+    let (access, sort): (String, String) = conn.query_row(
+        "SELECT access,sort_mode FROM playlists WHERE id='mix'",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    assert_eq!((access.as_str(), sort.as_str()), ("read", "manual"));
+    conn.execute(
+        "INSERT INTO playlists(id,owner_id,name,created_at,updated_at) VALUES ('new','alice','New',1,1)",
+        [],
+    )?;
+    assert_eq!(
+        conn.query_row("SELECT access FROM playlists WHERE id='new'", [], |r| {
+            r.get::<_, String>(0)
+        })?,
+        "private"
+    );
+    for change in [
+        "UPDATE playlists SET access='everyone'",
+        "UPDATE playlists SET sort_mode='rating'",
+        "UPDATE playlists SET sort_direction='up'",
+        "INSERT INTO playlist_items VALUES ('mix','one',9,1)",
+    ] {
+        assert!(conn.execute(change, []).is_err(), "{change}");
+    }
+    Ok(())
+}
+
 // CHECK lists are not part of `shape`, so the rebuilt downloads table is checked here.
 #[test]
 fn schema_2_keeps_downloads_and_refuses_the_unused_deleting_state() -> Result<()> {

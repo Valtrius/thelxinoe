@@ -258,7 +258,7 @@ export class LayoutMotionController {
         continue;
       const clone = previous.element.cloneNode(true) as HTMLElement;
       clone.removeAttribute('data-layout-key');
-      clone.removeAttribute('data-watchlist-video-id');
+      clone.removeAttribute('data-list-item-key');
       // Ghosts are presentation only, including removed group headings.
       clone.removeAttribute('data-card-group-header');
       clone.removeAttribute('data-sidebar-resize');

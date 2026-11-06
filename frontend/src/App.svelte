@@ -74,7 +74,7 @@
       setColumns: (poster_columns) => updateAppearance({ poster_columns }),
     });
     const handle = (event: WheelEvent) => {
-      if (!providerPage) wheel(event);
+      if (!providerPage && section !== 'Music') wheel(event);
     };
     node.addEventListener('wheel', handle, { passive: false });
     return { destroy: () => node.removeEventListener('wheel', handle) };
@@ -150,6 +150,7 @@
   // The music dock's queue. It stays through page changes and, on desktop,
   // beside MPV videos.
   let music = $state<MediaChoice | null>(null);
+  let dockHeight = $state(0);
   // Counts music launches, so one still loading the dock can be superseded.
   let musicLaunch = 0;
   // Desktop videos play in their own MPV windows; `playing` is the page's
@@ -278,7 +279,7 @@
       return;
     }
     const state = untrack(() => musicPlayer.state);
-    if (state) saveMusic(musicUser, state);
+    if (state) saveMusic(musicUser, state, musicPlayer.following);
   });
   const attentionUserId = $derived(user?.id);
   $effect(() => {
@@ -564,7 +565,7 @@
     const next = allowedRoute(destination, user, desktop, $providers);
     if (routeHref(next) === routeHref(pendingRoute ?? route)) return;
     stopScrollRestoration();
-    const scroll = workspace?.scrollTop ?? 0;
+    const scroll = pageScroller()?.scrollTop ?? 0;
     const preserveScroll =
       (route.section === 'Settings' &&
         next.section === 'Settings' &&
@@ -590,6 +591,9 @@
     );
   }
   const musicHome = (page: AppRoute) => page.section === 'Music' && !page.item;
+  // Music scrolls inside its page, beside its sidebar.
+  const pageScroller = () =>
+    workspace?.querySelector<HTMLElement>('[data-music-scroll]') ?? workspace;
   function showRoute(
     next: AppRoute,
     scroll: number,
@@ -635,7 +639,9 @@
             : 'settings'
           : musicHome(route) && musicHome(next)
             ? 'music'
-            : undefined,
+            : route.section === 'Music' && next.section === 'Music'
+              ? 'music-page'
+              : undefined,
       )
       .then((completed) => {
         if (completed && pendingRoute === next) pendingRoute = undefined;
@@ -648,6 +654,9 @@
   function updateFilters(destination: AppRoute, replace = true) {
     go(destination, replace, true);
   }
+  // A page on its way out no longer decides where to go.
+  const pageIsCurrent = () =>
+    !pendingRoute || pageIdentity(pendingRoute) === pageIdentity(route);
   async function restoreWorkspace(scroll: number, focus = false) {
     stopScrollRestoration();
     const destination = route;
@@ -662,7 +671,7 @@
     stopScrollRestoration = stop;
     // Any input means the reader has taken over. Listen on the window: after
     // navigation, focus sits outside the scroller.
-    if (scroll > 0 && workspace)
+    if (scroll > 0 && pageScroller())
       for (const event of ['wheel', 'pointerdown', 'touchstart', 'keydown'])
         window.addEventListener(event, stop, {
           passive: true,
@@ -672,14 +681,16 @@
     if (cancelled || routeHref(destination) !== routeHref(route)) return;
     await tick();
     if (cancelled) return;
-    if (workspace) {
-      const scroller = workspace;
+    const scroller = pageScroller();
+    if (scroller) {
       // Pages load their content after they mount: keep the saved position
       // until enough of it has rendered, the reader scrolls, or a few seconds pass.
       const content =
         destination.section === 'Settings'
           ? scroller.querySelector('.settings-layout')
-          : scroller.querySelector('[data-page-content]');
+          : scroller.querySelector(
+              '[data-page-content], [data-page-region="music-page"]',
+            );
       if (scroll > 0 && content) {
         observer = new ResizeObserver(() => {
           scroller.scrollTop = scroll;
@@ -1072,6 +1083,7 @@
       class="content flex min-w-0 flex-1 flex-col overflow-hidden compact:pt-(--mobile-player-height)"
       bind:this={main}
       style:--mobile-player-height={`${compact ? pinnedPlayerHeight : 0}px`}
+      style:--music-dock-height={`${music ? dockHeight : 0}px`}
     >
       <header
         class="page-header hidden shrink-0 items-center gap-2.5 border-b border-line bg-background/88 px-3 py-1.5 compact:flex"
@@ -1112,7 +1124,7 @@
           'workspace-scroll relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none]',
           providerPage
             ? 'pt-3 pr-0 pb-0 pl-3 scrollbar-stable'
-            : section === 'Settings'
+            : section === 'Settings' || section === 'Music'
               ? 'p-0'
               : 'p-6 narrow:p-4 compact:p-3',
         ]}
@@ -1142,7 +1154,7 @@
               'player-frame compact:fixed compact:inset-x-0 compact:top-0 compact:z-70 compact:m-0',
               providerPage
                 ? '-mt-3 -ml-3'
-                : section === 'Settings'
+                : section === 'Settings' || section === 'Music'
                   ? ''
                   : '-mx-6 -mt-6 narrow:-mx-4 narrow:-mt-4',
             ]}
@@ -1160,7 +1172,7 @@
           </div>{/if}
         <div
           class="min-w-0"
-          class:h-full={section === 'YouTube'}
+          class:h-full={section === 'YouTube' || section === 'Music'}
           data-page-content
           use:pageTransition.connect
         >
@@ -1172,18 +1184,10 @@
             navigate={(name) => void navigate(name)}
             {openSettings}
             go={(destination, replace) => {
-              if (
-                !pendingRoute ||
-                pageIdentity(pendingRoute) === pageIdentity(route)
-              )
-                go(destination, replace);
+              if (pageIsCurrent()) go(destination, replace);
             }}
             updateFilters={(destination, replace) => {
-              if (
-                !pendingRoute ||
-                pageIdentity(pendingRoute) === pageIdentity(route)
-              )
-                updateFilters(destination, replace);
+              if (pageIsCurrent()) updateFilters(destination, replace);
             }}
             sessionEnded={teardownSession}
             {switchServer}
@@ -1199,6 +1203,7 @@
       </div>
       {#if music}<div
           class="grid shrink-0 grid-cols-[minmax(0,1fr)] grid-rows-[1fr] items-start"
+          bind:clientHeight={dockHeight}
           transition:dockReveal
           onoutrostart={() => musicPlayer.stop?.()}
         >

@@ -41,7 +41,7 @@ pub(super) async fn update(
                 tx.execute("INSERT INTO youtube_state(user_id,video_id,pinned,watched,position,updated_at) VALUES(?1,?2,COALESCE(?3,0),COALESCE(?4,0),COALESCE(?5,0),?6) ON CONFLICT(user_id,video_id) DO UPDATE SET pinned=COALESCE(?3,pinned),watched=COALESCE(?4,watched),position=COALESCE(?5,position),updated_at=?6", params![user,video,input.is_favorite,input.played,position,now()])?;
             }
             Target::Playlist(id) => {
-                if !tx.query_row("SELECT EXISTS(SELECT 1 FROM playlists WHERE id=?1)", [&id], |row| row.get::<_,bool>(0))? {
+                if !tx.query_row("SELECT EXISTS(SELECT 1 FROM playlists WHERE id=?1 AND (access<>'private' OR owner_id=?2))", [&id, &user], |row| row.get::<_,bool>(0))? {
                     return Ok(404);
                 }
                 if let Some(favorite) = input.is_favorite {

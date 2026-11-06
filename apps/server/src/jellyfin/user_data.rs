@@ -81,7 +81,7 @@ pub async fn handle(
                 }
                 Target::Online(identity.id)
             }
-        } else if catalog::is_playlist(state, id).await? {
+        } else if catalog::is_playlist(state, p, id).await? {
             if update.played.is_some() || update.playback_position_ticks.is_some() {
                 return Err(ApiError::bad("Playlists only support favorite state"));
             }

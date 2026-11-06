@@ -2,6 +2,7 @@ import { api, ApiError, serverUrl } from './api';
 import { captureSession } from './session';
 import type { Chapter } from './chapters';
 
+export type FollowedPlaylist = { id: string; revision: number };
 export type MediaChoice = {
   kind?: string;
   id: string;
@@ -23,7 +24,13 @@ export type MediaChoice = {
   /** The queue starts shuffled. */
   shuffle?: boolean;
   /** The queue opens as it was left, and reads nothing until it plays. */
-  parked?: { repeat: 'off' | 'all' | 'one'; shuffled: boolean };
+  parked?: {
+    repeat: 'off' | 'all' | 'one';
+    shuffled: boolean;
+    leaving?: boolean;
+  };
+  /** The playlist this queue was started from and follows, as it holds it. */
+  playlist?: FollowedPlaylist;
 };
 /** Media that is playing, or still starting in a desktop MPV window. */
 export type PlayingMedia = { id: string; launching: boolean };

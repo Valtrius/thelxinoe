@@ -161,7 +161,7 @@ test('mobile watchlists stay below pinned playback and preserve the desktop side
   await page.setViewportSize({ width: 390, height: 700 });
   await open.click();
   // Narrow windows with a mouse keep hover actions instead of touch sheets and grips.
-  const firstRow = drawer.locator('[data-watchlist-video-id]').first();
+  const firstRow = drawer.locator('[data-list-item-key]').first();
   await expect(drawer.getByRole('button', { name: /^Reorder / })).toHaveCount(
     0,
   );
@@ -169,9 +169,7 @@ test('mobile watchlists stay below pinned playback and preserve the desktop side
   await expect(
     firstRow.getByRole('button', { name: 'Mark watched', exact: true }),
   ).toBeVisible();
-  const video = drawer
-    .locator('[data-watchlist-video-id] [role="button"]')
-    .first();
+  const video = drawer.locator('[data-list-item-key] [role="button"]').first();
   await expect(video).toBeVisible();
   await video.click();
   await expect(drawer).toBeVisible();
@@ -211,7 +209,7 @@ test('mobile watchlists stay below pinned playback and preserve the desktop side
     .poll(async () => (await desktopFrame.boundingBox())!.width)
     .toBe(desktopWidth);
   await desktopFrame
-    .locator('[data-watchlist-video-id] [role="button"]')
+    .locator('[data-list-item-key] [role="button"]')
     .first()
     .click();
   await expect(
@@ -369,7 +367,7 @@ test.describe('mobile video touch actions', () => {
       exact: true,
     });
     const row = drawer.locator(
-      '[data-watchlist-video-id="preview0004"] [role="button"]',
+      '[data-list-item-key="preview0004"] [role="button"]',
     );
     const actions = drawer.getByRole('dialog', {
       name: 'Actions for A Quiet Journey · Episode 5',

@@ -285,7 +285,6 @@ test('mobile page headers show each page icon immediately before its name', asyn
     'Movies',
     'Shows',
     'Music',
-    'Playlists',
     'YouTube',
     'Twitch',
     'Kick',
@@ -711,7 +710,7 @@ test('mock settings, service controls and playback retain changes', async ({
   ).toEqual([]);
 });
 
-test('library hierarchy, playlist and watchlist edits, online feeds and statistics work', async ({
+test('library hierarchy, watchlist edits, online feeds and statistics work', async ({
   page,
 }, info) => {
   const errors: string[] = [];
@@ -727,7 +726,6 @@ test('library hierarchy, playlist and watchlist edits, online feeds and statisti
     'library/shows/show-0',
     'library/music',
     'library/music/artist-0',
-    'playlists',
     'online/youtube',
     'online/twitch',
     'online/kick',
@@ -741,39 +739,6 @@ test('library hierarchy, playlist and watchlist edits, online feeds and statisti
       fullPage: true,
     });
   }
-  await page.goto('/#playlists');
-  await page.getByRole('button', { name: 'New playlist', exact: true }).click();
-  await expect(page.locator('[data-page-content]')).toHaveAttribute(
-    'data-page-phase',
-    'idle',
-  );
-  await page
-    .getByRole('textbox', { name: 'Playlist name', exact: true })
-    .fill('Preview tracks');
-  await page
-    .getByRole('textbox', { name: 'Find tracks', exact: true })
-    .fill('Daybreak');
-  await page
-    .getByRole('button', { name: 'Search tracks', exact: true })
-    .click();
-  await page
-    .getByRole('button', { name: 'Add Daybreak', exact: true })
-    .first()
-    .click();
-  await page
-    .getByRole('button', { name: 'Save playlist', exact: true })
-    .click();
-  await expect(
-    page.getByRole('heading', { name: 'Preview tracks', exact: true }),
-  ).toBeVisible();
-  await page.reload();
-  await expect(
-    page.getByRole('heading', { name: '1 tracks', exact: true }),
-  ).toBeVisible();
-  await page.screenshot({
-    path: info.outputPath('saved-playlist.png'),
-    fullPage: true,
-  });
   await page.goto('/#online/youtube');
   const openWatchlists = page.getByRole('button', {
     name: 'Open watchlists',

@@ -14,6 +14,7 @@ export default defineConfig({
     'animation-duration.spec.ts',
     'mobile-media.spec.ts',
     'mobile-player.spec.ts',
+    'music-playlists.spec.ts',
   ],
   timeout: 120000,
   expect: { timeout: 15000 },

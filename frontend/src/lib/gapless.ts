@@ -2,6 +2,7 @@ import type Hls from 'hls.js';
 import { api } from './api';
 import { inBackground } from './page-readiness';
 import { captureSession } from './session';
+import { followedQueue } from './music/queue-follow';
 import { PlaybackActivity } from './playback-activity';
 import {
   capabilities,
@@ -58,6 +59,8 @@ export type MusicState = {
   loading: boolean;
   /** The streamed track at `index` waits for more of its file. */
   buffering: boolean;
+  /** The track at `index` left its playlist, and goes as it stops. */
+  leaving: boolean;
 };
 const memoryCodecs = [
   'flac',
@@ -137,6 +140,8 @@ export class GaplessQueue {
   private order: MediaChoice[];
   private shuffled = false;
   private repeat: Repeat = 'off';
+  /** The playing choice, when its playlist lost it: it goes as it stops. */
+  private leaving?: MediaChoice;
   /** The playing choice's place in `choices`. */
   private index: number;
   /** The next choice to load. */
@@ -185,6 +190,7 @@ export class GaplessQueue {
       this.playing = false;
       this.repeat = parked.repeat;
       this.shuffled = parked.shuffled;
+      if (parked.leaving) this.leaving = this.choices[this.index];
       this.resumeAt = this.choices[this.index]?.position ?? 0;
     }
   }
@@ -205,9 +211,24 @@ export class GaplessQueue {
   }
   /** What plays after the choice at `at`. */
   private advance(at: number) {
-    if (this.repeat === 'one') return at;
+    if (this.repeat === 'one' && this.choices[at] !== this.leaving) return at;
     if (at + 1 < this.choices.length) return at + 1;
-    return this.repeat === 'all' ? 0 : this.choices.length;
+    return this.wraps() ? 0 : this.choices.length;
+  }
+  /** Whether the queue starts over after its end. */
+  private wraps() {
+    return (
+      this.repeat !== 'off' &&
+      this.choices.some((choice) => choice !== this.leaving)
+    );
+  }
+  private forgetLeaving() {
+    const at = this.choices.indexOf(this.leaving!);
+    this.choices = this.choices.filter((choice) => choice !== this.leaving);
+    this.order = this.order.filter((choice) => choice !== this.leaving);
+    this.leaving = undefined;
+    if (at >= 0 && at < this.index) this.index--;
+    this.resetAhead();
   }
   private async load() {
     if (this.closed || this.next >= this.choices.length) return;
@@ -566,6 +587,7 @@ export class GaplessQueue {
         !current.stream.ended &&
         this.context.state === 'running' &&
         current.stream.element.readyState < HTMLMediaElement.HAVE_FUTURE_DATA,
+      leaving: !!this.leaving,
     };
   }
   private update() {
@@ -582,6 +604,8 @@ export class GaplessQueue {
         this.schedule(this.context.currentTime + 0.02);
     }
     if (this.entries.length) this.index = this.entries[0].at;
+    if (this.leaving && this.choices[this.index] !== this.leaving)
+      return this.forgetLeaving();
     if (this.entries[0]?.stream && this.entries[1] && !this.entries[1].node)
       this.schedule(0);
     const head = this.entries[0];
@@ -836,9 +860,9 @@ export class GaplessQueue {
     const target =
       this.index + 1 < this.choices.length
         ? this.index + 1
-        : this.repeat === 'off'
-          ? this.choices.length
-          : 0;
+        : this.wraps()
+          ? 0
+          : this.choices.length;
     if (target < this.choices.length)
       return this.entries[1]?.at === target
         ? this.jumpAhead()
@@ -932,6 +956,45 @@ export class GaplessQueue {
     if (at < this.index) this.index--;
     this.resetAhead();
   }
+  /**
+   * Take the order of the playlist this queue follows. What is already loaded
+   * ahead keeps playing when it still comes next.
+   */
+  follow(items: MediaChoice[]) {
+    if (this.closed || this.index >= this.choices.length) return;
+    const upNext = this.choices[this.advance(this.index)];
+    const followed = followedQueue(
+      {
+        choices: this.choices,
+        index: this.index,
+        shuffled: this.shuffled,
+      },
+      items,
+    );
+    this.choices = followed.choices;
+    this.order = followed.order;
+    this.index = followed.index;
+    const playing = this.choices[this.index];
+    this.leaving = items.some((item) => item.id === playing.id)
+      ? undefined
+      : playing;
+    const [current, ahead] = this.entries;
+    if (
+      this.loading ||
+      !current ||
+      upNext !== this.choices[this.advance(this.index)]
+    ) {
+      this.resetAhead();
+      return;
+    }
+    current.at = this.index;
+    this.next = this.advance(this.index);
+    if (ahead) {
+      ahead.at = this.next;
+      this.next = this.advance(ahead.at);
+    }
+    this.update();
+  }
   /** Keep only the playing track. */
   clear() {
     if (this.closed) return;
@@ -939,6 +1002,7 @@ export class GaplessQueue {
     this.choices = current ? [current] : [];
     this.order = [...this.choices];
     this.index = 0;
+    this.leaving = undefined;
     this.resetAhead();
   }
   setShuffle(on: boolean) {

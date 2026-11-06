@@ -509,6 +509,18 @@ async fn present_cards(
     Ok(metadata)
 }
 
+/// A playlist's tracks in their manual order, as the catalog lists them.
+pub(crate) async fn playlist_tracks(
+    state: &AppState,
+    p: &thelxinoe_core::Principal,
+    playlist: String,
+) -> Result<Vec<Value>> {
+    let mut items = storage::playlist_tracks(&state.db, playlist).await?;
+    let grant = crate::grants::artwork(state, p).await?;
+    decorate_cards_with(state, p, &mut items.iter_mut().collect::<Vec<_>>(), &grant).await?;
+    Ok(items)
+}
+
 pub async fn detail(
     State(state): State<AppState>,
     headers: HeaderMap,

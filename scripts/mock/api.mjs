@@ -126,6 +126,9 @@ export function createMockState() {
         owner: admin.username,
         favorite: true,
         revision: 1,
+        access: 'read',
+        sort_mode: 'manual',
+        sort_direction: 'asc',
         items: library.filter((item) => item.kind === 'track').slice(0, 12),
       },
       {
@@ -136,7 +139,23 @@ export function createMockState() {
         owner: admin.username,
         favorite: false,
         revision: 1,
+        access: 'private',
+        sort_mode: 'manual',
+        sort_direction: 'asc',
         items: library.filter((item) => item.kind === 'track').slice(12, 22),
+      },
+      {
+        id: 'playlist-3',
+        name: 'Shared mix',
+        description: '',
+        owner_id: 'user-robin',
+        owner: 'Robin',
+        favorite: false,
+        revision: 1,
+        access: 'add',
+        sort_mode: 'manual',
+        sort_direction: 'asc',
+        items: library.filter((item) => item.kind === 'track').slice(4, 9),
       },
     ],
     watchlists: [
@@ -251,7 +270,14 @@ export async function installMockApi(page, currentState, events) {
                                     : null;
           if (path === '/me/preferences') viewer(s).timezone = value.timezone;
           if (change)
-            events.emit(change, change === 'preferences.changed' ? value : {});
+            events.emit(
+              change,
+              change === 'preferences.changed'
+                ? value
+                : change === 'playlists.changed'
+                  ? { id: path.split('/')[2] ?? value.id }
+                  : {},
+            );
           if (
             !['/me/appearance', '/playback'].includes(path) &&
             !path.startsWith('/playback/')

@@ -13,9 +13,8 @@
   import { eyebrowTextClass } from '../ui/styles';
   import { trackNumber, type MusicItem } from './library';
 
-  let { track, userId, admin, play, close, changed } = $props<{
+  let { track, admin, play, close, changed } = $props<{
     track: MusicItem;
-    userId: string;
     admin: boolean;
     play: (fileId: string) => void;
     close: () => void;
@@ -81,7 +80,7 @@
           >{/if}
       </div>
     {/each}
-    <MediaActions id={track.id} kind="track" {userId} />
+    <MediaActions id={track.id} kind="track" />
     {#if admin}<MediaOperations id={track.id} kind="track" {changed} />{/if}
   {/if}
 </Modal>

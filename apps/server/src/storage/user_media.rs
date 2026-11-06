@@ -172,16 +172,13 @@ fn shelf_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     }
     Ok(value)
 }
-pub(crate) fn card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+fn card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     Ok(
         json!({"id":row.get::<_,String>(0)?,"kind":row.get::<_,String>(1)?,"title":row.get::<_,String>(2)?,"available":row.get::<_,bool>(3)?}),
     )
 }
 
 pub(crate) fn validate_tracks(db: &rusqlite::Connection, items: &[String]) -> anyhow::Result<bool> {
-    if items.len() > 500 {
-        return Ok(false);
-    }
     let mut query =
         db.prepare("SELECT EXISTS(SELECT 1 FROM media WHERE id=?1 AND kind='track')")?;
     for item in items {

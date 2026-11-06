@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
+  import { api, ApiError } from '../api';
+  import { onServerEvent } from '../server-events.svelte';
+  import { captureSession } from '../session';
   import { Popover } from 'bits-ui';
   import {
     ChevronDown,
@@ -30,9 +33,11 @@
   } from '../gapless';
   import MusicArt from './MusicArt.svelte';
   import FavoriteToggle from './FavoriteToggle.svelte';
-  import PlayingBars from './PlayingBars.svelte';
+  import QueueList from './QueueList.svelte';
   import { musicPlayer } from './player.svelte';
   import { MusicSession } from './media-session';
+  import { playlistQueue, sortedPlaylistTracks } from './playlist-order';
+  import type { PlaylistDetail } from './playlists.svelte';
 
   let { choice, closed } = $props<{
     choice: MediaChoice;
@@ -49,6 +54,7 @@
     sheetQueue = $state(false);
   let queue = $state<GaplessQueue>();
   let generation = 0;
+  let followRequest = 0;
   let disposed = false;
   let closing = Promise.resolve();
   const compact = $derived(compactViewport.current);
@@ -68,6 +74,8 @@
   async function open(selected: MediaChoice) {
     const revision = ++generation;
     release();
+    musicPlayer.following = selected.playlist ?? null;
+    followRequest++;
     musicState = null;
     busy = true;
     waitingTools = false;
@@ -108,6 +116,8 @@
     try {
       owned.setVolume(volume);
       await owned.start();
+      // Its playlist may have changed since the app last had it open.
+      if (selected.parked) void follow();
     } catch (e) {
       await owned.close();
       if (disposed || generation !== revision) return;
@@ -116,9 +126,49 @@
       if (generation === revision) busy = false;
     }
   }
+  async function follow() {
+    const followed = musicPlayer.following;
+    const owned = queue;
+    if (!followed || !owned) return;
+    const request = ++followRequest;
+    const session = captureSession();
+    try {
+      const list = await api<PlaylistDetail>(`/playlists/${followed.id}`);
+      if (request !== followRequest || !session()) return;
+      if (list.revision === followed.revision) return;
+      musicPlayer.following = { id: list.id, revision: list.revision };
+      const sorted = sortedPlaylistTracks(
+        list.items,
+        list.sort_mode,
+        list.sort_direction,
+      );
+      owned.follow(playlistQueue(list, sorted)?.queue ?? []);
+    } catch (e) {
+      // Deleted or made private: the queue carries on by itself.
+      if (
+        request === followRequest &&
+        e instanceof ApiError &&
+        [403, 404].includes(e.status)
+      )
+        musicPlayer.following = null;
+    }
+  }
+  $effect(() =>
+    onServerEvent((event) => {
+      const change = event.payload as { id?: string } | null;
+      if (
+        event.kind === 'server.reconnected' ||
+        (event.kind === 'playlists.changed' &&
+          change?.id === musicPlayer.following?.id)
+      )
+        void follow();
+    }),
+  );
   // A track chosen while the dock leaves brings it back through `open`.
   function stop() {
     generation++;
+    musicPlayer.following = null;
+    followRequest++;
     release();
     sheetOpen = false;
     musicPlayer.state = null;
@@ -194,10 +244,8 @@
   const repeat = $derived(musicState?.repeat ?? 'off');
   const upcoming = $derived(
     musicState
-      ? musicState.queue
-          .map((entry, at) => ({ entry, at }))
-          .slice(musicState.index + 1)
-      : [],
+      ? Math.max(0, musicState.queue.length - musicState.index - 1)
+      : 0,
   );
   function changeVolume(value: number) {
     muted = false;
@@ -321,48 +369,14 @@
   </div>
 {/snippet}
 {#snippet queueList(from: number)}
-  <ol class="m-0 list-none p-0">
-    {#each (musicState?.queue ?? []).slice(from) as entry, offset (`${from + offset}:${entry.id}`)}
-      {@const at = from + offset}
-      {@const playing = at === musicState?.index}
-      <li
-        class={[
-          'group/queue flex min-h-10 items-center gap-1 border-t border-line pr-1.5 first:border-t-0',
-          playing && 'bg-accent-soft text-accent',
-        ]}
-      >
-        <button
-          type="button"
-          class="flex min-w-0 flex-1 items-center gap-2.5 bg-transparent py-1.5 pl-3 text-left text-[12.5px] text-inherit"
-          aria-label={`Play ${entry.title}`}
-          aria-current={playing ? 'true' : undefined}
-          onclick={() => void queue?.jump(at)}
-        >
-          <span class="flex w-5 shrink-0 justify-end text-[11px] text-muted"
-            >{#if playing}<PlayingBars {paused} />{:else}{at + 1}{/if}</span
-          >
-          <span class="min-w-0 flex-1 truncate"
-            >{entry.title}{#if entry.artist}<span
-                class="block truncate text-[11px] text-muted"
-                >{entry.artist}</span
-              >{/if}</span
-          >
-          {#if entry.duration}<span
-              class="shrink-0 text-[11px] text-muted tabular-nums"
-              >{time(entry.duration)}</span
-            >{/if}
-        </button>
-        {#if !playing}<Button
-            variant="player"
-            size="compact-icon"
-            class="text-muted opacity-0 group-hover/queue:opacity-100 focus-visible:opacity-100 compact:opacity-100"
-            aria-label={`Remove ${entry.title} from the queue`}
-            title="Remove from the queue"
-            onclick={() => void queue?.remove(at)}><X size={14} /></Button
-          >{/if}
-      </li>
-    {/each}
-  </ol>
+  <QueueList
+    queue={musicState?.queue ?? []}
+    {from}
+    index={musicState?.index ?? 0}
+    {paused}
+    jump={(at) => void queue?.jump(at)}
+    remove={(at) => void queue?.remove(at)}
+  />
 {/snippet}
 
 <section
@@ -496,11 +510,15 @@
                 <Button
                   variant="ghost"
                   size="sm"
-                  disabled={!upcoming.length}
-                  onclick={() => queue?.clear()}>Clear</Button
+                  disabled={!upcoming}
+                  onclick={() => {
+                    musicPlayer.following = null;
+                    followRequest++;
+                    queue?.clear();
+                  }}>Clear</Button
                 >
               </div>
-              <div class="min-h-0 overflow-y-auto">
+              <div data-queue-scroller class="min-h-0 overflow-y-auto">
                 {@render queueList(0)}
               </div>
             </Popover.Content>
@@ -558,15 +576,18 @@
         <div
           class="grid min-h-0 min-w-0 flex-1 place-items-center [container-type:size]"
         >
-          {#if sheetQueue && upcoming.length}<div
+          {#if sheetQueue && upcoming}<div
               class="grid size-full grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] gap-1.5"
             >
               <p
                 class="mb-0 text-[10px] font-[650] tracking-[0.17em] text-muted uppercase"
               >
-                Up next · {upcoming.length}
+                Up next · {upcoming}
               </p>
-              <div class="overflow-y-auto border border-line bg-surface">
+              <div
+                data-queue-scroller
+                class="overflow-y-auto border border-line bg-surface"
+              >
                 {@render queueList((musicState?.index ?? 0) + 1)}
               </div>
             </div>{:else}<MusicArt
@@ -615,7 +636,7 @@
               aria-label="Queue"
               aria-pressed={sheetQueue}
               title="Queue"
-              disabled={!upcoming.length}
+              disabled={!upcoming}
               onclick={() => (sheetQueue = !sheetQueue)}
               ><ListMusic size={18} /></Button
             >

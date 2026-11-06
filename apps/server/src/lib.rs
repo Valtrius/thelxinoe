@@ -284,7 +284,21 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/playlists/{id}",
             get(playlists::detail)
                 .put(playlists::update)
-                .delete(playlists::remove),
+                .patch(playlists::change)
+                .delete(playlists::remove)
+                .layer(DefaultBodyLimit::max(PLAYLIST_BODY_LIMIT)),
+        )
+        .route(
+            "/api/v1/playlists/{id}/items",
+            post(playlists::add_items).layer(DefaultBodyLimit::max(PLAYLIST_BODY_LIMIT)),
+        )
+        .route(
+            "/api/v1/playlists/{id}/items/{media}",
+            delete(playlists::remove_item),
+        )
+        .route(
+            "/api/v1/playlists/{id}/items/{media}/move",
+            post(playlists::move_item),
         )
         .route(
             "/api/v1/playlists/{id}/favorite",
@@ -408,6 +422,8 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
 }
 
 /// The first wait after a job lane's database access failed; repeated failures wait longer.
+/// A playlist has no track limit, and a released desktop saves a whole one at a time.
+const PLAYLIST_BODY_LIMIT: usize = 2 * 1024 * 1024;
 const JOB_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Waits before a job lane retries failed bookkeeping, longer while failures repeat. A

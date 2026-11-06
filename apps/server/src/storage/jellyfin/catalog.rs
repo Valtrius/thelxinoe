@@ -316,11 +316,11 @@ pub(super) async fn filters(db: &Database, user: String, q: Query) -> anyhow::Re
     }).await
 }
 
-pub(super) async fn is_playlist(id: String, db: &Database) -> anyhow::Result<bool> {
+pub(super) async fn is_playlist(id: String, user: String, db: &Database) -> anyhow::Result<bool> {
     db.read("jellyfin.catalog.is_playlist", move |db| {
         Ok(db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM playlists WHERE id=?1)",
-            [id],
+            "SELECT EXISTS(SELECT 1 FROM playlists WHERE id=?1 AND (access<>'private' OR owner_id=?2))",
+            [id, user],
             |r| r.get(0),
         )?)
     })
@@ -329,13 +329,16 @@ pub(super) async fn is_playlist(id: String, db: &Database) -> anyhow::Result<boo
 
 pub(super) async fn playlist_items(
     id: String,
+    user: String,
     db: &Database,
 ) -> anyhow::Result<Option<(i64, Vec<String>)>> {
     db.read("jellyfin.catalog.playlist_items", move |db| {
         let revision = db
-            .query_row("SELECT revision FROM playlists WHERE id=?1", [&id], |r| {
-                r.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT revision FROM playlists WHERE id=?1 AND (access<>'private' OR owner_id=?2)",
+                [&id, &user],
+                |r| r.get::<_, i64>(0),
+            )
             .optional()?;
         let Some(revision) = revision else {
             return Ok(None);
@@ -385,7 +388,7 @@ pub(super) async fn playlists(
         let source="WITH lists AS (
           SELECT p.id,p.name,p.description,'Audio' media_type,EXISTS(SELECT 1 FROM playlist_favorites f WHERE f.playlist_id=p.id AND f.user_id=?1) favorite,
           (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id=p.id) children,0 updated_at
-          FROM playlists p
+          FROM playlists p WHERE p.access<>'private' OR p.owner_id=?1
           UNION ALL
           SELECT c.id,w.name,CASE WHEN w.auto_download=1 THEN 'YouTube watchlist · Automatic server downloads enabled' ELSE 'YouTube watchlist' END,'Video',c.favorite,
           (SELECT COUNT(*) FROM youtube_watchlist_items i WHERE i.watchlist_id=w.id),w.updated_at
