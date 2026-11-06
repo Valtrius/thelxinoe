@@ -51,6 +51,18 @@
         offset,
       );
       await instance.ready;
+      if (closed) return;
+      // The renderer otherwise waits for a new frame, and a paused video
+      // presents none.
+      await instance.manualRender(
+        {
+          mediaTime: video.currentTime,
+          expectedDisplayTime: performance.now(),
+          width: video.videoWidth,
+          height: video.videoHeight,
+        },
+        true,
+      );
       if (!closed) renderer = instance;
     })().catch((error) => {
       console.warn('Styled subtitles are unavailable', error);
