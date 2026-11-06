@@ -1,4 +1,5 @@
-import { chromium, expect } from '@playwright/test';
+import { chromium } from '@playwright/test';
+import { expect } from './expect.mjs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { existsSync, writeFileSync, rmSync, readFileSync } from 'node:fs';

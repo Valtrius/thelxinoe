@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freezeClock } from './helpers/clock';
+import { responseGate } from './helpers/response-gate';
 
 // Exercise the real player with decoded media and a controlled server boundary.
 // This suite starts its own Vite server and never touches an account or deployment.
@@ -2435,6 +2436,12 @@ test('styled subtitles load their renderer when shown, both renderers follow the
   page.on('request', (request) => requests.push(request.url()));
   const state = await fixture(page, { styled: true });
   await decoded(page);
+  // The renderer stays unready until the video pauses, so it sees no new frame.
+  const font = responseGate();
+  await page.route('**/fixture/font?*', async (route) => {
+    await font.promise;
+    await route.fallback();
+  });
   const player = page.getByRole('region', { name: 'Media player' });
   const video = page.locator('video');
   // The server chooses forced subtitles until the viewer picks some, and can
@@ -2488,6 +2495,7 @@ test('styled subtitles load their renderer when shown, both renderers follow the
     .toBe(true);
   // The sign shows during the first second, so only an offset shows it at 2 s.
   await pauseAt(2);
+  font.release();
   await expect(page.locator('.player-controls')).toHaveCSS('opacity', '1');
   const none = await videoPixels(page);
   for (let i = 0; i < 15; i++) await page.keyboard.press('x');

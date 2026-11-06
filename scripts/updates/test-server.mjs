@@ -1,4 +1,4 @@
-import { expect } from '@playwright/test';
+import { expect } from './expect.mjs';
 import { join, posix } from 'node:path';
 import { writeFileSync, rmSync } from 'node:fs';
 import { docker, save, envelope } from './build.mjs';

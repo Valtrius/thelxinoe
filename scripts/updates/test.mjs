@@ -1,5 +1,5 @@
 import { resourceScope } from '../ci-resources.mjs';
-import { expect } from '@playwright/test';
+import { expect } from './expect.mjs';
 import { budgets, requestBudget } from '../ci-readiness.mjs';
 import { launchBrowser } from '../ci-browser.mjs';
 import { mkdirSync, writeFileSync, readFileSync, copyFileSync } from 'node:fs';

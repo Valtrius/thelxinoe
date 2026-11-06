@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { freezeClock } from './helpers/clock';
+import { closePlayer } from './helpers/player';
 
 test.beforeEach(async ({ request }) => {
   await request.post('/__mock/reset');
@@ -41,7 +42,7 @@ test('desktop video volume and mute are remembered across consecutive plays and 
     .toBe(0.23);
   await page.getByRole('button', { name: 'Mute', exact: true }).click();
   await expect(video).toHaveJSProperty('muted', true);
-  await page.getByRole('button', { name: 'Close player', exact: true }).click();
+  await closePlayer(page);
   await replay(page, 'After the Rain · Episode 6');
   await expect(video).toHaveJSProperty('volume', 0.23);
   await expect(video).toHaveJSProperty('muted', true);
@@ -58,7 +59,7 @@ test('desktop video volume and mute are remembered across consecutive plays and 
   await page.getByRole('slider', { name: 'Playback volume' }).fill('0.37');
   await expect(video).toHaveJSProperty('volume', 0.37);
   await expect(video).toHaveJSProperty('muted', false);
-  await page.getByRole('button', { name: 'Close player', exact: true }).click();
+  await closePlayer(page);
   await replay(page, 'After the Rain · Episode 6');
   await expect(video).toHaveJSProperty('volume', 0.37);
   await expect(video).toHaveJSProperty('muted', false);
@@ -160,7 +161,7 @@ test('touch devices play at device volume and leave the desktop volume and mute 
   await expect(page.locator('.volume-controls')).toHaveCount(0);
   await expect(video).toHaveJSProperty('volume', 1);
   await expect(video).toHaveJSProperty('muted', false);
-  await page.getByRole('button', { name: 'Close player', exact: true }).tap();
+  await closePlayer(page, 'tap');
   await page
     .getByRole('button', {
       name: 'Play: After the Rain · Episode 6',
