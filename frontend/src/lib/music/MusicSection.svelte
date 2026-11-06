@@ -12,10 +12,14 @@
   import Button from '../ui/Button.svelte';
   import Notice from '../ui/Notice.svelte';
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
+  import BackButton from './BackButton.svelte';
   import MusicHome from './MusicHome.svelte';
+  import MusicToolbar from './MusicToolbar.svelte';
+  import PlaylistToggle from './PlaylistToggle.svelte';
   import ArtistPage from './ArtistPage.svelte';
   import AlbumPage from './AlbumPage.svelte';
   import PlaylistPanel from './PlaylistPanel.svelte';
+  import { listSort, listView } from './list-view';
   import { playlists } from './playlists.svelte';
 
   let { route, user, play, go, updateFilters } = $props<{
@@ -80,6 +84,14 @@
     if (opener.section !== 'Music') return opener.section;
     return opener.item ? undefined : 'Music';
   }
+  // An album returns to its artist, and anything else to the lists.
+  const parent = $derived(
+    item?.kind === 'artist' ? undefined : item?.parent_id,
+  );
+  const view = $derived(listView(route.view, $appearance.provider_preferences));
+  const sort = $derived(listSort(view, $appearance.provider_preferences));
+  let counts = $state<Partial<Record<string, number>>>({}),
+    listing = $state(true);
   const listRoute = (view: string | undefined, query: string): AppRoute => ({
     ...home,
     view,
@@ -99,14 +111,15 @@
 
 {#snippet page()}
   {#if !route.item}<MusicHome
-      view={route.view}
+      {view}
+      {sort}
       query={route.query}
       {admin}
+      bind:counts
+      bind:busy={listing}
       {play}
       {openArtist}
       {openAlbum}
-      viewChanged={(view, query) => go(listRoute(view, query), true)}
-      filtersChanged={(query) => updateFilters(listRoute(route.view, query))}
     />{:else if error}<Notice variant="error" role="alert"
       >{error}<Button variant="ghost" size="sm" onclick={() => attempt++}
         >Reload</Button
@@ -119,8 +132,6 @@
         {admin}
         {play}
         openAlbum={(id) => openAlbum(id, item?.id)}
-        backLabel={backLabel('Music')}
-        back={() => leave(home)}
       />{/key}{:else}{#key item.id}<AlbumPage
         album={item}
         {artistName}
@@ -130,9 +141,6 @@
         openArtist={item.parent_id
           ? () => openArtist(item!.parent_id!)
           : undefined}
-        backLabel={backLabel(artistName || 'Music', item.parent_id)}
-        back={() =>
-          leave(item?.parent_id ? { ...home, item: item.parent_id } : home)}
       />{/key}{/if}
 {/snippet}
 
@@ -140,6 +148,31 @@
   data-sidebar-resize="x"
   class="flex h-full min-h-0 flex-col overflow-hidden"
 >
+  <div
+    data-music-toolbar
+    data-page-scale
+    class="relative z-30 mx-3 mt-3 flex shrink-0 items-start gap-1.5 pb-2"
+  >
+    <span
+      data-sidebar-resize="x"
+      aria-hidden="true"
+      class="pointer-events-none absolute right-0 bottom-0 left-0 h-px bg-line"
+    ></span>
+    {#if !route.item}<MusicToolbar
+        {view}
+        {sort}
+        query={route.query}
+        {counts}
+        busy={listing}
+        {admin}
+        viewChanged={(view, query) => go(listRoute(view, query), true)}
+        filtersChanged={(query) => updateFilters(listRoute(route.view, query))}
+      />{:else if item}<BackButton
+        label={backLabel(parent ? artistName || 'Music' : 'Music', parent)}
+        back={() => leave(parent ? { ...home, item: parent } : home)}
+      />{/if}
+    <PlaylistToggle />
+  </div>
   <div
     use:scaleYoutubeMediaScope={{
       columns: compactViewport.current ? 3 : $appearance.poster_columns,
@@ -157,7 +190,7 @@
       data-feed-content
       data-page-scale
       data-music-scroll
-      class="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-6 [overflow-anchor:none] [scrollbar-gutter:stable] narrow:p-4 compact:p-3"
+      class="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-3 pr-0.5 pb-6 pl-3 [overflow-anchor:none] [scrollbar-gutter:stable] compact:pr-3"
     >
       <div class="min-w-0" data-page-region="music-page">
         {@render page()}

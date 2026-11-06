@@ -7,6 +7,7 @@
 </script>
 
 <Button
+  class="ml-auto shrink-0"
   size="icon"
   variant={open ? 'secondary' : 'ghost'}
   aria-label={open ? 'Close playlists' : 'Open playlists'}

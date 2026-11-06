@@ -1,16 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
-  import { DropdownMenu, Popover } from 'bits-ui';
-  import {
-    ArrowDown,
-    ArrowUp,
-    ArrowUpDown,
-    Ellipsis,
-    Music,
-    Play,
-    RefreshCw,
-    Search,
-  } from '@lucide/svelte';
+  import { Music, Play } from '@lucide/svelte';
   import { api } from '../api';
   import { revisions } from '../server-events.svelte';
   import { navigationCache } from '../navigation-cache';
@@ -21,23 +11,17 @@
     attentionErrors,
     acknowledgeAttention,
   } from '../attention';
-  import { appearance, updateAppearance } from '../appearance';
   import { showToast } from '../providers/toasts';
-  import { loadRoots, scanRoot } from '../title/catalog';
   import type { MediaChoice } from '../playback';
   import Button from '../ui/Button.svelte';
   import Notice from '../ui/Notice.svelte';
-  import ExclusiveChoiceGroup from '../ui/ExclusiveChoiceGroup.svelte';
   import MediaGrid from '../ui/MediaGrid.svelte';
   import LibraryCard from '../ui/LibraryCard.svelte';
   import MediaSkeleton from '../ui/MediaSkeleton.svelte';
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
-  import Skeleton from '../ui/Skeleton.svelte';
-  import MenuBackdrop, { ignoreBackdrop } from '../ui/MenuBackdrop.svelte';
-  import { emptyClass, eyebrowTextClass, toolbarMenuClass } from '../ui/styles';
+  import { emptyClass } from '../ui/styles';
   import TrackList from './TrackList.svelte';
   import TrackDetails from './TrackDetails.svelte';
-  import PlaylistToggle from './PlaylistToggle.svelte';
   import {
     albumTracks,
     catalogQuery,
@@ -47,100 +31,31 @@
     type MusicItem,
     type MusicPage,
   } from './library';
+  import { kindOf, views, type ListSort, type View } from './list-view';
 
-  type View = 'artists' | 'albums' | 'tracks';
-  type Sort = 'title' | 'year' | 'added';
-  type Order = 'asc' | 'desc';
   let {
-    view: routeView,
+    view,
+    sort,
     query,
     admin,
+    counts = $bindable(),
+    busy = $bindable(),
     play,
     openArtist,
     openAlbum,
-    viewChanged,
-    filtersChanged,
-  } = $props<{
-    view?: string;
+  }: {
+    view: View;
+    sort: ListSort;
     query?: string;
     admin: boolean;
+    counts: Partial<Record<string, number>>;
+    busy: boolean;
     play: (choice: MediaChoice) => void;
     openArtist: (id: string) => void;
     openAlbum: (id: string, artist?: string | null) => void;
-    viewChanged: (view: View, query: string) => void;
-    filtersChanged: (query: string) => void;
-  }>();
-  const views: [View, string, string][] = [
-    ['artists', 'Artists', 'artist'],
-    ['albums', 'Albums', 'album'],
-    ['tracks', 'Tracks', 'track'],
-  ];
-  const isView = (value?: string): value is View =>
-    views.some(([known]) => known === value);
-  // An address without a list opens the one the user last chose.
-  const viewKey = 'music-view';
-  const lastView = $derived($appearance.provider_preferences[viewKey]);
-  const view = $derived<View>(
-    isView(routeView) ? routeView : isView(lastView) ? lastView : 'artists',
-  );
-  const kind = $derived(views.find(([value]) => value === view)![2]);
-  const sorts: Record<View, [Sort, string][]> = {
-    artists: [
-      ['title', 'Name'],
-      ['added', 'Date added'],
-    ],
-    albums: [
-      ['title', 'Title'],
-      ['year', 'Year'],
-      ['added', 'Date added'],
-    ],
-    tracks: [
-      ['title', 'Title'],
-      ['added', 'Date added'],
-    ],
-  };
-  // Each list keeps the user's sort.
-  const sortKey = 'music-sort';
-  const saved = $derived.by(() => {
-    try {
-      return JSON.parse(
-        $appearance.provider_preferences[sortKey] ?? '{}',
-      ) as Partial<Record<View, { sort: Sort; order: Order }>>;
-    } catch {
-      return {};
-    }
-  });
-  const sort = $derived(
-    saved[view] && sorts[view].some(([value]) => value === saved[view]!.sort)
-      ? saved[view]!
-      : { sort: 'title' as Sort, order: 'asc' as Order },
-  );
-  function sortChanged(next: { sort: Sort; order: Order }) {
-    updateAppearance({
-      provider_preferences: {
-        [sortKey]: JSON.stringify({ ...saved, [view]: next }),
-      },
-    });
-  }
-  let search = $state(untrack(() => query ?? ''));
-  let searchTimer: ReturnType<typeof setTimeout>;
-  // The route echoing a search sent while typing leaves the field alone.
-  let sent: string | undefined;
-  $effect(() => {
-    const next = query ?? '';
-    untrack(() => {
-      if (next !== sent) search = next;
-    });
-  });
-  function searchChanged() {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      sent = search;
-      filtersChanged(search);
-    }, 250);
-  }
+  } = $props();
+  const kind = $derived(kindOf(view));
   onDestroy(() => {
-    clearTimeout(searchTimer);
     generation++;
   });
 
@@ -148,8 +63,6 @@
   let items = $state<MusicItem[]>([]),
     listedKind = $state(''),
     total = $state(0),
-    counts = $state<Partial<Record<string, number>>>({}),
-    busy = $state(true),
     extending = $state(false),
     error = $state(''),
     pageError = $state(''),
@@ -293,151 +206,8 @@
           plural(item.track_count ?? 0, 'track'),
         ].join(' · ')
       : [item.artist, item.year].filter(Boolean).join(' · ');
-
-  let sortOpen = $state(false),
-    actionsOpen = $state(false);
-  const menuItemClass =
-    'flex h-8 w-full cursor-default items-center gap-[0.55rem] whitespace-nowrap px-[0.55rem] text-left text-[0.7rem] text-muted outline-none data-[highlighted]:bg-accent-soft data-[highlighted]:text-foreground [&_svg]:size-[0.85rem] compact:h-11 compact:text-[13px]';
-  async function scanLibrary() {
-    try {
-      const roots = (await loadRoots()).filter((root) => root.kind === 'music');
-      await Promise.all(roots.map((root) => scanRoot(root.id)));
-      showToast({
-        key: 'scan:Music',
-        tone: roots.length ? 'success' : 'warning',
-        title: 'Music',
-        message: roots.length
-          ? `Scanning ${roots.length} library ${roots.length === 1 ? 'folder' : 'folders'}.`
-          : 'No accessible media folders have been detected yet.',
-      });
-    } catch (e) {
-      showToast({
-        key: 'scan:Music',
-        tone: 'error',
-        title: 'Music',
-        message: String(e),
-      });
-    }
-  }
-  // The buttons answer the click, before the route reaches the next list.
-  let selected = $derived<View>(view);
-  const viewChoices = $derived(
-    views.map(([value, label, countKind]) => ({
-      value,
-      label,
-      count: counts[countKind],
-    })),
-  );
 </script>
 
-<div class="mb-5 flex flex-wrap items-center gap-1.5">
-  <ExclusiveChoiceGroup
-    choices={viewChoices}
-    value={selected}
-    ariaLabel="Music lists"
-    tall
-    resizeWithSidebar
-    onChange={(next) => {
-      selected = next;
-      clearTimeout(searchTimer);
-      viewChanged(next, search);
-      updateAppearance({ provider_preferences: { [viewKey]: next } });
-    }}
-  />
-  <div
-    data-sidebar-resize="xy-width"
-    data-sidebar-group
-    class="relative flex h-9 min-w-45 max-w-90 flex-1 items-center border border-line bg-surface focus-within:border-line-strong"
-  >
-    <Search
-      class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted"
-    />
-    <input
-      bind:value={search}
-      oninput={searchChanged}
-      maxlength="200"
-      placeholder={`Search ${view}`}
-      aria-label={`Search ${view}`}
-      class="h-full min-w-0 flex-1 bg-transparent pr-3 pl-9 text-sm outline-none placeholder:text-muted"
-    />
-  </div>
-  <div class="relative z-30 compact:static">
-    <Popover.Root bind:open={sortOpen}>
-      <Popover.Trigger>
-        {#snippet child({ props })}<Button
-            {...props}
-            size="icon"
-            variant={sortOpen ? 'secondary' : 'ghost'}
-            aria-label={`Sort ${view}`}
-            title={`Sort ${view}`}><ArrowUpDown class="size-4" /></Button
-          >{/snippet}
-      </Popover.Trigger>
-      {#if sortOpen}<MenuBackdrop close={() => (sortOpen = false)} />{/if}
-      <Popover.ContentStatic
-        role="dialog"
-        aria-label={`Sort ${view}`}
-        onInteractOutside={ignoreBackdrop}
-        class={`absolute top-11 left-0 z-50 w-64 border border-line-strong bg-surface-strong p-3 shadow-xl ${toolbarMenuClass}`}
-      >
-        <p class={`${eyebrowTextClass} mb-2`}>SORT BY</p>
-        {#each sorts[view] as [value, label] (value)}
-          <div
-            class="flex items-center gap-1 border-t border-line py-1.5 first:border-0"
-          >
-            <span class="flex-1 text-sm">{label}</span>
-            {#each ['asc', 'desc'] as const as order (order)}
-              <button
-                type="button"
-                class={`grid size-8 place-items-center border ${sort.sort === value && sort.order === order ? 'border-line-strong bg-accent-soft text-accent' : 'border-line text-muted hover:text-foreground'}`}
-                aria-label={`${label} ${order === 'asc' ? 'ascending' : 'descending'}`}
-                aria-pressed={sort.sort === value && sort.order === order}
-                onclick={() => sortChanged({ sort: value, order })}
-                >{#if order === 'asc'}<ArrowUp size={14} />{:else}<ArrowDown
-                    size={14}
-                  />{/if}</button
-              >
-            {/each}
-          </div>
-        {/each}
-      </Popover.ContentStatic>
-    </Popover.Root>
-  </div>
-  {#if counts[kind] !== undefined}<span class="ml-1.5 text-muted"
-      >{plural(counts[kind], kind)}</span
-    >{:else if busy}<Skeleton class="ml-1.5 w-16" />{/if}
-  <div class="ml-auto flex items-center gap-1.5">
-    {#if admin}<DropdownMenu.Root bind:open={actionsOpen}>
-        <DropdownMenu.Trigger>
-          {#snippet child({ props })}<Button
-              {...props}
-              variant="secondary"
-              size="icon"
-              aria-label="Music library actions"
-              title="Library actions"><Ellipsis size={16} /></Button
-            >{/snippet}
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
-          {#if actionsOpen}<MenuBackdrop
-              close={() => (actionsOpen = false)}
-            />{/if}
-          <DropdownMenu.Content
-            align="end"
-            sideOffset={4}
-            preventScroll={false}
-            onInteractOutside={ignoreBackdrop}
-            class="z-50 grid min-w-48 border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
-          >
-            <DropdownMenu.Item
-              class={menuItemClass}
-              onSelect={() => void scanLibrary()}
-              ><RefreshCw />Scan library</DropdownMenu.Item
-            >
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
-      </DropdownMenu.Root>{/if}
-    <PlaylistToggle />
-  </div>
-</div>
 {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
 <div data-page-region="music">
   {#if shown.length}

@@ -17,7 +17,6 @@
   import MediaGrid from '../ui/MediaGrid.svelte';
   import LibraryCard from '../ui/LibraryCard.svelte';
   import MediaSkeleton from '../ui/MediaSkeleton.svelte';
-  import BackButton from './BackButton.svelte';
   import MusicArt from './MusicArt.svelte';
   import FavoriteToggle from './FavoriteToggle.svelte';
   import ManageButton from './ManageButton.svelte';
@@ -34,13 +33,11 @@
     type MusicItem,
   } from './library';
 
-  let { artist, admin, play, openAlbum, backLabel, back } = $props<{
+  let { artist, admin, play, openAlbum } = $props<{
     artist: CatalogItem;
     admin: boolean;
     play: (choice: MediaChoice) => void;
     openAlbum: (id: string) => void;
-    backLabel?: string;
-    back: () => void;
   }>();
   let albums = $state<MusicItem[] | null>(null),
     error = $state(''),
@@ -138,7 +135,6 @@
   const attentionOf = $derived(byMedia($attention));
 </script>
 
-<BackButton label={backLabel} {back} />
 <article class="grid min-w-0 gap-7" aria-label={artist.title}>
   <div
     data-sidebar-panel

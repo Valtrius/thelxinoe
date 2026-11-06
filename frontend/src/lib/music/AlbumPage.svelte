@@ -8,7 +8,6 @@
   import Button from '../ui/Button.svelte';
   import Notice from '../ui/Notice.svelte';
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
-  import BackButton from './BackButton.svelte';
   import MusicArt from './MusicArt.svelte';
   import FavoriteToggle from './FavoriteToggle.svelte';
   import ManageButton from './ManageButton.svelte';
@@ -25,18 +24,15 @@
     type MusicItem,
   } from './library';
 
-  let { album, artistName, admin, play, openArtist, backLabel, back, focus } =
-    $props<{
-      album: CatalogItem;
-      artistName: string;
-      admin: boolean;
-      play: (choice: MediaChoice) => void;
-      openArtist?: () => void;
-      backLabel?: string;
-      back: () => void;
-      /** A track the page was opened for. */
-      focus?: string;
-    }>();
+  let { album, artistName, admin, play, openArtist, focus } = $props<{
+    album: CatalogItem;
+    artistName: string;
+    admin: boolean;
+    play: (choice: MediaChoice) => void;
+    openArtist?: () => void;
+    /** A track the page was opened for. */
+    focus?: string;
+  }>();
   let tracks = $state<MusicItem[] | null>(null),
     error = $state(''),
     detailed = $state<MusicItem | null>(null);
@@ -102,7 +98,6 @@
   }
 </script>
 
-<BackButton label={backLabel} {back} />
 <article class="grid min-w-0 gap-6" aria-label={album.title}>
   <div
     class="flex items-end gap-6 compact:flex-col compact:items-start compact:gap-4"
