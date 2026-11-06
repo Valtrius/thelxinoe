@@ -655,7 +655,7 @@ async fn retry(
     headers: HeaderMap,
     Path(key): Path<String>,
 ) -> Result<Json<Value>> {
-    security::require(&state, &headers, Capability::ManageServer).await?;
+    let principal = security::require(&state, &headers, Capability::ManageServer).await?;
     if uuid::Uuid::parse_str(&key).is_err() {
         return Err(ApiError::bad("Invalid provision identity"));
     }
@@ -674,7 +674,7 @@ async fn retry(
             "Reconcile the controller operation before retrying API connection",
         ));
     }
-    let changed = storage::retry(&state.db, key).await?;
+    let changed = storage::retry(&state.db, key, principal.user.id).await?;
     if !changed {
         return Err(ApiError::conflict(
             "Only a finished, blocked installation can be retried",

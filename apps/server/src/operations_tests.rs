@@ -1,6 +1,6 @@
 use crate::test_support::{call, fixture};
 use axum::http::StatusCode;
-use serde_json::json;
+use serde_json::{Value, json};
 
 // Browser fixtures cannot validate state selection or per-user visibility.
 #[tokio::test]
@@ -328,18 +328,209 @@ async fn attention_is_private_live_and_diagnostics_exclude_secret_material() {
         1
     );
 }
-async fn listed_jobs(state: &crate::AppState, cookie: &str) -> Vec<String> {
-    call(state, "/api/v1/admin/jobs", "GET", json!({}), cookie)
-        .await
-        .2["items"]
-        .as_array()
+async fn jobs_page(state: &crate::AppState, cookie: &str, query: &str) -> Value {
+    let (status, _, body) = call(
+        state,
+        &format!("/api/v1/admin/jobs{query}"),
+        "GET",
+        json!({}),
+        cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+fn job_ids(jobs: &Value) -> Vec<String> {
+    jobs.as_array()
         .unwrap()
         .iter()
         .map(|job| job["id"].as_str().unwrap().to_owned())
         .collect()
 }
 #[tokio::test]
-async fn job_list_keeps_failures_awaiting_dismissal_beyond_the_latest_jobs() {
+async fn job_list_names_targets_and_triggers_without_exposing_payloads() {
+    let (_temp, state, alice) = fixture().await;
+    state.db.write("test.jobs", |db| {
+        db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('films','Movies','movies','/media/movies')", [])?;
+        db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES ('film','films','movie','film','film.2020','{\"title\":\"The Film\"}',1)", [])?;
+        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,created_at,updated_at) VALUES ('provision','sonarr','alice','complete',1,1)", [])?;
+        db.execute("INSERT INTO service_updates(id,service_id,actor_id,state,created_at,updated_at,automatic) VALUES ('update','provision',NULL,'committed',1,1,1)", [])?;
+        for (id, kind, subject, payload, state, started, completed, error, created) in [
+            ("scan", "library.scan", "films", "{\"root_id\":\"films\"}", "complete", Some(10), Some(18), None, 9),
+            ("removed", "library.scan", "gone", "{\"root_id\":\"gone\"}", "complete", Some(8), Some(8), None, 8),
+            ("mine", "metadata.refresh", "film", "{\"media_id\":\"film\",\"actor_id\":\"alice\",\"secret\":\"PRIVATE-TOKEN\"}", "failed", Some(7), Some(7), Some("No match"), 7),
+            ("deleted-user", "metadata.refresh", "film", "{\"media_id\":\"film\",\"actor_id\":\"removed\"}", "complete", Some(6), Some(6), None, 6),
+            ("automatic", "metadata.refresh", "film", "{\"media_id\":\"film\"}", "complete", Some(5), Some(5), None, 5),
+            ("sync", "recyclarr.sync", "gone-run", "{\"id\":\"gone-run\",\"preview\":true,\"automatic\":true,\"files\":\"PRIVATE-TOKEN\"}", "complete", Some(4), Some(4), None, 4),
+            ("install", "stack.install", "provision", "{\"id\":\"provision\",\"actor_id\":\"bob\"}", "complete", Some(2), Some(2), None, 2),
+            ("old-install", "stack.install", "provision", "{\"id\":\"provision\"}", "complete", Some(1), Some(1), None, 1),
+            ("check", "service.update", "update", "{\"id\":\"update\",\"action\":\"preflight\",\"automatic\":true}", "queued", None, None, None, 3),
+        ] {
+            db.execute(
+                "INSERT INTO jobs(id,kind,subject,payload,state,available_at,started_at,completed_at,error,created_at) VALUES (?1,?2,?3,?4,?5,20,?6,?7,?8,?9)",
+                rusqlite::params![id, kind, subject, payload, state, started, completed, error, created],
+            )?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let page = jobs_page(&state, &alice, "").await;
+    assert!(!page.to_string().contains("PRIVATE-TOKEN"));
+    let job = |id: &str| {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| job["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert!(job("scan").get("payload").is_none());
+    let scan = job("scan");
+    assert_eq!(
+        (
+            &scan["target"],
+            &scan["created_at"],
+            &scan["available_at"],
+            &scan["started_at"],
+            &scan["completed_at"],
+            &scan["automatic"]
+        ),
+        (
+            &json!("Movies"),
+            &json!(9),
+            &json!(20),
+            &json!(10),
+            &json!(18),
+            &Value::Null
+        )
+    );
+    assert!(job("removed")["target"].is_null());
+    let mine = job("mine");
+    assert_eq!(
+        (&mine["target"], &mine["automatic"], &mine["actor"]),
+        (&json!("The Film"), &json!(false), &json!("alice"))
+    );
+    let deleted = job("deleted-user");
+    assert_eq!(
+        (&deleted["automatic"], &deleted["actor"]),
+        (&json!(false), &Value::Null)
+    );
+    assert_eq!(job("automatic")["automatic"], true);
+    let sync = job("sync");
+    assert_eq!(
+        (&sync["service"], &sync["action"], &sync["automatic"]),
+        (&json!("recyclarr"), &json!("preview"), &json!(true))
+    );
+    let check = job("check");
+    assert_eq!(
+        (&check["service"], &check["action"], &check["automatic"]),
+        (&json!("sonarr"), &json!("preflight"), &json!(true))
+    );
+    // Whoever owns the service now, an installation names who asked for it, if that was recorded.
+    let install = job("install");
+    assert_eq!(
+        (
+            &install["service"],
+            &install["automatic"],
+            &install["actor"]
+        ),
+        (&json!("sonarr"), &json!(false), &json!("bob"))
+    );
+    let old_install = job("old-install");
+    assert_eq!(
+        (&old_install["automatic"], &old_install["actor"]),
+        (&Value::Null, &Value::Null)
+    );
+    // A job still in progress stays above the history whatever followed it.
+    assert_eq!(job_ids(&page["pinned"]), ["check"]);
+}
+#[tokio::test]
+async fn job_list_filters_counts_and_pages() {
+    let (_temp, state, alice) = fixture().await;
+    state.db.write("test.jobs", |db| {
+        db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+        for (id, kind, payload, state, created) in [
+            ("running-scan", "library.scan", "{}", "running", 50),
+            ("automatic", "metadata.refresh", "{}", "complete", 40),
+            ("automatic-failed", "metadata.refresh", "{}", "failed", 30),
+            ("automatic-queued", "metadata.refresh", "{}", "queued", 20),
+            ("requested", "metadata.refresh", "{\"actor_id\":\"alice\"}", "complete", 10),
+        ] {
+            db.execute(
+                "INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES (?1,?2,'subject',?3,?4,1,?5)",
+                rusqlite::params![id, kind, payload, state, created],
+            )?;
+        }
+        for index in 0..101 {
+            db.execute(
+                "INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES (?1,'recyclarr.sync','run','{}','complete',1,5)",
+                [format!("sync-{index:03}")],
+            )?;
+        }
+        Ok(())
+    }).await.unwrap();
+
+    let all = jobs_page(&state, &alice, "").await;
+    assert_eq!(
+        all["totals"],
+        json!({"running":1,"queued":1,"failed":1,"complete":103})
+    );
+    assert_eq!(
+        job_ids(&all["pinned"]),
+        ["running-scan", "automatic-queued"]
+    );
+
+    // Automatic refreshes hide unless they failed, in the rows, the pinned jobs and the totals.
+    let hidden = jobs_page(&state, &alice, "?hide_automatic=true&kind=metadata.refresh").await;
+    assert_eq!(job_ids(&hidden["items"]), ["automatic-failed", "requested"]);
+    assert!(job_ids(&hidden["pinned"]).is_empty());
+    assert_eq!(
+        hidden["totals"],
+        json!({"running":0,"queued":0,"failed":1,"complete":1})
+    );
+
+    // A state narrows the rows but not the totals, which still count what each state lists.
+    let completed = jobs_page(
+        &state,
+        &alice,
+        "?state=complete&kind=metadata.refresh&hide_automatic=false",
+    )
+    .await;
+    assert_eq!(job_ids(&completed["items"]), ["automatic", "requested"]);
+    assert!(job_ids(&completed["pinned"]).is_empty());
+    assert_eq!(completed["totals"]["running"], 0);
+    assert_eq!(completed["totals"]["failed"], 1);
+
+    // A longer list starts with the shorter one, even for jobs created in the same second.
+    let synced = job_ids(&jobs_page(&state, &alice, "?kind=recyclarr.sync").await["items"]);
+    assert_eq!(synced.len(), 100);
+    let longer =
+        job_ids(&jobs_page(&state, &alice, "?kind=recyclarr.sync&limit=200").await["items"]);
+    assert_eq!(longer.len(), 101);
+    assert_eq!(longer[..100], synced);
+
+    // Everything since a time stays listed, past the limit and past the default page.
+    let since = jobs_page(&state, &alice, "?kind=metadata.refresh&limit=1&since=20").await;
+    assert_eq!(
+        job_ids(&since["items"]),
+        ["automatic", "automatic-failed", "automatic-queued"]
+    );
+    let since = jobs_page(&state, &alice, "?kind=recyclarr.sync&since=5").await;
+    assert_eq!(job_ids(&since["items"]).len(), 101);
+
+    let invalid = call(
+        &state,
+        "/api/v1/admin/jobs?limit=nonsense",
+        "GET",
+        json!({}),
+        &alice,
+    )
+    .await;
+    assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
+}
+#[tokio::test]
+async fn job_list_pins_failures_awaiting_dismissal_beyond_the_latest_jobs() {
     let (_temp, state, alice) = fixture().await;
     state.db.write("test.jobs", |db| {
         db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
@@ -349,9 +540,10 @@ async fn job_list_keeps_failures_awaiting_dismissal_beyond_the_latest_jobs() {
         }
         Ok(())
     }).await.unwrap();
-    let jobs = listed_jobs(&state, &alice).await;
-    assert_eq!(jobs.len(), 101);
-    assert_eq!(jobs.last().unwrap(), "failed");
+    let page = jobs_page(&state, &alice, "").await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 100);
+    assert!(!job_ids(&page["items"]).contains(&"failed".to_owned()));
+    assert_eq!(job_ids(&page["pinned"]), ["failed"]);
     let notices = call(&state, "/api/v1/me/attention", "GET", json!({}), &alice)
         .await
         .2;
@@ -371,7 +563,33 @@ async fn job_list_keeps_failures_awaiting_dismissal_beyond_the_latest_jobs() {
     )
     .await;
     assert_eq!(dismissed.0, StatusCode::OK, "{}", dismissed.2);
-    assert_eq!(listed_jobs(&state, &alice).await.len(), 100);
+    assert!(job_ids(&jobs_page(&state, &alice, "").await["pinned"]).is_empty());
+}
+#[tokio::test]
+async fn job_list_pins_every_failure_and_keeps_running_jobs_within_the_cap_on_active_ones() {
+    let (_temp, state, alice) = fixture().await;
+    state.db.write("test.jobs", |db| {
+        db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+        for index in 0..101 {
+            db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,completed_at,error,created_at) VALUES (?1,'library.scan','root','{}','failed',1,?2,'Unreadable',?3)", rusqlite::params![format!("failed-{index:03}"), thelxinoe_core::now(), 1000 + index])?;
+            db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES (?1,'library.scan','root','{}','queued',1,?2)", rusqlite::params![format!("queued-{index:03}"), 2000 + index])?;
+        }
+        db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES ('running','library.scan','root','{}','running',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+
+    let pinned = job_ids(&jobs_page(&state, &alice, "").await["pinned"]);
+    assert_eq!(pinned.len(), 101 + 100);
+    assert_eq!(pinned[0], "failed-100");
+    assert_eq!(pinned[100], "failed-000");
+    assert_eq!(pinned[101], "running");
+    assert_eq!(pinned[102], "queued-100");
+    assert_eq!(pinned[200], "queued-002");
+
+    // A queued job past the cap is still listed.
+    let queued = jobs_page(&state, &alice, "?state=queued&limit=200").await;
+    assert_eq!(job_ids(&queued["items"]).len(), 101);
+    assert_eq!(job_ids(&queued["pinned"]).len(), 100);
 }
 #[tokio::test]
 async fn user_deletion_revokes_personal_state_and_preserves_shared_data() {

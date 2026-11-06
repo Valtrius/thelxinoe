@@ -312,10 +312,22 @@ export async function installUiFixture(
       return json({
         items: Array.from({ length: 40 }, (_, index) => ({
           id: `job-${index}`,
-          kind: `Fixture job ${index}`,
+          kind: `fixture.job-${index}`,
+          action: null,
           state: 'complete',
+          attempts: 1,
           error: null,
+          created_at: 1789984800 - index * 3600,
+          available_at: 1789984800 - index * 3600,
+          started_at: 1789984800 - index * 3600,
+          completed_at: 1789984800 - index * 3600 + 8,
+          target: `Fixture target ${index}`,
+          service: null,
+          automatic: null,
+          actor: null,
         })),
+        pinned: [],
+        totals: { running: 0, queued: 0, failed: 0, complete: 40 },
       });
     if (path === '/admin/health')
       return json({

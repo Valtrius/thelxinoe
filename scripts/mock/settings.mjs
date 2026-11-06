@@ -320,17 +320,67 @@ export function settingsSeed() {
       })),
     },
     jobs: [
-      'Library scan',
-      'YouTube synchronization',
-      'Segment analysis',
-      'Metadata refresh',
-    ].map((kind, i) => ({
-      id: `job-${i}`,
-      kind,
-      state: i === 2 ? 'running' : 'complete',
-      error: null,
-      created_at: now() - i * 600,
-    })),
+      {
+        kind: 'library.scan',
+        state: 'running',
+        target: 'Movies',
+        ran: null,
+      },
+      {
+        kind: 'metadata.refresh',
+        automatic: true,
+        target: 'Beyond the Horizon',
+        ran: 0,
+      },
+      { kind: 'library.scan', target: 'Shows', ran: 8 },
+      {
+        kind: 'service.update',
+        action: 'activate',
+        automatic: true,
+        service: 'sonarr',
+        ran: 188,
+      },
+      {
+        kind: 'metadata.refresh',
+        automatic: false,
+        actor: 'Alex',
+        state: 'failed',
+        target: 'Quiet Harbor',
+        error: 'No matching Radarr, Sonarr or Lidarr item is available',
+        ran: 0,
+      },
+      {
+        kind: 'recyclarr.sync',
+        automatic: true,
+        service: 'recyclarr',
+        ran: 69,
+      },
+      {
+        kind: 'manager.request',
+        automatic: false,
+        actor: 'Alex',
+        target: 'Quiet Harbor',
+        ran: 1,
+      },
+    ].map(({ ran, ...job }, i) => {
+      const created_at = now() - i * 5400;
+      return {
+        id: `job-${i}`,
+        action: null,
+        state: 'complete',
+        attempts: 1,
+        error: null,
+        created_at,
+        available_at: created_at,
+        started_at: created_at + 1,
+        completed_at: ran === null ? null : created_at + 1 + ran,
+        target: null,
+        service: null,
+        automatic: null,
+        actor: null,
+        ...job,
+      };
+    }),
     sessions: [
       {
         id: 'session-0',
@@ -559,7 +609,32 @@ export async function settingsApi(s, c) {
     if (method === 'PUT') Object.assign(s.segments.config, body);
     return json(s.segments);
   }
-  if (path === '/admin/jobs') return json({ items: s.jobs });
+  if (path === '/admin/jobs') {
+    const kind = c.query.get('kind');
+    const state = c.query.get('state');
+    const matching = s.jobs.filter(
+      (job) =>
+        (!kind || job.kind === kind) &&
+        (c.query.get('hide_automatic') !== 'true' ||
+          job.state === 'failed' ||
+          !(job.kind.startsWith('metadata.') && job.automatic)),
+    );
+    const items = matching.filter((job) => !state || job.state === state);
+    return json({
+      items: items.filter(
+        (job, index) =>
+          index < Number(c.query.get('limit') ?? 100) ||
+          job.created_at >= Number(c.query.get('since') ?? Infinity),
+      ),
+      pinned: items.filter((job) => ['running', 'queued'].includes(job.state)),
+      totals: Object.fromEntries(
+        ['running', 'queued', 'failed', 'complete'].map((value) => [
+          value,
+          matching.filter((job) => job.state === value).length,
+        ]),
+      ),
+    });
+  }
   if (path === '/admin/health')
     return json({
       version: s.product.version,

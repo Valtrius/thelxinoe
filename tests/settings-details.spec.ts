@@ -703,6 +703,24 @@ test('service labels stay inside their tabs across the sidebar breakpoint', asyn
   expect(fixture.unexpected).toEqual([]);
 });
 
+const fixtureJob = (id: string, fields: Record<string, unknown> = {}) => ({
+  id,
+  kind: 'library.scan',
+  action: null,
+  state: 'complete',
+  attempts: 1,
+  error: null,
+  created_at: 1789984800,
+  available_at: 1789984800,
+  started_at: 1789984802,
+  completed_at: 1789984871,
+  target: 'Movies',
+  service: null,
+  automatic: null,
+  actor: null,
+  ...fields,
+});
+
 test('job failures stay on top of background jobs until dismissed', async ({
   page,
 }) => {
@@ -710,23 +728,37 @@ test('job failures stay on top of background jobs until dismissed', async ({
     role: 'admin',
     settingsSection: 'jobs',
   });
-  await page.route('**/api/v1/admin/jobs', (route) =>
+  const failed = fixtureJob('failed', {
+    kind: 'service.update',
+    action: 'activate',
+    state: 'failed',
+    service: 'sonarr',
+    target: null,
+    created_at: 1789898400,
+    available_at: 1789898400,
+    started_at: 1789898400,
+    completed_at: 1789898608,
+    error: 'Image registry rate limit exceeded',
+  });
+  let dismissed = false;
+  await page.route('**/api/v1/admin/jobs?*', (route) =>
     route.fulfill({
       json: {
         items: [
-          { id: 'newest', kind: 'Newest refresh', state: 'complete' },
-          { id: 'old-failure', kind: 'Old failure', state: 'failed' },
-          {
-            id: 'failed',
-            kind: 'Failed update',
+          fixtureJob('newest', { target: 'Newest library' }),
+          fixtureJob('old-failure', {
+            kind: 'metadata.refresh',
             state: 'failed',
-            error: 'Image registry rate limit exceeded',
-          },
+            target: 'Old failure',
+            created_at: 1789900000,
+          }),
+          failed,
         ],
+        pinned: dismissed ? [] : [failed],
+        totals: { running: 0, queued: 0, failed: 2, complete: 1 },
       },
     }),
   );
-  let dismissed = false;
   await page.route('**/api/v1/me/attention**', (route) => {
     if (route.request().method() === 'PUT') {
       dismissed = true;
@@ -753,45 +785,178 @@ test('job failures stay on top of background jobs until dismissed', async ({
     });
   });
   await page.goto('/');
-  const rows = page.locator('.settings-card .setting-row');
-  await expect(rows.first()).toContainText('Failed update');
-  await expect(rows.nth(1)).toContainText('Newest refresh');
-  await expect(rows.nth(2)).toContainText('Old failure');
-  await rows
-    .first()
-    .getByRole('button', { name: 'Dismiss failure', exact: true })
-    .click();
-  await expect(rows.first()).toContainText('Newest refresh');
-  await expect(rows.last()).toContainText('Failed update');
+  const table = page.getByRole('table', { name: 'Background jobs' });
+  await expect(
+    table.getByRole('columnheader', { name: /job/ }).first(),
+  ).toContainText('Needs attention');
+  const failure = table
+    .locator('tbody')
+    .filter({ hasText: 'Image registry rate limit exceeded' });
+  await expect(failure).toHaveCount(1);
+  await expect(failure).toContainText('Update service');
+  await expect(failure).toContainText('Sonarr');
+  await expect(failure).toContainText('3 m 28 s');
+  // The other failure was already dismissed, so it only appears in the history.
+  await expect(
+    table
+      .locator('tbody')
+      .filter({ hasText: 'Old failure' })
+      .getByRole('button', { name: 'Dismiss', exact: true }),
+  ).toHaveCount(0);
+  await failure.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(table.getByText('Needs attention')).toHaveCount(0);
+  await expect(failure).toHaveCount(1);
+  await expect(
+    failure.getByRole('button', { name: 'Dismiss', exact: true }),
+  ).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('activity and audit filters preserve real actions and older-page queries', async ({
+test('job filters reach the server and details show every timestamp', async ({
   page,
 }, testInfo) => {
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'jobs',
   });
-  await page.route('**/api/v1/admin/jobs', (route) =>
-    route.request().method() === 'POST'
-      ? route.fallback()
-      : route.fulfill({
-          json: {
-            items: [
-              { id: 'running', kind: 'Library scan', state: 'running' },
-              { id: 'failed', kind: 'Guide sync', state: 'failed' },
-              {
-                id: 'complete',
-                kind: 'Successful checkpoint',
-                state: 'complete',
-              },
-              { id: 'queued', kind: 'Pending checkpoint', state: 'queued' },
-            ],
-          },
-        }),
-  );
+  const queries: URL[] = [];
+  let olderState = 'running';
+  await page.route('**/api/v1/admin/jobs*', (route) => {
+    const url = new URL(route.request().url());
+    queries.push(url);
+    const older = Number(url.searchParams.get('limit')) > 100;
+    const state = url.searchParams.get('state');
+    const hidden = url.searchParams.get('hide_automatic') === 'true';
+    const items = [
+      fixtureJob('running', {
+        state: 'running',
+        target: 'Shows',
+        completed_at: null,
+      }),
+      fixtureJob('queued', {
+        kind: 'recyclarr.sync',
+        state: 'queued',
+        service: 'recyclarr',
+        target: null,
+        started_at: null,
+        completed_at: null,
+        automatic: true,
+      }),
+      fixtureJob('complete', {
+        target: 'Completed library',
+        attempts: 2,
+        automatic: false,
+        actor: 'Alex',
+      }),
+      ...(hidden
+        ? []
+        : [
+            fixtureJob('automatic', {
+              kind: 'metadata.refresh',
+              target: 'Automatic title',
+              automatic: true,
+            }),
+          ]),
+      ...(older
+        ? [
+            fixtureJob('older', {
+              state: olderState,
+              target: 'Older library',
+              created_at: 1789884000,
+            }),
+          ]
+        : []),
+    ];
+    const shown = items.filter((job) => !state || job.state === state);
+    return route.fulfill({
+      json: {
+        items: shown,
+        pinned: shown.filter(
+          (job) =>
+            ['running', 'queued'].includes(job.state) && job.id !== 'older',
+        ),
+        totals: { running: 1, queued: 1, failed: 0, complete: hidden ? 2 : 3 },
+      },
+    });
+  });
+  await page.goto('/');
+  const table = page.getByRole('table', { name: 'Background jobs' });
+  await expect(table.getByText('In progress')).toBeVisible();
+  await expect(table.getByText('Completed library')).toBeVisible();
+  // Automatic refreshes start hidden.
+  expect(queries.at(-1)?.searchParams.get('hide_automatic')).toBe('true');
+  await expect(table.getByText('Automatic title')).toHaveCount(0);
+
+  const complete = table
+    .locator('tbody')
+    .filter({ hasText: 'Completed library' });
+  await complete.getByRole('button', { name: 'Scan library' }).click();
+  for (const label of ['Queued', 'Started', 'Finished', 'Waited', 'Ran for']) {
+    await expect(complete.getByText(label, { exact: true })).toBeVisible();
+  }
+  await expect(complete.getByText('1 m 9 s').first()).toBeVisible();
+  await expect(complete.getByText('Alex', { exact: true })).toBeVisible();
+  await expect(complete.getByText('complete', { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('job-details.png'),
+    fullPage: true,
+  });
+
+  // Older jobs add to the list and keep the filters.
+  await page.getByRole('button', { name: 'Load older jobs' }).click();
+  const older = table.locator('tbody').filter({ hasText: 'Older library' });
+  await expect(older.getByText('Running')).toBeVisible();
+  await expect(table.getByText('Completed library')).toBeVisible();
+  expect(queries.at(-1)?.searchParams.get('limit')).toBe('103');
+  expect(queries.at(-1)?.searchParams.has('since')).toBe(false);
+  expect(queries.at(-1)?.searchParams.get('hide_automatic')).toBe('true');
+  await expect(
+    page.getByRole('button', { name: 'Load older jobs' }),
+  ).toHaveCount(0);
+
+  // A refresh rereads down to the oldest job shown, so none goes stale or drops off.
+  olderState = 'complete';
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect(older.getByText('Completed')).toBeVisible();
+  expect(queries.at(-1)?.searchParams.get('limit')).toBe('103');
+  expect(queries.at(-1)?.searchParams.get('since')).toBe('1789884000');
+
+  // A new filter starts over from the newest jobs.
+  await page.getByLabel('Job type', { exact: true }).selectOption({
+    label: 'Sync Recyclarr',
+  });
+  await expect
+    .poll(() => queries.at(-1)?.searchParams.get('kind'))
+    .toBe('recyclarr.sync');
+  expect(queries.at(-1)?.searchParams.has('limit')).toBe(false);
+  expect(queries.at(-1)?.searchParams.has('since')).toBe(false);
+  await page.getByLabel('Job type', { exact: true }).selectOption('');
+
+  await page
+    .getByRole('group', { name: 'Job state' })
+    .getByRole('button', { name: 'Completed 2' })
+    .click();
+  await expect
+    .poll(() => queries.at(-1)?.searchParams.get('state'))
+    .toBe('complete');
+  await expect(table.getByText('In progress')).toHaveCount(0);
+  await expect(table.getByText('Completed library')).toBeVisible();
+
+  await page.getByRole('switch', { name: /Show automatic/ }).check();
+  await expect(table.getByText('Automatic title')).toBeVisible();
+  expect(queries.at(-1)?.searchParams.has('hide_automatic')).toBe(false);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('audit filters preserve real actions and older-page queries', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'jobs',
+  });
   const queries: URL[] = [];
   await page.route('**/api/v1/admin/audit?*', (route) => {
     const url = new URL(route.request().url());
@@ -849,35 +1014,6 @@ test('activity and audit filters preserve real actions and older-page queries', 
     });
   });
   await page.goto('/');
-  const jobState = page.getByLabel('Job state', { exact: true });
-  await jobState.selectOption({ label: 'Completed' });
-  await expect(
-    page.getByText('Successful checkpoint', { exact: true }),
-  ).toBeVisible();
-  await expect(
-    jobState.getByRole('option', { name: /^complete/i }),
-  ).toHaveCount(1);
-  await expect(
-    page.getByText('1 of 4 latest jobs', { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText('Guide sync', { exact: true })).toHaveCount(0);
-  await page.screenshot({
-    path: testInfo.outputPath('completed-jobs.png'),
-    fullPage: true,
-  });
-  for (const [label, kind] of [
-    ['Queued', 'Pending checkpoint'],
-    ['Running', 'Library scan'],
-  ]) {
-    await jobState.selectOption({ label });
-    await expect(page.getByText(kind, { exact: true })).toBeVisible();
-    await expect(
-      page.getByText('Successful checkpoint', { exact: true }),
-    ).toHaveCount(0);
-  }
-  await page.getByLabel('Job state', { exact: true }).selectOption('failed');
-  await expect(page.getByText('Guide sync', { exact: true })).toBeVisible();
-  await expect(page.getByText('Library scan', { exact: true })).toHaveCount(0);
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
     .getByRole('link', { name: 'Audit', exact: true })
@@ -1028,7 +1164,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
       'Auto-delete',
       'Backups',
       'People',
-      'Activity',
+      'Jobs',
       'Audit',
     ]) {
       await nav.getByRole('link', { name, exact: true }).click();

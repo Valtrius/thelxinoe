@@ -24,8 +24,23 @@ export type User = {
 export type Job = {
   id: string;
   kind: string;
+  action: string | null;
   state: 'queued' | 'running' | 'complete' | 'failed';
+  attempts: number;
   error: string | null;
+  created_at: number;
+  available_at: number;
+  started_at: number | null;
+  completed_at: number | null;
+  target: string | null;
+  service: string | null;
+  automatic: boolean | null;
+  actor: string | null;
+};
+export type JobPage = {
+  items: Job[];
+  pinned: Job[];
+  totals: Record<Job['state'], number>;
 };
 export class ApiError extends Error {
   constructor(

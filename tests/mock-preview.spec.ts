@@ -468,7 +468,7 @@ test('every admin settings panel and service tab has populated mocks', async ({
     ['admin/retention', 'Video downloads'],
     ['admin/backups', 'thelxinoe-preview-0.tar.age'],
     ['admin/people', 'Alex'],
-    ['admin/jobs', 'Library scan'],
+    ['admin/jobs', 'Scan library'],
     ['admin/audit', 'Created a user'],
   ];
   for (const [route, content] of panels) {

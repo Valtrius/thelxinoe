@@ -306,9 +306,9 @@
         )}{:then { default: AuditSettings }}<AuditSettings
           {user}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
-    {#if section === 'jobs'}{#await settingsPages.ActivitySettings()}{@render loading(
+    {#if section === 'jobs'}{#await settingsPages.JobsSettings()}{@render loading(
           'Loading settings',
-        )}{:then { default: ActivitySettings }}<ActivitySettings
+        )}{:then { default: JobsSettings }}<JobsSettings
         />{:catch caught}{@render failed(caught)}{/await}{/if}
   {/if}
 {/snippet}

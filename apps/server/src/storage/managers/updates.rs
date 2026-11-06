@@ -37,7 +37,7 @@ pub(super) async fn enqueue(
         let available=tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='complete' AND hold IS NULL AND (service_id IS NOT NULL OR kind='recyclarr')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state NOT IN ({}))",thelxinoe_core::service_update::sql(thelxinoe_core::service_update::FINISHED)),[&service],|r|r.get::<_,bool>(0))?;
         if !available{return Ok(false);}
         tx.execute("INSERT INTO service_updates(id,service_id,actor_id,state,created_at,updated_at,automatic,candidate) VALUES (?1,?2,?3,'queued',?4,?4,?5,(SELECT candidate FROM service_update_policy WHERE service_id=?2))",params![key,service,actor,now(),actor.is_none()])?;
-        thelxinoe_jobs::enqueue_in(&tx,"service.update",&key,&json!({"id":key,"action":"preflight"}),0)?;
+        thelxinoe_jobs::enqueue_in(&tx,"service.update",&key,&json!({"id":key,"action":"preflight","actor_id":actor,"automatic":actor.is_none()}),0)?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'service.update.preflight',?2,?3)",params![actor,key,now()])?;
         tx.commit()?;Ok(true)
     }).await
@@ -54,7 +54,7 @@ pub(super) async fn queue_action(
         let allowed=if action=="activate" {current.as_deref()==Some("ready")} else {current.as_deref().is_some_and(|s|["blocked","recovery-required","rollback-activating"].contains(&s))};
         if !allowed{return Ok(false);}
         tx.execute("UPDATE service_updates SET state=?1,error=NULL,actor_id=?2,updated_at=?3,automatic=?5 WHERE id=?4",params![format!("queued-{action}"),actor,now(),key,actor.is_none()])?;
-        thelxinoe_jobs::enqueue_in(&tx,"service.update",&key,&json!({"id":key,"action":action}),0)?;
+        thelxinoe_jobs::enqueue_in(&tx,"service.update",&key,&json!({"id":key,"action":action,"actor_id":actor,"automatic":actor.is_none()}),0)?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",params![actor,format!("service.update.{action}"),key,now()])?;
         tx.commit()?;Ok(true)
     }).await
