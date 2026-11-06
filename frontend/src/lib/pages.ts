@@ -27,7 +27,7 @@ export const pages = {
 };
 
 export const settingsPages = {
-  ActivitySettings: cached(() => import('./ActivitySettings.svelte')),
+  JobsSettings: cached(() => import('./JobsSettings.svelte')),
   PlaybackSettings: cached(() => import('./PlaybackSettings.svelte')),
   SegmentSettings: cached(() => import('./SegmentSettings.svelte')),
   ServerDisplayDefaults: cached(() => import('./ServerDisplayDefaults.svelte')),
@@ -99,7 +99,7 @@ const settingsModules: Record<SettingsSection, (keyof typeof settingsPages)[]> =
     retention: ['RetentionSettings', 'ManagerOwnership'],
     backups: ['BackupSettings'],
     people: [],
-    jobs: ['ActivitySettings'],
+    jobs: ['JobsSettings'],
     audit: ['AuditSettings'],
   };
 // Once the open settings page shows, the others load one at a time so moving

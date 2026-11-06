@@ -55,10 +55,21 @@ pub async fn events(
         }
     }))
 }
-pub async fn jobs(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
+#[derive(Deserialize)]
+pub struct JobFilter {
+    kind: Option<String>,
+    state: Option<String>,
+    #[serde(default)]
+    hide_automatic: bool,
+    limit: Option<u32>,
+    since: Option<i64>,
+}
+pub async fn jobs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(filter): Query<JobFilter>,
+) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    // A failure still awaiting dismissal stays listed however many jobs followed it.
-    let pinned = crate::operations::attention_jobs(&state, p).await?;
-    let rows = storage::jobs(&state.db, pinned).await?;
-    Ok(Json(json!({"items":rows})))
+    let attention = crate::operations::attention_jobs(&state, p).await?;
+    Ok(Json(storage::jobs(&state.db, filter, attention).await?))
 }

@@ -968,7 +968,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
     assert!(!payload.contains(&plain));
     assert!(!result.2.to_string().contains(&plain));
     let payload: Value = serde_json::from_str(&payload).unwrap();
-    assert_eq!(payload, json!({"id":key}));
+    assert_eq!(payload, json!({"id":key,"actor_id":"bob"}));
     let policy = json!({"policy":"automatic","window_start":22,"window_end":3});
     assert_eq!(
         call(

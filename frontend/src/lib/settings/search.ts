@@ -225,7 +225,8 @@ export const settingsSearchIndex: Record<
   jobs: [
     {
       title: 'Background jobs',
-      terms: 'jobs running queued failed completed state',
+      terms:
+        'jobs running queued failed completed state type duration timestamps automatic metadata refresh scan',
     },
   ],
   audit: [

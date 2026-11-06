@@ -661,3 +661,49 @@ async fn an_update_in_any_unfinished_stage_blocks_another() {
         assert_eq!(started, !blocks, "{stage}");
     }
 }
+
+#[tokio::test]
+async fn each_job_keeps_the_trigger_it_was_queued_with() {
+    let (_temp, state, cookie) = fixture().await;
+    state.db.write("test.jobs", |db| {
+        db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,created_at,updated_at) VALUES ('provision','recyclarr','alice','complete',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    assert!(
+        storage::enqueue("provision".into(), "update".into(), &state.db, None)
+            .await
+            .unwrap()
+    );
+    state.db.write("test.jobs", |db| {
+        db.execute("UPDATE service_updates SET state='ready' WHERE id='update'", [])?;
+        // An attempt queued before jobs recorded their trigger has none to show.
+        db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES ('unrecorded','service.update','update','{\"id\":\"update\",\"action\":\"recover\"}','complete',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    assert!(
+        storage::queue_action(
+            &state.db,
+            "update".into(),
+            "activate".into(),
+            Some("alice".into())
+        )
+        .await
+        .unwrap()
+    );
+
+    let (status, _, page) = call(&state, "/api/v1/admin/jobs", "GET", json!({}), &cookie).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let trigger = |action: &str| {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| job["action"] == action)
+            .map(|job| (job["automatic"].clone(), job["actor"].clone()))
+            .unwrap()
+    };
+    assert_eq!(trigger("preflight"), (json!(true), Value::Null));
+    assert_eq!(trigger("activate"), (json!(false), json!("alice")));
+    assert_eq!(trigger("recover"), (Value::Null, Value::Null));
+}

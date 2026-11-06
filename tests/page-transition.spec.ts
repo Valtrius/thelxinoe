@@ -139,7 +139,7 @@ test('settings sections, service tabs and detail pages also transition without l
     ['Auto-delete', 'Video downloads'],
     ['Backups', 'thelxinoe-preview-0.tar.age'],
     ['People', 'Alex'],
-    ['Activity', 'Library scan'],
+    ['Jobs', 'Scan library'],
     ['Audit', 'Created a user'],
   ]) {
     await page

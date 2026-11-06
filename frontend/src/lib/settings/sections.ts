@@ -1,5 +1,4 @@
 import {
-  Activity,
   AppWindow,
   AudioLines,
   ArchiveRestore,
@@ -9,6 +8,7 @@ import {
   Import,
   Laptop,
   Link,
+  ListChecks,
   MonitorSmartphone,
   Play,
   ScrollText,
@@ -130,8 +130,8 @@ const admin: SettingsPageInfo[] = [
   },
   {
     id: 'jobs',
-    label: 'Activity',
-    icon: Activity,
+    label: 'Jobs',
+    icon: ListChecks,
     description: 'Background jobs running on this server.',
   },
   {

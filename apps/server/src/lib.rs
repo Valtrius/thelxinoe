@@ -443,8 +443,24 @@ async fn back_off(error: anyhow::Error, delay: &mut std::time::Duration) -> anyh
 
 /// Runs one claimed job and records its outcome on that job alone. Neither its error or
 /// panic nor a failed event stops its lane, the other lane or the jobs running beside it.
+async fn announce_job(state: &AppState, job: &thelxinoe_jobs::Job) {
+    if let Err(error) = state.emit(None, "jobs.changed", json!({"id":job.id})).await {
+        tracing::warn!(job = %job.id, "Job change could not be announced: {error:#}");
+    }
+}
+
+/// Refreshes nobody asked for run hundreds at a time and finish within a second, so only
+/// their outcome is announced.
+fn is_automatic_refresh(job: &thelxinoe_jobs::Job) -> bool {
+    matches!(job.kind.as_str(), "metadata.match" | "metadata.refresh")
+        && job.payload["actor_id"].is_null()
+}
+
 async fn run_job(state: AppState, job: thelxinoe_jobs::Job) {
     use futures_util::FutureExt;
+    if !is_automatic_refresh(&job) {
+        announce_job(&state, &job).await;
+    }
     let result = std::panic::AssertUnwindSafe(handle_job(&state, &job))
         .catch_unwind()
         .await
@@ -466,9 +482,7 @@ async fn run_job(state: AppState, job: thelxinoe_jobs::Job) {
             }
         }
     }
-    if let Err(error) = state.emit(None, "jobs.changed", json!({"id":job.id})).await {
-        tracing::warn!(job = %job.id, "Job change could not be announced: {error:#}");
-    }
+    announce_job(&state, &job).await;
 }
 
 /// Returns false when the job queued itself again instead of finishing.
@@ -668,6 +682,38 @@ mod job_tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         panic!("Job {id} did not finish");
+    }
+
+    #[tokio::test]
+    async fn starting_a_job_is_announced_unless_it_is_an_automatic_refresh() {
+        let (_temp, state, _) = fixture().await;
+        let queue = Queue(state.db.clone());
+        for (kind, payload, announcements) in [
+            ("library.scan", json!({"root_id":"gone"}), 2),
+            ("metadata.refresh", json!({"media_id":"gone"}), 1),
+            (
+                "metadata.refresh",
+                json!({"media_id":"gone","actor_id":"alice"}),
+                2,
+            ),
+        ] {
+            let id = queue.enqueue(kind, "subject", payload).await.unwrap();
+            let job = queue.claim().await.unwrap().unwrap();
+            assert_eq!(job.id, id);
+            super::run_job(state.clone(), job).await;
+            let seen = state
+                .db
+                .read("test.events", move |c| {
+                    Ok(c.query_row(
+                        "SELECT COUNT(*) FROM events WHERE kind='jobs.changed' AND json_extract(payload,'$.id')=?1",
+                        [id],
+                        |r| r.get::<_, i64>(0),
+                    )?)
+                })
+                .await
+                .unwrap();
+            assert_eq!(seen, announcements, "{kind}");
+        }
     }
 
     #[tokio::test]

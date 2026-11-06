@@ -14,7 +14,7 @@ pub(super) async fn install(
     key: String,
     credential: Option<Vec<u8>>,
 ) -> anyhow::Result<bool> {
-    db.write("managers.stack.install", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1 UNION ALL SELECT 1 FROM manager_services WHERE kind=?1 AND enabled=1 UNION ALL SELECT 1 FROM support_services WHERE kind=?1 UNION ALL SELECT 1 FROM recyclarr_connections WHERE ?1='recyclarr' UNION ALL SELECT 1 FROM service_transfers WHERE kind=?1 AND state NOT IN ('review','complete','cancelled','returned'))",[&input.kind],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at,native_url,hold) VALUES (?1,?2,?3,?4,?5,'queued',?6,?6,?7,'setup')",params![key,input.kind,p.user.id,input.host_port,credential,now(),input.native_url])?;thelxinoe_jobs::enqueue_in(&tx,"stack.install",&key,&json!({"id":key}),0)?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.install',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await
+    db.write("managers.stack.install", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1 UNION ALL SELECT 1 FROM manager_services WHERE kind=?1 AND enabled=1 UNION ALL SELECT 1 FROM support_services WHERE kind=?1 UNION ALL SELECT 1 FROM recyclarr_connections WHERE ?1='recyclarr' UNION ALL SELECT 1 FROM service_transfers WHERE kind=?1 AND state NOT IN ('review','complete','cancelled','returned'))",[&input.kind],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at,native_url,hold) VALUES (?1,?2,?3,?4,?5,'queued',?6,?6,?7,'setup')",params![key,input.kind,p.user.id,input.host_port,credential,now(),input.native_url])?;thelxinoe_jobs::enqueue_in(&tx,"stack.install",&key,&json!({"id":key,"actor_id":p.user.id}),0)?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.install',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await
 }
 
 pub(super) async fn action_read_service(
@@ -227,13 +227,13 @@ pub(super) async fn complete_setup(db: &Database, key: String) -> anyhow::Result
     }).await
 }
 
-pub(super) async fn retry(db: &Database, key: String) -> anyhow::Result<bool> {
+pub(super) async fn retry(db: &Database, key: String, actor: String) -> anyhow::Result<bool> {
     db.write("managers.stack.retry", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         // Finished jobs are pruned after a week, so a long-blocked installation may have none.
         let ready=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions p WHERE p.id=?1 AND p.state='blocked' AND p.hold='setup') AND NOT EXISTS(SELECT 1 FROM jobs WHERE kind='stack.install' AND subject=?1 AND state IN ('queued','running','complete'))",[&key],|r|r.get::<_,bool>(0))?;
         if !ready {return Ok(false);}
         tx.execute("UPDATE stack_provisions SET state=CASE WHEN container_id IS NULL THEN 'queued' ELSE 'connecting' END,error=NULL,updated_at=?1 WHERE id=?2",params![now(),key])?;
-        if !thelxinoe_jobs::requeue(&tx,"stack.install",&key,0)? { thelxinoe_jobs::enqueue_in(&tx,"stack.install",&key,&json!({"id":key}),0)?; }
+        if !thelxinoe_jobs::requeue(&tx,"stack.install",&key,0)? { thelxinoe_jobs::enqueue_in(&tx,"stack.install",&key,&json!({"id":key,"actor_id":actor}),0)?; }
         tx.commit()?;Ok(true)
     }).await
 }
