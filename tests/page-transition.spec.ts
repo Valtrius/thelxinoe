@@ -15,6 +15,29 @@ const ready = async (page: Page) => {
   await expect(pageContent(page)).toHaveAttribute('data-page-phase', 'idle');
   await expect(pageContent(page)).toHaveCSS('opacity', '1');
 };
+// Holds the outgoing copy until a test's assertions finish, even when the
+// runner takes longer than the animation to return from the click.
+const holdLeave = (page: Page) =>
+  page.evaluate(() => {
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (keyframes, options) {
+      const animation = animate.call(this, keyframes, options);
+      const root = this.getRootNode();
+      if (
+        root instanceof ShadowRoot &&
+        root.host.hasAttribute('data-page-leaving')
+      ) {
+        animation.pause();
+        (window as unknown as { heldLeave: Animation }).heldLeave = animation;
+        Element.prototype.animate = animate;
+      }
+      return animation;
+    };
+  });
+const releaseLeave = (page: Page) =>
+  page.evaluate(() =>
+    (window as unknown as { heldLeave: Animation }).heldLeave.play(),
+  );
 
 test('the next page revalidates stale data while the previous page is still leaving', async ({
   page,
@@ -43,11 +66,13 @@ test('the next page revalidates stale data while the previous page is still leav
       return original(input, init);
     };
   });
+  await holdLeave(page);
   await page.getByRole('link', { name: 'Movies', exact: true }).click();
   // The copy exists from the click until the leave animation ends.
   const outgoing = page.locator('[data-page-leaving][aria-hidden="true"]');
   await expect(outgoing).toHaveCount(1);
   await page.screenshot({ path: info.outputPath('movies-leaving-home.png') });
+  await releaseLeave(page);
   await ready(page);
   await expect(outgoing).toHaveCount(0);
   const phases = await page.evaluate(
@@ -287,23 +312,8 @@ test('the music lists change under a toolbar that stays, requesting the next lis
         );
       return original(input, init);
     };
-    // Hold the outgoing copy until its assertions finish, even when the
-    // runner takes longer than the animation to return from the click.
-    const animate = Element.prototype.animate;
-    Element.prototype.animate = function (keyframes, options) {
-      const animation = animate.call(this, keyframes, options);
-      const root = this.getRootNode();
-      if (
-        root instanceof ShadowRoot &&
-        root.host.hasAttribute('data-page-leaving')
-      ) {
-        animation.pause();
-        (window as unknown as { musicLeave: Animation }).musicLeave = animation;
-        Element.prototype.animate = animate;
-      }
-      return animation;
-    };
   });
+  await holdLeave(page);
   const lists = page.getByRole('group', { name: 'Music lists' });
   const albums = lists.getByRole('button', { name: /^Albums/ });
   const artists = lists.getByRole('button', { name: /^Artists/ });
@@ -318,9 +328,7 @@ test('the music lists change under a toolbar that stays, requesting the next lis
   await expect(lists).toBeVisible();
   await expect(pageContent(page)).toHaveCSS('opacity', '1');
   await page.screenshot({ path: info.outputPath('music-list-leaving.png') });
-  await page.evaluate(() =>
-    (window as unknown as { musicLeave: Animation }).musicLeave.play(),
-  );
+  await releaseLeave(page);
   await ready(page);
   await expect(outgoing).toHaveCount(0);
   await expect(albums).toHaveAttribute('aria-pressed', 'true');
