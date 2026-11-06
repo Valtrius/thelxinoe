@@ -30,6 +30,16 @@ async function login(page, username) {
   await page.getByRole('link', { name: 'Home', exact: true }).click();
   await expect(page.locator('.page-header h1')).toHaveText('Home');
 }
+async function openPlaylists(page) {
+  await page
+    .getByRole('navigation', { name: 'Main navigation' })
+    .getByRole('link', { name: 'Music', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Open playlists', exact: true })
+    .click();
+  return page.locator('[data-youtube-watchlist-frame]');
+}
 try {
   await login(page, 'admin');
   originalZone = (await api(owner, '/me/preferences')).timezone_override;
@@ -66,27 +76,26 @@ try {
     .toMatchObject({ favorite: true, watch_later: true });
   await login(other, 'state-user');
   expect((await api(guest, `/catalog/${movie.id}/state`)).favorite).toBe(false);
-  await page.getByRole('link', { name: 'Playlists', exact: true }).click();
-  await page.getByRole('button', { name: 'New playlist', exact: true }).click();
-  await expect(page.locator('[data-page-content]')).toHaveAttribute(
-    'data-page-phase',
-    'idle',
-  );
+  const sidebar = await openPlaylists(page);
   const name = `Shared music ${Date.now()}`;
-  await page.getByLabel('Playlist name', { exact: true }).fill(name);
-  await page.getByLabel('Find tracks', { exact: true }).fill('Gapless');
-  await page
-    .getByRole('button', { name: 'Search tracks', exact: true })
+  await sidebar.getByRole('button').first().click();
+  const created = sidebar.getByRole('dialog', { name: 'Playlists' });
+  await created.getByPlaceholder('New playlist').fill(name);
+  await created
+    .getByRole('button', { name: 'Create playlist', exact: true })
     .click();
+  await expect(
+    sidebar.getByRole('button', { name: new RegExp(`^${name}`) }).first(),
+  ).toBeVisible();
+  await page.getByRole('button', { name: /^Gapless Artist/ }).click();
+  await page.getByRole('button', { name: /^Gapless Album/ }).click();
   await page
-    .getByRole('button', { name: 'Add Gapless 1', exact: true })
+    .getByRole('button', { name: 'Add to playlist', exact: true })
     .click();
-  await page
-    .getByRole('button', { name: 'Add Gapless 2', exact: true })
-    .click();
-  await page
-    .getByRole('button', { name: 'Save playlist', exact: true })
-    .click();
+  await page.getByRole('menuitem', { name }).click();
+  await expect(
+    page.getByText('Added 2 tracks.', { exact: true }),
+  ).toBeVisible();
   await expect
     .poll(async () => {
       const item = (await api(owner, '/playlists')).items.find(
@@ -96,29 +105,52 @@ try {
       return item?.count;
     })
     .toBe(2);
-  await other.getByRole('link', { name: 'Playlists', exact: true }).click();
-  await other.getByRole('button', { name, exact: true }).click();
-  await expect(
-    other.getByRole('button', { name: 'Save playlist', exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    other.getByRole('button', { name: 'Play playlist', exact: true }),
-  ).toBeEnabled();
-  const publicRow = other
-    .locator('section')
-    .filter({ has: other.getByRole('button', { name, exact: true }) });
-  await publicRow
-    .getByRole('button', { name: 'Favorite playlist', exact: true })
+  const item = `${origin}/api/v1/playlists/${playlist}`;
+
+  // Private until its owner opens it, and then only to read.
+  expect((await guest.request.get(item)).status()).toBe(404);
+  await sidebar
+    .getByRole('button', { name: 'Playlist settings', exact: true })
+    .click();
+  await sidebar
+    .getByRole('dialog', { name: 'Playlist settings' })
+    .getByText('Public', { exact: true })
     .click();
   await expect
-    .poll(async () => (await api(guest, `/playlists/${playlist}`)).favorite)
-    .toBe(true);
+    .poll(async () => (await api(owner, `/playlists/${playlist}`)).access)
+    .toBe('read');
+  await page.keyboard.press('Escape');
+
+  const shared = await openPlaylists(other);
+  const picker = shared.getByRole('button', { name: new RegExp(`^${name}`) });
+  await picker.first().click();
+  await expect(
+    shared
+      .getByRole('dialog', { name: 'Playlists' })
+      .getByText('admin', { exact: true }),
+  ).toBeVisible();
+  await other.keyboard.press('Escape');
+  await expect(shared.locator('[data-list-item-key]')).toHaveCount(2);
+  await expect(
+    shared.getByRole('button', { name: 'Playlist settings', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    shared.getByRole('button', { name: 'Gapless 1', exact: true }),
+  ).toHaveAttribute('aria-disabled', 'false');
+  const refused = await guest.request.post(`${item}/items`, {
+    headers: { 'X-Thelxinoe-Client': '1' },
+    data: { items: [] },
+  });
+  expect(refused.status()).toBe(403);
+
+  await api(guest, `/playlists/${playlist}/favorite`, 'PUT', {
+    favorite: true,
+  });
+  expect((await api(guest, `/playlists/${playlist}`)).favorite).toBe(true);
   expect((await api(owner, `/playlists/${playlist}`)).favorite).toBe(false);
   const music = () => api(owner, '/me/history?range=all&platform=music');
   const before = Math.max(0, ...(await music()).items.map((item) => item.id));
-  await page
-    .getByRole('button', { name: 'Play playlist', exact: true })
-    .click();
+  await sidebar.getByRole('button', { name: 'Gapless 1', exact: true }).click();
   await expect(
     page.getByRole('region', { name: 'Music player', exact: true }),
   ).toBeVisible();
@@ -172,6 +204,7 @@ try {
       {
         verified_at: new Date().toISOString(),
         private_favorites: true,
+        private_playlists_until_opened: true,
         shared_owned_playlists: true,
         independent_playlist_favorites: true,
         playlist_playback: true,
