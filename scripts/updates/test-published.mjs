@@ -1,7 +1,8 @@
 // Deploy the latest published release from its own compose.yaml and images,
 // then update it in-app to a candidate built from this commit. The published
 // controller performs the update, as on every installation.
-import { request as client, expect } from '@playwright/test';
+import { request as client } from '@playwright/test';
+import { expect } from './expect.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';

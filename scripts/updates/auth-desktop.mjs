@@ -1,4 +1,4 @@
-import { expect } from '@playwright/test';
+import { expect } from './expect.mjs';
 import { createHmac } from 'node:crypto';
 import { join } from 'node:path';
 
