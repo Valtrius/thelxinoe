@@ -530,12 +530,12 @@ test('Home YouTube cards restart videos and mark them watched with undo', async 
 }) => {
   const { fixture, data } = await homeFixture(page);
   const inProgress = data.youtube.continue_watching;
-  const marks: { videoId: string; watched: boolean }[] = [];
+  const marks: { videoId: string; watched: boolean; position?: number }[] = [];
   const launches: { media_id: string; position?: number }[] = [];
   await page.route('**/api/v1/online/youtube/videos/*', (route) => {
     const videoId = new URL(route.request().url()).pathname.split('/').at(-1)!;
-    const { watched } = route.request().postDataJSON();
-    marks.push({ videoId, watched });
+    const { watched, position } = route.request().postDataJSON();
+    marks.push({ videoId, watched, position });
     data.youtube.continue_watching = watched ? [] : inProgress;
     return route.fulfill({ json: { saved: true } });
   });
@@ -599,7 +599,7 @@ test('Home YouTube cards restart videos and mark them watched with undo', async 
   await expect(card).toBeVisible();
   expect(marks).toEqual([
     { videoId: 'abcdefghijk', watched: true },
-    { videoId: 'abcdefghijk', watched: false },
+    { videoId: 'abcdefghijk', watched: false, position: 80 },
   ]);
 
   const upload = page

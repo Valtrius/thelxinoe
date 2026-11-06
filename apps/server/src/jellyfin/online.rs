@@ -349,6 +349,7 @@ pub async fn set_flag(
                 watchlist: None,
                 pinned: favorite.then_some(value),
                 watched: (!favorite).then_some(value),
+                position: None,
             },
         )
         .await?;

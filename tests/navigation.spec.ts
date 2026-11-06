@@ -288,9 +288,8 @@ test('a shared video asks which watchlist to join when there are several', async
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('the server alone removes a watched video from an auto-remove watchlist', async ({
-  page,
-}) => {
+// Watch Later holding one video, on a server that accepts its marks.
+async function watchLaterFixture(page: Page, progress = {}) {
   const fixture = await installUiFixture(page, { section: 'YouTube' });
   const events = await installServerEvents(page);
   await page.route('**/api/v1/online/youtube', (route) =>
@@ -316,6 +315,7 @@ test('the server alone removes a watched video from an auto-remove watchlist', a
     positionSeconds: 0,
     watchedPercentage: 0,
     isWatched: false,
+    ...progress,
   };
   let items = [{ video, addedAt: video.publishedAt, manualPosition: 0 }];
   await page.route('**/api/v1/online/youtube/watchlists', (route) =>
@@ -358,14 +358,57 @@ test('the server alone removes a watched video from an auto-remove watchlist', a
       },
     }),
   );
+  const marks: unknown[] = [];
   await page.route(
     `**/api/v1/online/youtube/videos/${video.videoId}`,
-    (route) => route.fulfill({ json: {} }),
+    (route) => {
+      marks.push(route.request().postDataJSON());
+      return route.fulfill({ json: {} });
+    },
   );
+  return {
+    fixture,
+    events,
+    marks,
+    row: page.locator(`[data-list-item-key="${video.videoId}"]`),
+    empty: () => {
+      items = [];
+    },
+  };
+}
+
+test('marking a watchlist video unwatched clears its progress', async ({
+  page,
+}) => {
+  const { fixture, events, marks, row } = await watchLaterFixture(page, {
+    positionSeconds: 30,
+    watchedPercentage: 50,
+  });
+  await page.goto('/#online/youtube/watchlists/1');
+  await expect.poll(events.connected).toBe(true);
+  const position = row.getByText(/^0?0:30$/);
+  await expect(position).toBeVisible();
+  await row.hover();
+  await row.getByRole('button', { name: 'Mark watched', exact: true }).click();
+  await row
+    .getByRole('button', { name: 'Mark unwatched', exact: true })
+    .click();
+  await expect(
+    row.getByRole('button', { name: 'Mark watched', exact: true }),
+  ).toBeAttached();
+  await expect(position).toHaveCount(0);
+  expect(marks).toEqual([{ watched: true }, { watched: false }]);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('the server alone removes a watched video from an auto-remove watchlist', async ({
+  page,
+}) => {
+  const { fixture, events, row, empty } = await watchLaterFixture(page);
   await page.clock.install();
   await page.goto('/#online/youtube/watchlists/1');
   await expect.poll(events.connected).toBe(true);
-  const row = page.locator(`[data-list-item-key="${video.videoId}"]`);
   await row.hover();
   await row.getByRole('button', { name: 'Mark watched', exact: true }).click();
   // The watched video stays listed past the removal delay; the client never
@@ -377,7 +420,7 @@ test('the server alone removes a watched video from an auto-remove watchlist', a
   await expect(unwatch).toBeAttached();
   await page.clock.runFor(8000);
   await expect(unwatch).toBeAttached();
-  items = [];
+  empty();
   events.send('youtube.changed');
   await expect(row).toHaveCount(0);
   expect(fixture.writes.filter(({ method }) => method === 'DELETE')).toEqual(

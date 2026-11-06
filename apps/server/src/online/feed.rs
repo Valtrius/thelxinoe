@@ -124,6 +124,9 @@ pub struct Edit {
     pub watchlist: Option<bool>,
     pub pinned: Option<bool>,
     pub watched: Option<bool>,
+    /// Marking a video unwatched rewinds it to 0 unless this names the position to keep,
+    /// as undoing a watched mark does.
+    pub position: Option<f64>,
 }
 pub async fn edit(
     State(state): State<AppState>,

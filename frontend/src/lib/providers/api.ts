@@ -255,16 +255,28 @@ async function getDownload(videoId: string): Promise<YoutubeDownload> {
     retryAt: iso(d.retry_at),
   };
 }
-async function mark(videoId: string, watched: boolean) {
-  await request(`/online/youtube/videos/${videoId}`, 'PUT', { watched });
+type YoutubeProgress = Pick<
+  YoutubeVideo,
+  'positionSeconds' | 'watchedPercentage'
+>;
+async function mark(
+  videoId: string,
+  watched: boolean,
+  restored?: YoutubeProgress,
+) {
+  await request(`/online/youtube/videos/${videoId}`, 'PUT', {
+    watched,
+    position: restored?.positionSeconds,
+  });
   const video = videos.get(videoId);
+  const progress = restored ?? (watched ? video : undefined);
   window.dispatchEvent(
     new CustomEvent('thelxinoe-youtube-progress', {
       detail: {
         videoId,
-        positionSeconds: video?.positionSeconds ?? 0,
+        positionSeconds: progress?.positionSeconds ?? 0,
         durationSeconds: video?.durationSeconds,
-        watchedPercentage: video?.watchedPercentage ?? 0,
+        watchedPercentage: progress?.watchedPercentage ?? 0,
         isWatched: watched,
       },
     }),
@@ -461,7 +473,8 @@ export const api = {
     return download;
   },
   markYoutubeWatched: (id: string) => mark(id, true),
-  markYoutubeUnwatched: (id: string) => mark(id, false),
+  markYoutubeUnwatched: (id: string, restored?: YoutubeProgress) =>
+    mark(id, false, restored),
   async openExternal(url: string) {
     if (desktop) await invoke('open_external_url', { value: url });
     else window.open(url, '_blank', 'noopener,noreferrer');

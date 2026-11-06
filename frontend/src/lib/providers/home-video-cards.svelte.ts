@@ -49,7 +49,12 @@ export function createHomeVideoCards(options: {
     watchlists.downloadBusyIds.delete(videoId);
   }
 
-  async function markWatched({ videoId, title }: YoutubeVideo) {
+  async function markWatched({
+    videoId,
+    title,
+    positionSeconds,
+    watchedPercentage,
+  }: YoutubeVideo) {
     const key = `youtube-video:${videoId}`;
     try {
       await api.markYoutubeWatched(videoId);
@@ -57,7 +62,8 @@ export function createHomeVideoCards(options: {
       failed(videoId, title, caught);
       return;
     }
-    // A watched video leaves Home, so Undo is where it is marked unwatched.
+    // A watched video leaves Home, so Undo is where it is marked unwatched. It
+    // keeps the progress that marking unwatched otherwise clears.
     showToast({
       key,
       tone: 'success',
@@ -67,7 +73,7 @@ export function createHomeVideoCards(options: {
       onAction: () => {
         dismissToastByKey(key);
         api
-          .markYoutubeUnwatched(videoId)
+          .markYoutubeUnwatched(videoId, { positionSeconds, watchedPercentage })
           .catch((caught) => failed(videoId, title, caught));
       },
     });
