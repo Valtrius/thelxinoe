@@ -14,6 +14,10 @@ import {
   stagesApi,
 } from './transfers.mjs';
 import { serviceView } from './service-view.mjs';
+import {
+  acceptsProviderPreferences,
+  providerPreferencesError,
+} from './provider-preferences.mjs';
 import { readFileSync } from 'node:fs';
 
 // The preview server runs the version the web app was built as, so its update
@@ -507,6 +511,8 @@ export async function settingsApi(s, c) {
     return save(s.providerConfig[path.split('/').at(-1)]);
   if (path === '/me/appearance') {
     if (method === 'PATCH') {
+      if (!acceptsProviderPreferences(body.provider_preferences))
+        return fail(400, providerPreferencesError);
       const previous = s.appearance.provider_preferences;
       Object.assign(s.appearance, body);
       s.appearance.provider_preferences = {

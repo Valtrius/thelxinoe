@@ -12,6 +12,9 @@ use axum::{Json, extract::State, http::HeaderMap};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+/// The mock servers refuse other keys too, so UI tests catch one missing here.
+const PROVIDER_PREFERENCE_KEYS: &str = include_str!("provider_preference_keys.txt");
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
@@ -93,16 +96,7 @@ pub async fn update(
             .is_some_and(|v| !v.is_finite() || v < 210.0)
         || change.provider_preferences.as_ref().is_some_and(|v| {
             v.iter().any(|(key, value)| {
-                ![
-                    "youtube-feed-layout",
-                    "youtube-watchlist-sidebar-open",
-                    "youtube-selected-watchlist-id",
-                    "library-movies-view",
-                    "library-shows-view",
-                    "movie-deletion",
-                ]
-                .contains(&key.as_str())
-                    || value.len() > 8192
+                !PROVIDER_PREFERENCE_KEYS.lines().any(|known| known == key) || value.len() > 8192
             })
         })
     {
@@ -235,6 +229,39 @@ mod tests {
                 "PATCH",
                 json!({"audio_volume":1.1}),
                 &alice
+            )
+            .await
+            .0,
+            axum::http::StatusCode::BAD_REQUEST
+        );
+    }
+    #[tokio::test]
+    async fn music_preferences_save_and_unknown_preferences_do_not() {
+        let (_temp, state, alice) = fixture().await;
+        for key in [
+            "music-view",
+            "music-sort",
+            "music-selected-playlist-id",
+            "music-playlist-sidebar-open",
+        ] {
+            let saved = call(
+                &state,
+                "/api/v1/me/appearance",
+                "PATCH",
+                json!({"provider_preferences":{key:"value"}}),
+                &alice,
+            )
+            .await;
+            assert_eq!(saved.0, axum::http::StatusCode::OK, "{key}");
+            assert_eq!(saved.2["provider_preferences"][key], "value");
+        }
+        assert_eq!(
+            call(
+                &state,
+                "/api/v1/me/appearance",
+                "PATCH",
+                json!({"provider_preferences":{"unknown":"value"}}),
+                &alice,
             )
             .await
             .0,

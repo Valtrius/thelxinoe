@@ -1,6 +1,10 @@
 import type { Page, WebSocketRoute } from '@playwright/test';
 import { current } from './versions';
 import { serviceView } from '../../scripts/mock/service-view.mjs';
+import {
+  acceptsProviderPreferences,
+  providerPreferencesError,
+} from '../../scripts/mock/provider-preferences.mjs';
 import type { RecyclarrConfiguration } from '../../frontend/src/lib/services/recyclarr-configuration';
 
 // Delivers server events to the page; install it before the page opens.
@@ -265,7 +269,14 @@ export async function installUiFixture(
     if (path === '/online/kick')
       return json({ connected: false, configured: false, items: [] });
     if (path === '/me/appearance') {
-      if (method === 'PATCH') appearance = { ...appearance, ...body };
+      if (method === 'PATCH') {
+        if (!acceptsProviderPreferences(body.provider_preferences))
+          return route.fulfill({
+            status: 400,
+            json: { error: { message: providerPreferencesError } },
+          });
+        appearance = { ...appearance, ...body };
+      }
       return json(appearance);
     }
     if (path === '/me/preferences') {

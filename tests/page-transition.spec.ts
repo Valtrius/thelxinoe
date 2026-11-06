@@ -393,6 +393,29 @@ test('the Music page opens on the list last chosen, until another is chosen', as
   await expect(artists).toHaveAttribute('aria-pressed', 'true');
 });
 
+test('a Music list keeps its sort after a reload', async ({ page }) => {
+  await page.goto('/#library/music');
+  await ready(page);
+  const sort = page.getByRole('button', { name: 'Sort artists', exact: true });
+  const descending = page.getByRole('button', {
+    name: 'Name descending',
+    exact: true,
+  });
+  await sort.click();
+  await descending.click();
+  await expect(descending).toHaveAttribute('aria-pressed', 'true');
+  await expect
+    .poll(async () => {
+      const saved = await page.request.get('/api/v1/me/appearance');
+      return (await saved.json()).provider_preferences?.['music-sort'];
+    })
+    .toContain('desc');
+  await page.reload();
+  await ready(page);
+  await sort.click();
+  await expect(descending).toHaveAttribute('aria-pressed', 'true');
+});
+
 test('a slow click on a music list does not use up its animations', async ({
   page,
 }) => {
