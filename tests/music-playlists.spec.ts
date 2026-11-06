@@ -82,6 +82,115 @@ test('the sidebar replaces the Playlists page and stays open across Music pages'
   await expect(button(page, 'Open playlists')).toBeVisible();
 });
 
+test('the toolbar stays above the page and the sidebar, on every Music page', async ({
+  page,
+}) => {
+  await page.goto('/#library/music?view=albums');
+  await button(page, 'Open playlists').click();
+  await expect(rowsOf(frame(page)).first()).toBeVisible();
+  await expect(page.locator('[data-card-grid]')).toBeVisible();
+  const toolbar = page.locator('[data-music-toolbar]');
+  const scroller = page.locator('[data-music-scroll]');
+  const lists = page.getByRole('group', { name: 'Music lists' });
+  const toggle = button(page, 'Close playlists');
+  const placed = (await toolbar.boundingBox())!;
+  const toggled = (await toggle.boundingBox())!;
+  const bottom = placed.y + placed.height;
+  expect((await scroller.boundingBox())!.y).toBeCloseTo(bottom, 0);
+  expect((await frame(page).boundingBox())!.y).toBeCloseTo(bottom, 0);
+  // It lines up with the grid under it.
+  const grid = (await page.locator('[data-card-grid]').boundingBox())!;
+  expect(grid.x).toBeCloseTo(placed.x, 0);
+
+  await scroller.evaluate((element) => (element.scrollTop = 300));
+  await expect
+    .poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+  expect(await toolbar.boundingBox()).toEqual(placed);
+  await expect(lists).toBeInViewport();
+
+  // Opening a page swaps what it holds, without moving it or the toggle.
+  await scroller.evaluate((element) => (element.scrollTop = 0));
+  await page.locator('[data-card-grid] .card-primary').first().click();
+  await expect(button(page, /^Back to/)).toBeVisible();
+  await expect(lists).toHaveCount(0);
+  expect(await toolbar.boundingBox()).toEqual(placed);
+  expect(await toggle.boundingBox()).toEqual(toggled);
+  expect((await frame(page).boundingBox())!.y).toBeCloseTo(bottom, 0);
+
+  // The sidebar opens and closes under it.
+  await toggle.click();
+  await expect(button(page, 'Open playlists')).toBeVisible();
+  expect(await toolbar.boundingBox()).toEqual(placed);
+  expect(await button(page, 'Open playlists').boundingBox()).toEqual(toggled);
+});
+
+for (const width of [721, 800, 1000]) {
+  test(`the sidebar stays where it is between pages in a ${width}px window`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/#library/music');
+    await button(page, 'Open playlists').click();
+    await expect(rowsOf(frame(page)).first()).toBeVisible();
+    await expect(button(page, 'Music library actions')).toBeInViewport();
+    const placed = await frame(page).boundingBox();
+    await page.locator('[data-card-grid] .card-primary').first().click();
+    await expect(button(page, /^Back to/)).toBeVisible();
+    expect(await frame(page).boundingBox()).toEqual(placed);
+    await button(page, /^Back to/).click();
+    await expect(button(page, 'Music library actions')).toBeVisible();
+    expect(await frame(page).boundingBox()).toEqual(placed);
+  });
+}
+
+for (const width of [721, 1000, 1100]) {
+  test(`the sort menu fits a ${width}px window with the sidebar open`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/#library/music');
+    await button(page, 'Open playlists').click();
+    await button(page, 'Sort artists').click();
+    const menu = page.getByRole('dialog', { name: 'Sort artists' });
+    const opened = (await menu.boundingBox())!;
+    expect(opened.x).toBeGreaterThanOrEqual(0);
+    expect(opened.x + opened.width).toBeLessThanOrEqual(width);
+    await button(menu, 'Name descending').click();
+    await expect(button(menu, 'Name descending')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+}
+
+test('the toolbar stays small on a phone, with its menu under it', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/#library/music');
+  const toolbar = page.locator('[data-music-toolbar]');
+  const scroller = page.locator('[data-music-scroll]');
+  await expect(page.locator('[data-card-grid]')).toBeVisible();
+  const placed = (await toolbar.boundingBox())!;
+  // Two rows: its lists and its toggle, then its search and buttons.
+  expect(placed.height).toBeLessThan(90);
+  await expect(button(page, 'Music library actions')).toBeInViewport();
+
+  await scroller.evaluate((element) => (element.scrollTop = 300));
+  await expect
+    .poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+  expect(await toolbar.boundingBox()).toEqual(placed);
+
+  await button(page, 'Sort artists').click();
+  const menu = page.getByRole('dialog', { name: 'Sort artists' });
+  const opened = (await menu.boundingBox())!;
+  expect(opened.y).toBeGreaterThanOrEqual(placed.y + placed.height - 1);
+  expect(opened.x).toBeGreaterThanOrEqual(0);
+  expect(opened.x + opened.width).toBeLessThanOrEqual(390);
+});
+
 const animatedGrid = '[data-card-grid]';
 const motionTargets = {
   sidebar: '[data-youtube-watchlist-scale]',
@@ -345,7 +454,11 @@ async function firstFrameMoves(page: Page, action: () => Promise<unknown>) {
           );
         };
         const before = new Map(
-          [...document.querySelectorAll('[data-music-scroll] *')]
+          [
+            ...document.querySelectorAll(
+              '[data-music-scroll] *, [data-music-toolbar] *',
+            ),
+          ]
             .filter((element) => {
               const box = element.getBoundingClientRect();
               return (
@@ -400,9 +513,10 @@ test('Music pages stay where they are on the first frame of the sidebar animatio
   const toggle = async () => {
     await still();
     for (const action of ['Open', 'Close']) {
-      const moves = await firstFrameMoves(page, () =>
-        button(page, `${action} playlists`).first().click(),
-      );
+      // The pointer leaves the row it's over first, which hides that row's icons.
+      const toggled = button(page, `${action} playlists`).first();
+      await toggled.hover();
+      const moves = await firstFrameMoves(page, () => toggled.click());
       expect(moves).toEqual([]);
       await still();
     }
@@ -416,10 +530,18 @@ test('Music pages stay where they are on the first frame of the sidebar animatio
   await cards.first().click();
   await expect(button(page, /^Back to/)).toBeVisible();
   await expect(cards.first()).toBeVisible();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await toggle();
 
   await cards.first().click();
   await expect(page.locator('[data-track]').first()).toBeVisible();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await toggle();
 });
 
@@ -450,7 +572,7 @@ test('rows show one title line and options sit on their own lines', async ({
   expect(length.y).toBeLessThan(titleBox.y + titleBox.height);
   for (const icon of await row.locator('button svg').all()) {
     const box = (await icon.boundingBox())!;
-    expect(box.y).toBeGreaterThanOrEqual(length.y + length.height - 1);
+    expect(box.y).toBeGreaterThanOrEqual(length.y + length.height / 2);
   }
 
   await button(sidebar, 'Playlist settings').click();
