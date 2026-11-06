@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { closePlayer } from './helpers/player';
 import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 
 const video = (id: string, title: string, position = 0, last_played = 0) => ({
@@ -503,9 +504,7 @@ test('Home actions preserve resume positions and local editions, and launch live
         : card.locator('.card-primary')
     ).click();
     await expect.poll(() => launches.at(-1)).toMatchObject(expected);
-    await page
-      .getByRole('button', { name: 'Close player', exact: true })
-      .click();
+    await closePlayer(page);
   }
   await page
     .getByRole('button', { name: 'Watch Twitch channel', exact: true })
@@ -513,7 +512,7 @@ test('Home actions preserve resume positions and local editions, and launch live
   await expect
     .poll(() => launches.at(-1))
     .toMatchObject({ media_id: 'twitch:twitch-id' });
-  await page.getByRole('button', { name: 'Close player', exact: true }).click();
+  await closePlayer(page);
   await page
     .getByRole('button', { name: 'Watch Kick channel', exact: true })
     .click();
@@ -585,14 +584,10 @@ test('Home YouTube cards restart videos and mark them watched with undo', async 
   await expect
     .poll(() => launches.at(-1))
     .toMatchObject({ media_id: 'youtube:abcdefghijk', position: 0 });
-  await page.getByRole('button', { name: 'Close player', exact: true }).click();
+  await closePlayer(page);
 
-  // The card moves as the player leaves. A hover that lands before it settles
-  // leaves the pointer off the card, with its actions still out of reach.
-  await expect(async () => {
-    await card.hover();
-    await actions.click({ timeout: 1000 });
-  }).toPass({ timeout: 15000 });
+  await card.hover();
+  await actions.click();
   await menuItem('Mark watched').click();
   await expect(card).toHaveCount(0);
   await page.getByRole('button', { name: 'Undo', exact: true }).click();
