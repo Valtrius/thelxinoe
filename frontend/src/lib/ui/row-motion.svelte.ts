@@ -240,8 +240,10 @@ export class RowMotion {
       return;
     }
     const from = root.getBoundingClientRect().height;
+    const seen = Number(getComputedStyle(content).opacity);
     const previous = dissolve || !before.size ? inertCopy(content) : null;
-    this.settle();
+    if (previous) this.interrupt();
+    else this.settle();
     // Holding the height stops the scroller clamping before the animation runs.
     root.style.height = `${from}px`;
     root.style.overflow = 'clip';
@@ -252,7 +254,7 @@ export class RowMotion {
     const plans: AnimationPlan[] = [];
     const resizing = resize(root, from, to);
     if (resizing) plans.push(resizing);
-    if (previous) this.dissolve(root, content, previous, plans);
+    if (previous) this.dissolve(root, content, previous, seen, plans);
     else this.move(root, content, before, plans, live);
     this.play(root, plans, to);
   }
@@ -261,13 +263,14 @@ export class RowMotion {
     root: HTMLElement,
     content: HTMLElement,
     previous: HTMLElement,
+    seen: number,
     plans: AnimationPlan[],
   ) {
     previous.style.position = 'absolute';
     previous.style.inset = '0 0 auto 0';
     this.addLayer(root).append(previous);
     plans.push(
-      { element: previous, keyframes: [{ opacity: 1 }, { opacity: 0 }] },
+      { element: previous, keyframes: [{ opacity: seen }, { opacity: 0 }] },
       { element: content, keyframes: [{ opacity: 0 }, { opacity: 1 }] },
     );
   }
@@ -361,6 +364,7 @@ export class RowMotion {
 
   // Comes before the rows, so that moving ones pass over what is leaving.
   private addLayer(root: HTMLElement) {
+    if (this.layer) return this.layer;
     const layer = document.createElement('div');
     layer.setAttribute('aria-hidden', 'true');
     layer.dataset.motionLayer = '';
@@ -394,6 +398,25 @@ export class RowMotion {
     this.leaving = [];
     root.style.height = '';
     root.style.overflow = '';
+  }
+
+  /**
+   * Ends the current animation for a crossfade to start, except for the copies
+   * in it. They finish fading underneath, so that nothing jumps on screen.
+   */
+  private interrupt() {
+    const copies = [...(this.layer?.children ?? [])] as HTMLElement[];
+    for (const animation of this.running) {
+      const { target } = animation.effect as KeyframeEffect;
+      if (!copies.includes(target as HTMLElement)) animation.cancel();
+    }
+    this.running = [];
+    this.leaving = [];
+    for (const copy of copies) {
+      // Their fades now end first, which would otherwise bring them back.
+      copy.style.opacity = '0';
+      if (!copy.getAnimations().length) copy.remove();
+    }
   }
 
   /** Ends the current animation at once, for when its rows are being replaced. */

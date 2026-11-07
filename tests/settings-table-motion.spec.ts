@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { pauseAnimations, seekAnimations } from './helpers/paused-animations';
 import { responseGate } from './helpers/response-gate';
 import { installUiFixture } from './helpers/ui-fixture';
 
@@ -506,26 +507,6 @@ for (const scenario of scenarios) {
   });
 }
 
-// Paused, so that stepping through an animation does not depend on the runner.
-const pauseAnimations = (page: Page) =>
-  page.evaluate(() => {
-    const animate = Element.prototype.animate;
-    Element.prototype.animate = function (keyframes, options) {
-      const animation = animate.call(this, keyframes, options);
-      animation.pause();
-      return animation;
-    };
-  });
-
-// Moves every paused animation to this share of its duration.
-const seekAnimations = (page: Page, progress: number) =>
-  page.evaluate((progress) => {
-    for (const animation of document.getAnimations())
-      if (animation.playState === 'paused')
-        animation.currentTime =
-          Number(animation.effect!.getTiming().duration) * progress;
-  }, progress);
-
 // How opaque a row starts out in the fade it is in, if it is in one.
 const fadeStart = (row: ReturnType<Page['locator']>) =>
   row.evaluate((element) => {
@@ -783,6 +764,31 @@ test('rows dimmed by a slow read leave from that dimness', async ({ page }) => {
   gate.release();
   await expect(table.getByText(after)).toBeVisible();
   await expect.poll(() => leavingOpacity(page, removed)).toBeCloseTo(0.55);
+});
+
+test('a view dimmed by a slow read crossfades from that dimness', async ({
+  page,
+}) => {
+  await open(page, scenarios[2]);
+  const gate = responseGate();
+  await page.route('**/api/v1/admin/retention/deletions', (route) =>
+    gate.promise.then(() =>
+      route.fulfill({
+        json: { items: [], totals: { pending: 0, history: 0 } },
+      }),
+    ),
+  );
+  await pauseAnimations(page);
+  await page
+    .getByLabel('Audit view', { exact: true })
+    .selectOption('scheduled');
+  await expect(
+    page.locator('[aria-busy="true"] > .transition-opacity'),
+  ).toHaveCSS('opacity', '0.55');
+  gate.release();
+  const copy = page.locator('[data-motion-layer] > *');
+  await expect(copy).toBeAttached();
+  await expect.poll(() => fadeStart(copy)).toBeCloseTo(0.55);
 });
 
 test('a row removed while still invisible leaves nothing behind', async ({

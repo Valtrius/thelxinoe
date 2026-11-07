@@ -15,6 +15,8 @@
   import Button from '../ui/Button.svelte';
   import ExclusiveChoiceGroup from '../ui/ExclusiveChoiceGroup.svelte';
   import ProgressBar from '../ui/ProgressBar.svelte';
+  import { RowMotion } from '../ui/row-motion.svelte';
+  import RowMotionBody from '../ui/RowMotionBody.svelte';
   import { dateFormat } from '../intl';
   import { showToast } from '../providers/toasts';
   import EpisodeRow from './EpisodeRow.svelte';
@@ -64,6 +66,8 @@
     changed: () => void;
   }>();
   const ids = $props.id();
+  const panelMotion = new RowMotion();
+  const listMotion = new RowMotion();
   let selected = $state<number | null>(null),
     busy = $state<string | null>(null),
     // Watched toggles show immediately; the reloaded seasons replace them.
@@ -194,7 +198,7 @@
     const value = !watched(episode);
     try {
       await setFlag(episode.id, 'watched', value);
-      toggled[episode.id] = value;
+      void listMotion.commit(() => (toggled[episode.id!] = value));
       changed();
     } catch (caught) {
       showToast({
@@ -214,7 +218,9 @@
     const value = !finished;
     try {
       await setWatched(season.id, value);
-      for (const episode of library) toggled[episode.id!] = value;
+      void listMotion.commit(() => {
+        for (const episode of library) toggled[episode.id!] = value;
+      });
       changed();
     } catch (caught) {
       showToast({
@@ -254,6 +260,12 @@
     }
   }
 
+  function choose(number: number) {
+    if (number === season?.number) return;
+    listMotion.settle();
+    void panelMotion.commit(() => (selected = number), { dissolve: true });
+  }
+
   // Arrow keys move between season tabs, as in any tab list.
   function navigate(event: KeyboardEvent) {
     const order = seasons.map((s: Season) => s.number);
@@ -270,7 +282,7 @@
               : undefined;
     if (target === undefined) return;
     event.preventDefault();
-    selected = target;
+    choose(target);
     void tick().then(() =>
       tabs?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus(),
     );
@@ -305,7 +317,7 @@
           ]}
           title={tabTitle(counts)}
           data-season-files={files}
-          onclick={() => (selected = entry.number)}
+          onclick={() => choose(entry.number)}
           ><span
             class={[
               'flex items-center gap-2',
@@ -336,126 +348,134 @@
         role="tabpanel"
         aria-labelledby={`${ids}-tab-${season.number}`}
       >
-        <div class="flex flex-wrap items-start justify-between gap-3 py-3.5">
-          <div class="min-w-0">
-            <p
-              class="mb-0 flex flex-wrap items-baseline gap-x-2 text-[13px] font-semibold"
-            >
-              {season.title}<span class="text-[11.5px] font-normal text-muted"
-                >{[
-                  first(season) && year(first(season)),
-                  `${summary.total} ${summary.total === 1 ? 'episode' : 'episodes'}`,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}</span
+        <RowMotionBody motion={panelMotion}>
+          <div class="flex flex-wrap items-start justify-between gap-3 py-3.5">
+            <div class="min-w-0">
+              <p
+                class="mb-0 flex flex-wrap items-baseline gap-x-2 text-[13px] font-semibold"
               >
-            </p>
-            <p
-              class="mt-2 mb-0 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 text-[11px] text-muted"
-            >
-              <span class="inline-flex items-center gap-2"
-                ><span
-                  ><span class="font-semibold text-foreground"
-                    >{summary.watched}</span
-                  >/{summary.total} watched</span
-                ><ProgressBar
-                  class="h-0.75 w-15 bg-line"
-                  value={summary.total
-                    ? (summary.watched / summary.total) * 100
-                    : 0}
-                /></span
-              >{#if summary.available}<span
-                  class="inline-flex items-center gap-1.5 text-success"
-                  ><CircleCheck size={12} />{summary.available} available</span
-                >{/if}{#if summary.downloading}<span
-                  class="inline-flex items-center gap-1.5 text-accent"
-                  ><Download size={12} />{summary.downloading} downloading</span
-                >{/if}{#if summary.missing}<span
-                  class="inline-flex items-center gap-1.5 text-warning"
-                  ><CircleAlert size={12} />{summary.missing} missing</span
-                >{/if}{#if summary.unavailable}<span
-                  class="inline-flex items-center gap-1.5"
-                  ><CircleSlash size={12} />{summary.unavailable} not available</span
-                >{/if}{#if summary.upcoming}<span
-                  class="inline-flex items-center gap-1.5"
-                  ><CalendarClock size={12} />{summary.upcoming} upcoming</span
+                {season.title}<span class="text-[11.5px] font-normal text-muted"
+                  >{[
+                    first(season) && year(first(season)),
+                    `${summary.total} ${summary.total === 1 ? 'episode' : 'episodes'}`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}</span
+                >
+              </p>
+              <p
+                class="mt-2 mb-0 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 text-[11px] text-muted"
+              >
+                <span class="inline-flex items-center gap-2"
+                  ><span
+                    ><span class="font-semibold text-foreground"
+                      >{summary.watched}</span
+                    >/{summary.total} watched</span
+                  ><ProgressBar
+                    class="h-0.75 w-15 bg-line"
+                    value={summary.total
+                      ? (summary.watched / summary.total) * 100
+                      : 0}
+                  /></span
+                >{#if summary.available}<span
+                    class="inline-flex items-center gap-1.5 text-success"
+                    ><CircleCheck size={12} />{summary.available} available</span
+                  >{/if}{#if summary.downloading}<span
+                    class="inline-flex items-center gap-1.5 text-accent"
+                    ><Download size={12} />{summary.downloading} downloading</span
+                  >{/if}{#if summary.missing}<span
+                    class="inline-flex items-center gap-1.5 text-warning"
+                    ><CircleAlert size={12} />{summary.missing} missing</span
+                  >{/if}{#if summary.unavailable}<span
+                    class="inline-flex items-center gap-1.5"
+                    ><CircleSlash size={12} />{summary.unavailable} not available</span
+                  >{/if}{#if summary.upcoming}<span
+                    class="inline-flex items-center gap-1.5"
+                    ><CalendarClock size={12} />{summary.upcoming} upcoming</span
+                  >{/if}
+              </p>
+            </div>
+            <div class="flex shrink-0 flex-wrap items-center gap-1.5">
+              {#if season.id && library.length}<Button
+                  variant="secondary"
+                  size="form"
+                  loading={marking}
+                  onclick={() => void markSeason()}
+                  >{#if finished}<EyeOff size={15} />Mark season unwatched{:else}<CheckCheck
+                      size={15}
+                    />Mark season watched{/if}</Button
                 >{/if}
-            </p>
+              {#if admin && series && wanted}<Button
+                  size="form"
+                  loading={searching}
+                  onclick={() => void searchMissing()}
+                  ><Zap size={15} />Search missing</Button
+                >{/if}
+              {#key `${season.number}:${season.id}`}<TitleMenu
+                  id={season.id}
+                  kind="season"
+                  title={season.title}
+                  {admin}
+                  sonarr={admin && series
+                    ? { series, season: season.number }
+                    : null}
+                  {changed}
+                />{/key}
+            </div>
           </div>
-          <div class="flex shrink-0 flex-wrap items-center gap-1.5">
-            {#if season.id && library.length}<Button
-                variant="secondary"
-                size="form"
-                loading={marking}
-                onclick={() => void markSeason()}
-                >{#if finished}<EyeOff size={15} />Mark season unwatched{:else}<CheckCheck
-                    size={15}
-                  />Mark season watched{/if}</Button
-              >{/if}
-            {#if admin && series && wanted}<Button
-                size="form"
-                loading={searching}
-                onclick={() => void searchMissing()}
-                ><Zap size={15} />Search missing</Button
-              >{/if}
-            {#key `${season.number}:${season.id}`}<TitleMenu
-                id={season.id}
-                kind="season"
-                title={season.title}
-                {admin}
-                sonarr={admin && series
-                  ? { series, season: season.number }
-                  : null}
-                {changed}
-              />{/key}
-          </div>
-        </div>
-        {#if summary.total > 1}<div class="mb-1 flex items-center">
-            <ExclusiveChoiceGroup
-              ariaLabel="Show episodes"
-              value={active}
-              choices={[
-                { value: 'all', label: `All ${summary.total}` },
-                {
-                  value: 'unwatched',
-                  label: `Unwatched ${summary.total - summary.watched}`,
-                },
-                ...(admin && summary.missing
-                  ? [
-                      {
-                        value: 'missing' as const,
-                        label: `Missing ${summary.missing}`,
-                      },
-                    ]
-                  : []),
-              ]}
-              onChange={(value) => (filter = value)}
-            />
-          </div>{/if}
-        <ol
-          class="grid border-t border-line"
-          bind:this={list}
-          aria-label={`${season.title} episodes`}
-        >
-          {#each episodes as episode (`${episode.season}:${episode.number}:${episode.id}`)}
-            <EpisodeRow
-              {episode}
-              {show}
-              {series}
-              {admin}
-              {timezone}
-              next={!!episode.id && episode.id === next}
-              focused={!!episode.id && episode.id === focusEpisode}
-              watched={episode.watched}
-              busy={busy === episode.id}
-              toggle={() => void toggleWatched(episode)}
-              {play}
-              {changed}
-            />
-          {:else}<li class="py-6 text-sm text-muted">
-              No episode matches.
-            </li>{/each}
-        </ol>
+          {#if summary.total > 1}<div class="mb-1 flex items-center">
+              <ExclusiveChoiceGroup
+                ariaLabel="Show episodes"
+                value={active}
+                choices={[
+                  { value: 'all', label: `All ${summary.total}` },
+                  {
+                    value: 'unwatched',
+                    label: `Unwatched ${summary.total - summary.watched}`,
+                  },
+                  ...(admin && summary.missing
+                    ? [
+                        {
+                          value: 'missing' as const,
+                          label: `Missing ${summary.missing}`,
+                        },
+                      ]
+                    : []),
+                ]}
+                onChange={(value) =>
+                  void listMotion.commit(() => (filter = value))}
+              />
+            </div>{/if}
+          <RowMotionBody motion={listMotion}>
+            <ol
+              class="grid border-t border-line"
+              bind:this={list}
+              aria-label={`${season.title} episodes`}
+            >
+              {#each episodes as episode (`${episode.season}:${episode.number}:${episode.id}`)}
+                <EpisodeRow
+                  {episode}
+                  {show}
+                  {series}
+                  {admin}
+                  {timezone}
+                  next={!!episode.id && episode.id === next}
+                  focused={!!episode.id && episode.id === focusEpisode}
+                  watched={episode.watched}
+                  busy={busy === episode.id}
+                  toggle={() => void toggleWatched(episode)}
+                  {play}
+                  {changed}
+                />
+              {:else}<li
+                  class="py-6 text-sm text-muted"
+                  data-motion-row="empty"
+                >
+                  No episode matches.
+                </li>{/each}
+            </ol>
+          </RowMotionBody>
+        </RowMotionBody>
       </div>
     {/if}
   </section>
