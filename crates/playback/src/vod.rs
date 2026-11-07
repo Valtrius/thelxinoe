@@ -58,12 +58,18 @@ pub struct VodCache {
     slots: Arc<Semaphore>,
     /// Keyframe indexes of local files by file generation; see `index`.
     indexes: Mutex<HashMap<String, Arc<OnceCell<Keyframes>>>>,
+    /// Where those indexes are kept for later processes.
+    kept: PathBuf,
     hardware: Arc<crate::hardware::Hardware>,
 }
 type Keyframes = (Vec<f64>, f64);
+/// How many keyframe indexes are kept on disk, the latest written. A two-hour film's
+/// takes about 25 KB.
+pub(crate) const KEPT_INDEXES: usize = 1024;
 impl VodCache {
     pub async fn open(
         root: &Path,
+        kept: &Path,
         slots: Arc<Semaphore>,
         tools: Runtime,
         scanner: Arc<crate::cache::Scanner>,
@@ -71,6 +77,7 @@ impl VodCache {
     ) -> Result<Self> {
         let root = root.join("vod");
         tokio::fs::create_dir_all(&root).await?;
+        tokio::fs::create_dir_all(kept).await?;
         Ok(Self {
             scanner,
             tools,
@@ -78,20 +85,16 @@ impl VodCache {
             runs: Mutex::new(HashMap::new()),
             slots,
             indexes: Mutex::new(HashMap::new()),
+            kept: kept.to_path_buf(),
             hardware,
         })
     }
     /// A local file's keyframe index, built once per file generation. Listing a file's
     /// packets reads all of it, which can outlast a client's patience on large files: the
     /// index builds in its own task with a budget scaled to the file, a start waits for it
-    /// at most 30 seconds, and the next start reuses it.
+    /// at most 30 seconds, and the next start reuses it, in this process or a later one.
     pub(crate) async fn index(&self, source: &Source, tools: &MediaTools) -> Result<Keyframes> {
-        let key = format!(
-            "{}\0{}\0{}",
-            source.path.display(),
-            source.size,
-            source.modified
-        );
+        let key = index_key(source, tools);
         let cell = {
             let mut indexes = self.indexes.lock().await;
             if indexes.len() >= 256 {
@@ -100,14 +103,31 @@ impl VodCache {
                     indexes.clear();
                 }
             }
-            indexes.entry(key).or_default().clone()
+            indexes.entry(key.clone()).or_default().clone()
         };
-        let (source, tools, slots) = (source.clone(), tools.clone(), self.slots.clone());
+        let (source, tools, slots, kept) = (
+            source.clone(),
+            tools.clone(),
+            self.slots.clone(),
+            self.kept.clone(),
+        );
         let task = tokio::spawn(async move {
             cell.get_or_try_init(|| async {
+                let path = kept.join(format!("{key}.json"));
+                if let Some(index) = tokio::fs::read(&path)
+                    .await
+                    .ok()
+                    .and_then(|kept| serde_json::from_slice(&kept).ok())
+                {
+                    return Ok(index);
+                }
                 let _slot = slots.acquire_owned().await?;
                 let budget = Duration::from_secs(60 + source.size / (64 << 20));
-                keyframes(&source, &tools, None, budget).await
+                let index = keyframes(&source, &tools, None, budget).await?;
+                if let Err(error) = keep_index(&kept, &path, &index).await {
+                    tracing::warn!(%error, "Could not keep a keyframe index");
+                }
+                Ok(index)
             })
             .await
             .cloned()
@@ -987,6 +1007,55 @@ async fn trim(directory: &Path, current: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// Names a local file's keyframe index by everything `keyframes` builds it from: the file
+/// generation, the probe values it is measured against, and the ffprobe listing packets.
+fn index_key(source: &Source, tools: &MediaTools) -> String {
+    use sha2::{Digest, Sha256};
+    // Changes when `keyframes` would make another index from the same packets.
+    const FORMAT: u8 = 1;
+    let format = &source.probe["format"];
+    let mut hash = Sha256::new();
+    for part in [
+        &[FORMAT][..],
+        source.path.as_os_str().as_encoded_bytes(),
+        source.size.to_string().as_bytes(),
+        source.modified.as_bytes(),
+        format["start_time"].to_string().as_bytes(),
+        format["duration"].to_string().as_bytes(),
+        tools.ffprobe.digest.as_bytes(),
+    ] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part);
+    }
+    hash.finalize().iter().map(|v| format!("{v:02x}")).collect()
+}
+
+/// Writes a keyframe index where later processes find it, then drops the oldest beyond
+/// `KEPT_INDEXES`.
+pub(crate) async fn keep_index(directory: &Path, path: &Path, index: &Keyframes) -> Result<()> {
+    let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    tokio::fs::write(&temp, serde_json::to_vec(index)?).await?;
+    if let Err(error) = tokio::fs::rename(&temp, path).await {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(error.into());
+    }
+    let mut entries = tokio::fs::read_dir(directory).await?;
+    let mut kept = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        // Another write may have just moved it.
+        if let Ok(modified) = entry.metadata().await.and_then(|meta| meta.modified()) {
+            kept.push((modified, entry.path()));
+        }
+    }
+    if kept.len() > KEPT_INDEXES {
+        kept.sort();
+        for (_, path) in &kept[..kept.len() - KEPT_INDEXES] {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+    Ok(())
+}
+
 async fn keyframes(
     source: &Source,
     tools: &MediaTools,

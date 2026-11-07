@@ -77,6 +77,7 @@ impl Pipelines {
         let hardware = Arc::new(crate::hardware::Hardware::default());
         let vod = crate::vod::VodCache::open(
             &root,
+            &cache.join("keyframes"),
             slots.clone(),
             tools.clone(),
             scanner.clone(),
