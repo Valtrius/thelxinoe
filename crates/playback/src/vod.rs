@@ -1048,12 +1048,13 @@ pub(crate) fn kept_bytes(index: &Keyframes) -> Vec<u8> {
 pub(crate) fn kept_index(bytes: &[u8]) -> Option<Keyframes> {
     use sha2::{Digest, Sha256};
     let (sha256, values) = bytes.split_at_checked(32)?;
-    if values.is_empty() || values.len() % 8 != 0 || Sha256::digest(values).as_slice() != sha256 {
+    let (values, []) = values.as_chunks::<8>() else {
+        return None;
+    };
+    if Sha256::digest(values.as_flattened()).as_slice() != sha256 {
         return None;
     }
-    let mut values = values
-        .chunks_exact(8)
-        .map(|value| f64::from_le_bytes(value.try_into().unwrap()));
+    let mut values = values.iter().copied().map(f64::from_le_bytes);
     let video_start = values.next()?;
     Some((values.collect(), video_start))
 }
