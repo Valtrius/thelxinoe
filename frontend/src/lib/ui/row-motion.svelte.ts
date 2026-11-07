@@ -133,20 +133,35 @@ function surfaceOf(root: HTMLElement) {
 
 function inertCopy<T extends HTMLElement>(element: T): T {
   const copy = element.cloneNode(true) as T;
-  // A clone starts at the end of its animations, which is not where they are.
-  copy.querySelectorAll('[data-motion-layer]').forEach((layer) => {
-    layer.remove();
-  });
+  // A clone has no animations, so it takes on what they are showing right now.
+  const running = element.getAnimations({ subtree: true });
+  if (running.length) {
+    const twins = copy.querySelectorAll<HTMLElement>('*');
+    const places = new Map(
+      [...element.querySelectorAll('*')].map((node, index) => [node, index]),
+    );
+    for (const animation of running) {
+      const { target } = animation.effect as KeyframeEffect;
+      const twin = target && twins[places.get(target) ?? -1];
+      if (!twin) continue;
+      const style = getComputedStyle(target);
+      twin.style.transform = style.transform;
+      twin.style.opacity = style.opacity;
+      twin.style.height = style.height;
+      twin.style.backgroundColor = style.backgroundColor;
+    }
+  }
   const selects = element.querySelectorAll('select');
   copy.querySelectorAll('select').forEach((select, index) => {
     select.value = selects[index].value;
   });
   for (const node of [
     copy,
-    ...copy.querySelectorAll('[id], [data-motion-row]'),
+    ...copy.querySelectorAll('[id], [data-motion-row], [data-motion-layer]'),
   ]) {
     node.removeAttribute('id');
     node.removeAttribute('data-motion-row');
+    node.removeAttribute('data-motion-layer');
   }
   return copy;
 }
@@ -299,6 +314,8 @@ export class RowMotion {
         const x = was!.rect.left - rect.left;
         const y = was!.rect.top - rect.top;
         // Over the page's colour, so that a highlighted row stays highlighted.
+        // Only for as long as there are leaving rows to cover: after that it
+        // returns to its own colour, which a refresh may have changed by then.
         const backgroundColor = flattenColors([
           getComputedStyle(element).backgroundColor,
           surface,
@@ -307,7 +324,8 @@ export class RowMotion {
           element,
           keyframes: [
             { transform: `translate(${x}px, ${y}px)`, backgroundColor },
-            { transform: 'none', backgroundColor },
+            { backgroundColor, offset: fadeOutEnds },
+            { transform: 'none' },
           ],
         });
       }

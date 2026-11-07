@@ -276,8 +276,13 @@
 
   function choose(number: number) {
     if (number === season?.number) return;
-    listMotion.settle();
-    void panelMotion.commit(() => (selected = number), { dissolve: true });
+    void panelMotion.commit(
+      () => {
+        listMotion.settle();
+        selected = number;
+      },
+      { dissolve: true },
+    );
   }
 
   // Arrow keys move between season tabs, as in any tab list.

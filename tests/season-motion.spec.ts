@@ -74,6 +74,8 @@ const paint = (element: Locator) =>
   });
 const opacity = (element: Locator) =>
   element.evaluate((node) => Number(getComputedStyle(node).opacity));
+const background = (element: Locator) =>
+  element.evaluate((node) => getComputedStyle(node).backgroundColor);
 const heldStyle = (element: Locator) =>
   element.evaluate((node: HTMLElement) => [
     node.style.height,
@@ -213,6 +215,11 @@ test('an episode marked watched leaves the Unwatched filter gradually', async ({
   // The reload that follows every mark brings the same rows, and must not end it.
   await expect(row(page, 1, 2)).toHaveClass(/bg-accent-soft/);
   await expect(copies).toHaveCount(1);
+  // It made the second episode the next one, which shows before the row lands.
+  await seekAnimations(page, 0.9);
+  expect(await background(row(page, 1, 2))).not.toBe(
+    await background(row(page, 1, 3)),
+  );
   await finishAnimations(page);
   await expect(layer).toHaveCount(0);
   await expect(listed(page)).toHaveCount(3);
@@ -345,9 +352,29 @@ test('a season tab replaces a filter that is still gliding', async ({
   await pauseAnimations(page);
   await filter(page, /^Unwatched 3/).click();
   await expect(list(page).copies).toHaveCount(1);
+  await expect.poll(() => frames(row(page, 1, 2), 'transform')).not.toBeNull();
+  await seekAnimations(page, 0.1);
+  const id = await row(page, 1, 2).getAttribute('data-episode');
+  const moved = await row(page, 1, 2).evaluate(
+    (node) => getComputedStyle(node).transform,
+  );
+  const faded = await opacity(list(page).copies);
+  expect(moved).not.toBe('none');
+  expect(faded).toBeGreaterThan(0);
+  expect(faded).toBeLessThan(1);
+
   await tab(page, 'Season 2').click();
   const { root, content, copies } = panel(page);
   await expect(copies).toHaveCount(1);
+  // The copy of the old panel shows the list where it was, leaving row included.
+  expect(
+    await copies
+      .locator(`[data-episode="${id}"]`)
+      .evaluate((node: HTMLElement) => node.style.transform),
+  ).toBe(moved);
+  expect(
+    await opacity(copies.locator('[data-episode="episode-0"]')),
+  ).toBeCloseTo(faded);
   await expect(copies.locator('[data-motion-layer]')).toHaveCount(0);
   await expect(list(page).layer).toHaveCount(0);
   expect(await heldStyle(list(page).root)).toEqual(['', '']);
