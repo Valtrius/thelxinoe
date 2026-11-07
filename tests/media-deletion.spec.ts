@@ -192,10 +192,18 @@ for (const scope of ['season', 'series'] as const) {
       page.getByRole('heading', { level: 1, name: 'Fixture series' }),
     ).toBeVisible();
     await page.getByRole('tab', { name: 'Season 1', exact: true }).click();
-    await expect(page.getByText('Episode 1.1')).toBeVisible();
+    await expect(
+      page
+        .getByRole('list', { name: 'Season 1 episodes' })
+        .getByText('Episode 1.1'),
+    ).toBeVisible();
     await expect(playable(page, 1, 'Episode 1.1')).toHaveCount(0);
     await page.getByRole('tab', { name: 'Season 2', exact: true }).click();
-    await expect(page.getByText('Episode 2.1')).toBeVisible();
+    await expect(
+      page
+        .getByRole('list', { name: 'Season 2 episodes' })
+        .getByText('Episode 2.1'),
+    ).toBeVisible();
     await expect(playable(page, 1, 'Episode 2.1')).toHaveCount(
       scope === 'season' ? 1 : 0,
     );

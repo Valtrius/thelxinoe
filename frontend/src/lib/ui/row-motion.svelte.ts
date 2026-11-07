@@ -133,20 +133,35 @@ function surfaceOf(root: HTMLElement) {
 
 function inertCopy<T extends HTMLElement>(element: T): T {
   const copy = element.cloneNode(true) as T;
-  // A clone starts at the end of its animations, which is not where they are.
-  copy.querySelectorAll('[data-motion-layer]').forEach((layer) => {
-    layer.remove();
-  });
+  // A clone has no animations, so it takes on what they are showing right now.
+  const running = element.getAnimations({ subtree: true });
+  if (running.length) {
+    const twins = copy.querySelectorAll<HTMLElement>('*');
+    const places = new Map(
+      [...element.querySelectorAll('*')].map((node, index) => [node, index]),
+    );
+    for (const animation of running) {
+      const { target } = animation.effect as KeyframeEffect;
+      const twin = target && twins[places.get(target) ?? -1];
+      if (!twin) continue;
+      const style = getComputedStyle(target);
+      twin.style.transform = style.transform;
+      twin.style.opacity = style.opacity;
+      twin.style.height = style.height;
+      twin.style.backgroundColor = style.backgroundColor;
+    }
+  }
   const selects = element.querySelectorAll('select');
   copy.querySelectorAll('select').forEach((select, index) => {
     select.value = selects[index].value;
   });
   for (const node of [
     copy,
-    ...copy.querySelectorAll('[id], [data-motion-row]'),
+    ...copy.querySelectorAll('[id], [data-motion-row], [data-motion-layer]'),
   ]) {
     node.removeAttribute('id');
     node.removeAttribute('data-motion-row');
+    node.removeAttribute('data-motion-layer');
   }
   return copy;
 }
@@ -191,6 +206,7 @@ export class RowMotion {
   private running: Animation[] = [];
   private layer?: HTMLElement;
   private leaving: { item: Capture; copy: HTMLElement }[] = [];
+  private resizes?: ResizeObserver;
   private turn = 0;
 
   hold() {
@@ -240,8 +256,10 @@ export class RowMotion {
       return;
     }
     const from = root.getBoundingClientRect().height;
+    const seen = Number(getComputedStyle(content).opacity);
     const previous = dissolve || !before.size ? inertCopy(content) : null;
-    this.settle();
+    if (previous) this.interrupt();
+    else this.settle();
     // Holding the height stops the scroller clamping before the animation runs.
     root.style.height = `${from}px`;
     root.style.overflow = 'clip';
@@ -252,22 +270,23 @@ export class RowMotion {
     const plans: AnimationPlan[] = [];
     const resizing = resize(root, from, to);
     if (resizing) plans.push(resizing);
-    if (previous) this.dissolve(root, content, previous, plans);
+    if (previous) this.dissolve(root, content, previous, seen, plans);
     else this.move(root, content, before, plans, live);
-    this.play(root, plans, to);
+    this.play(root, content, plans, to);
   }
 
   private dissolve(
     root: HTMLElement,
     content: HTMLElement,
     previous: HTMLElement,
+    seen: number,
     plans: AnimationPlan[],
   ) {
     previous.style.position = 'absolute';
     previous.style.inset = '0 0 auto 0';
     this.addLayer(root).append(previous);
     plans.push(
-      { element: previous, keyframes: [{ opacity: 1 }, { opacity: 0 }] },
+      { element: previous, keyframes: [{ opacity: seen }, { opacity: 0 }] },
       { element: content, keyframes: [{ opacity: 0 }, { opacity: 1 }] },
     );
   }
@@ -295,6 +314,8 @@ export class RowMotion {
         const x = was!.rect.left - rect.left;
         const y = was!.rect.top - rect.top;
         // Over the page's colour, so that a highlighted row stays highlighted.
+        // Only for as long as there are leaving rows to cover: after that it
+        // returns to its own colour, which a refresh may have changed by then.
         const backgroundColor = flattenColors([
           getComputedStyle(element).backgroundColor,
           surface,
@@ -303,7 +324,8 @@ export class RowMotion {
           element,
           keyframes: [
             { transform: `translate(${x}px, ${y}px)`, backgroundColor },
-            { transform: 'none', backgroundColor },
+            { backgroundColor, offset: fadeOutEnds },
+            { transform: 'none' },
           ],
         });
       }
@@ -361,6 +383,7 @@ export class RowMotion {
 
   // Comes before the rows, so that moving ones pass over what is leaving.
   private addLayer(root: HTMLElement) {
+    if (this.layer) return this.layer;
     const layer = document.createElement('div');
     layer.setAttribute('aria-hidden', 'true');
     layer.dataset.motionLayer = '';
@@ -371,7 +394,12 @@ export class RowMotion {
     return layer;
   }
 
-  private play(root: HTMLElement, plans: AnimationPlan[], height: number) {
+  private play(
+    root: HTMLElement,
+    content: HTMLElement,
+    plans: AnimationPlan[],
+    height: number,
+  ) {
     const animations = playAnimations(plans);
     this.running = animations;
     if (!animations.length) {
@@ -381,6 +409,19 @@ export class RowMotion {
     // Only now, with the height animating: any sooner and the next layout would
     // already be at the new height, and scroll the page there.
     root.style.height = `${height}px`;
+    // Content that changes size under the animation, from a refresh or a list
+    // moving inside it, would stay clipped to this height until it ends. Fades
+    // and moving rows carry on, so that nothing jumps.
+    this.resizes = new ResizeObserver(() => {
+      if (Math.abs(content.getBoundingClientRect().height - height) < 1) return;
+      this.resizes?.disconnect();
+      for (const animation of animations)
+        if ((animation.effect as KeyframeEffect).target === root)
+          animation.cancel();
+      root.style.height = '';
+      root.style.overflow = '';
+    });
+    this.resizes.observe(content);
     void Promise.allSettled(animations.map((item) => item.finished)).then(
       () => {
         if (this.running === animations) this.clear(root);
@@ -389,11 +430,32 @@ export class RowMotion {
   }
 
   private clear(root: HTMLElement) {
+    this.resizes?.disconnect();
     this.layer?.remove();
     this.layer = undefined;
     this.leaving = [];
     root.style.height = '';
     root.style.overflow = '';
+  }
+
+  /**
+   * Ends the current animation for a crossfade to start, except for the copies
+   * in it. They finish fading underneath, so that nothing jumps on screen.
+   */
+  private interrupt() {
+    this.resizes?.disconnect();
+    const copies = [...(this.layer?.children ?? [])] as HTMLElement[];
+    for (const animation of this.running) {
+      const { target } = animation.effect as KeyframeEffect;
+      if (!copies.includes(target as HTMLElement)) animation.cancel();
+    }
+    this.running = [];
+    this.leaving = [];
+    for (const copy of copies) {
+      // Their fades now end first, which would otherwise bring them back.
+      copy.style.opacity = '0';
+      if (!copy.getAnimations().length) copy.remove();
+    }
   }
 
   /** Ends the current animation at once, for when its rows are being replaced. */

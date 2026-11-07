@@ -36,6 +36,7 @@
     toggle,
     play,
     changed,
+    watchedChanged,
   } = $props<{
     episode: Episode;
     /** The series name, which episode titles from files may repeat. */
@@ -52,6 +53,7 @@
     toggle: () => void;
     play: (episode: Episode, fileId?: string) => void;
     changed: () => void;
+    watchedChanged: (media: string, watched: boolean, through: boolean) => void;
   }>();
   let searching = $state(false),
     releases = $state(false);
@@ -138,6 +140,7 @@
 
 <li
   data-episode={episode.id ?? undefined}
+  data-motion-row={`${episode.season}:${episode.number}:${episode.id}`}
   class={[
     'grid grid-cols-[8.5rem_minmax(0,1fr)_auto] items-start gap-x-3.5 border-b border-line px-2 py-3 last:border-b-0 compact:grid-cols-[6.5rem_minmax(0,1fr)_auto] compact:gap-x-3',
     next && 'bg-accent-soft shadow-[inset_2px_0_0_var(--accent)]',
@@ -254,6 +257,7 @@
         : null}
       play={(fileId) => play(episode, fileId)}
       {changed}
+      {watchedChanged}
     />
   </div>
   {#if releases && series && episode.manager_id}<ReleaseSearch
