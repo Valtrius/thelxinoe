@@ -33,7 +33,7 @@ FROM python:3.11-slim-trixie@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5
 # VAAPI for the managed FFmpeg, which loads the system libva. Intel GPUs before Ice Lake
 # encode and scale with shader kernels that only Debian's non-free drivers ship.
 RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini libva2 libva-drm2 intel-media-va-driver-non-free i965-va-driver-shaders && rm -rf /var/lib/apt/lists/* && groupadd -g 10001 thelxinoe && useradd -u 10001 -g 10001 thelxinoe && mkdir -p /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chown -R 10001:10001 /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chmod 2770 /run/thelxinoe
-ARG VERSION=0.0.22
+ARG VERSION=0.0.23
 ARG REVISION=development
 LABEL org.opencontainers.image.source="https://github.com/Valtrius/thelxinoe" org.opencontainers.image.version=$VERSION org.opencontainers.image.revision=$REVISION
 COPY releases/release.pub /etc/thelxinoe/release.pub
@@ -49,7 +49,7 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/thelxinoe-server"]
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS controller
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini && rm -rf /var/lib/apt/lists/* && mkdir -p /run/thelxinoe && chown 0:10001 /run/thelxinoe && chmod 2770 /run/thelxinoe
-ARG VERSION=0.0.22
+ARG VERSION=0.0.23
 ARG REVISION=development
 LABEL org.opencontainers.image.source="https://github.com/Valtrius/thelxinoe" org.opencontainers.image.version=$VERSION org.opencontainers.image.revision=$REVISION
 COPY releases/release.pub /etc/thelxinoe/release.pub
