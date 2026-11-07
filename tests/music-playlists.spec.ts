@@ -411,7 +411,14 @@ test('moving between Music pages leaves the sidebar where it is', async ({
   expect(await sidebar.boundingBox()).toEqual(before);
 });
 
-test('the scroll of a Music page comes back with Back', async ({ page }) => {
+test('the scroll of a Music page comes back with Back', async ({
+  page,
+  request,
+}) => {
+  // Cards large enough for the mock library to overflow the viewport.
+  await request.patch('/api/v1/me/appearance', {
+    data: { poster_columns: 5 },
+  });
   await page.goto('/#library/music');
   const scroller = page.locator('[data-music-scroll]');
   const card = page.locator('[data-card-grid] .card-primary').nth(10);

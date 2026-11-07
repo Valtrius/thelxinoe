@@ -1645,7 +1645,7 @@ test('display, playback and skipping preferences save automatically', async ({
       body: { timezone: 'Europe/Paris', time_format: '12h' },
     });
   await page.getByRole('button', { name: 'Smaller poster cards' }).click();
-  await expect(page.getByText('7 columns', { exact: true })).toBeVisible();
+  await expect(page.getByText('10 columns', { exact: true })).toBeVisible();
   await page.getByText('Fade watched videos', { exact: true }).click();
   await expect(
     page.getByRole('switch', { name: 'Fade watched videos' }),
@@ -1757,7 +1757,7 @@ test('library cards retain their aspect ratio, hover actions and Ctrl-wheel zoom
       fixture.writes.some(
         (write) =>
           write.path === '/me/appearance' &&
-          JSON.stringify(write.body) === '{"poster_columns":5}',
+          JSON.stringify(write.body) === '{"poster_columns":8}',
       ),
     )
     .toBe(true);

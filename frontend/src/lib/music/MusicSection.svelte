@@ -102,6 +102,7 @@
     go({ ...home, item: id, ancestors: artist ? [artist] : undefined });
   const motion = createLayoutMotion();
   const zoomWheel = createCardGridWheelHandler({
+    kind: 'poster',
     anchorAttribute: 'data-layout-key',
     motion,
     getColumns: () => $appearance.poster_columns,
@@ -175,6 +176,7 @@
   </div>
   <div
     use:scaleYoutubeMediaScope={{
+      kind: 'poster',
       columns: compactViewport.current ? 3 : $appearance.poster_columns,
       sidebarOpen: !compactViewport.current && playlists.open,
     }}

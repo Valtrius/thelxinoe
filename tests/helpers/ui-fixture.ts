@@ -94,7 +94,7 @@ export async function installUiFixture(
     youtube_card_shortcuts: [],
     theme: 'light',
     sidebar_collapsed: false,
-    poster_columns: 6,
+    poster_columns: 9,
     video_columns: 6,
     fade_watched: true,
     thumbnail_fit: 'contain',

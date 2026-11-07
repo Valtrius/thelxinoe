@@ -1,3 +1,4 @@
+import { getContext, setContext } from 'svelte';
 import {
   cancelLayoutAnimations,
   feedTransformPlans,
@@ -16,17 +17,46 @@ import {
   sidebarResizePlans,
 } from './sidebar-motion';
 
-const MIN_CARD_COLUMNS = 3;
-const MAX_CARD_COLUMNS = 12;
+export type CardKind = 'poster' | 'video';
 
-export const DEFAULT_CARD_COLUMNS = 6;
-export const CARD_LOGICAL_WIDTH_PX = 320;
+const VIDEO_CARD_WIDTH_PX = 320;
+// Poster pages usually fit three cards for every two on video pages. Laying
+// posters out two-thirds as wide zooms both alike there, so their text matches.
+export const CARD_KINDS: Record<
+  CardKind,
+  { logicalWidth: number; minColumns: number; maxColumns: number }
+> = {
+  poster: {
+    logicalWidth: (VIDEO_CARD_WIDTH_PX * 2) / 3,
+    minColumns: 5,
+    maxColumns: 18,
+  },
+  video: {
+    logicalWidth: VIDEO_CARD_WIDTH_PX,
+    minColumns: 3,
+    maxColumns: 12,
+  },
+};
 export const CARD_GRID_GAP_PX = 12;
 export const YOUTUBE_SIDEBAR_LOGICAL_WIDTH_PX = 430;
 // Cards lay out at a fixed width and zoom to fill their column, so a 36 px
 // channel avatar shows at a size that follows the column count.
 export const cardAvatarSizes = (columns: number) =>
-  `${((36 / CARD_LOGICAL_WIDTH_PX) * 100) / columns}vw`;
+  `${((36 / CARD_KINDS.video.logicalWidth) * 100) / columns}vw`;
+// `sizes="auto"` resolves to a card's width before its grid's zoom, which says
+// nothing about the size it shows at. The column count does.
+export const cardImageSizes = (columns: number) => `${100 / columns}vw`;
+
+const gridColumnsKey = Symbol('card grid columns');
+
+export function provideCardGridColumns(columns: () => number) {
+  setContext(gridColumnsKey, columns);
+}
+
+export function cardGridColumns() {
+  return getContext<(() => number) | undefined>(gridColumnsKey);
+}
+
 const mediaLayoutSynchronizers = new Set<() => void>();
 
 export function syncMediaLayouts() {
@@ -45,44 +75,42 @@ export interface YoutubeMediaMetrics extends CardGridMetrics {
   sidebarWidth: number;
 }
 
-export function parseCardColumns(value: string | null): number | null {
-  if (value === null || value.trim() === '') return null;
-  const columns = Number(value);
-  return Number.isInteger(columns) &&
-    columns >= MIN_CARD_COLUMNS &&
-    columns <= MAX_CARD_COLUMNS
-    ? columns
-    : null;
-}
-
-export function nextCardColumns(current: number, deltaY: number): number {
+export function nextCardColumns(
+  current: number,
+  deltaY: number,
+  kind: CardKind,
+): number {
   if (deltaY === 0) return current;
-  const delta = deltaY > 0 ? 1 : -1;
-  return Math.min(
-    MAX_CARD_COLUMNS,
-    Math.max(MIN_CARD_COLUMNS, current + delta),
-  );
+  const { minColumns, maxColumns } = CARD_KINDS[kind];
+  // A count saved below the range can only step up into it.
+  if (deltaY > 0)
+    return Math.min(maxColumns, Math.max(minColumns, current + 1));
+  return current > minColumns ? current - 1 : current;
 }
 
-export function cardGridTemplate(columns: number): string {
-  return `repeat(${columns},${CARD_LOGICAL_WIDTH_PX}px)`;
+export function cardGridTemplate(
+  columns: number,
+  logicalWidth: number,
+): string {
+  return `repeat(${columns},${logicalWidth}px)`;
 }
 
 export function cardGridMetrics(
   availableWidth: number,
   columns: number,
+  kind: CardKind,
   gap = CARD_GRID_GAP_PX,
 ): CardGridMetrics | null {
+  const { logicalWidth } = CARD_KINDS[kind];
   const usableWidth = availableWidth - gap * (columns - 1);
   if (usableWidth <= 0) return null;
   const renderedCardWidth = usableWidth / columns;
-  const scale = renderedCardWidth / CARD_LOGICAL_WIDTH_PX;
+  const scale = renderedCardWidth / logicalWidth;
   if (scale <= 0) return null;
   const logicalGap = gap / scale;
-  const logicalGridWidth =
-    columns * CARD_LOGICAL_WIDTH_PX + (columns - 1) * logicalGap;
+  const logicalGridWidth = columns * logicalWidth + (columns - 1) * logicalGap;
   return {
-    logicalWidth: CARD_LOGICAL_WIDTH_PX,
+    logicalWidth,
     logicalGap,
     logicalGridWidth,
     scale,
@@ -94,23 +122,24 @@ export function youtubeMediaMetrics(
   availableWidth: number,
   columns: number,
   sidebarOpen: boolean,
+  kind: CardKind,
   scrollbarGutter = 0,
   gap = CARD_GRID_GAP_PX,
 ): YoutubeMediaMetrics | null {
+  const { logicalWidth } = CARD_KINDS[kind];
   const fixedWidth = scrollbarGutter + gap * (columns - 1);
-  const logicalWidth =
-    columns * CARD_LOGICAL_WIDTH_PX +
+  const scopeWidth =
+    columns * logicalWidth +
     (sidebarOpen ? YOUTUBE_SIDEBAR_LOGICAL_WIDTH_PX : 0);
   const scalableWidth = availableWidth - fixedWidth;
-  if (scalableWidth <= 0 || logicalWidth <= 0) return null;
-  const scale = scalableWidth / logicalWidth;
+  if (scalableWidth <= 0 || scopeWidth <= 0) return null;
+  const scale = scalableWidth / scopeWidth;
   if (scale <= 0) return null;
   const logicalGap = gap / scale;
   return {
-    logicalWidth: CARD_LOGICAL_WIDTH_PX,
+    logicalWidth,
     logicalGap,
-    logicalGridWidth:
-      columns * CARD_LOGICAL_WIDTH_PX + (columns - 1) * logicalGap,
+    logicalGridWidth: columns * logicalWidth + (columns - 1) * logicalGap,
     scale,
     inverseScale: 1 / scale,
     sidebarWidth: sidebarOpen ? YOUTUBE_SIDEBAR_LOGICAL_WIDTH_PX * scale : 0,
@@ -180,11 +209,11 @@ function applyGridMetrics(
   columns: number,
   metrics: CardGridMetrics,
 ) {
-  const template = cardGridTemplate(columns);
+  const template = cardGridTemplate(columns, metrics.logicalWidth);
   for (const grid of grids) {
     grid.style.gridTemplateColumns = template;
     // Rails place their cards past the visible columns.
-    grid.style.gridAutoColumns = `${CARD_LOGICAL_WIDTH_PX}px`;
+    grid.style.gridAutoColumns = `${metrics.logicalWidth}px`;
     grid.style.width = `${metrics.logicalGridWidth}px`;
     grid.style.gap = `${metrics.logicalGap}px`;
     grid.style.zoom = String(metrics.scale);
@@ -195,20 +224,25 @@ function applyGridMetrics(
   }
 }
 
-export function scaleCardScope(node: HTMLElement, initialColumns: number) {
+export interface CardScaleOptions {
+  kind: CardKind;
+  columns: number;
+}
+
+export function scaleCardScope(node: HTMLElement, initial: CardScaleOptions) {
   // The sidebar's scope sizes these grids together with its sidebar.
   if (node.closest('[data-sidebar-media-scope]')) return;
-  let columns = initialColumns;
+  let options = initial;
   let frame: number | null = null;
   let lastWidth: number | null = null;
   let grids: HTMLElement[] = [];
 
   function apply(width = contentWidth(node)) {
-    const metrics = cardGridMetrics(width, columns);
+    const metrics = cardGridMetrics(width, options.columns, options.kind);
     if (!metrics) return;
     cancelLayoutAnimations(grids);
     lastWidth = width;
-    applyGridMetrics(grids, columns, metrics);
+    applyGridMetrics(grids, options.columns, metrics);
   }
 
   function refreshGrids() {
@@ -254,9 +288,10 @@ export function scaleCardScope(node: HTMLElement, initialColumns: number) {
   refreshGrids();
 
   return {
-    update(nextColumns: number) {
-      if (nextColumns === columns) return;
-      columns = nextColumns;
+    update(next: CardScaleOptions) {
+      if (next.columns === options.columns && next.kind === options.kind)
+        return;
+      options = next;
       apply();
     },
     destroy() {
@@ -277,8 +312,7 @@ export function scaleCardScope(node: HTMLElement, initialColumns: number) {
   };
 }
 
-export interface YoutubeScaleOptions {
-  columns: number;
+export interface YoutubeScaleOptions extends CardScaleOptions {
   sidebarOpen: boolean;
 }
 
@@ -327,6 +361,7 @@ export function scaleYoutubeMediaScope(
       width,
       options.columns,
       options.sidebarOpen,
+      options.kind,
       gutter,
     );
     if (!metrics) return;
@@ -510,7 +545,8 @@ export function scaleYoutubeMediaScope(
   return {
     update(next: YoutubeScaleOptions) {
       const sidebarChanged = next.sidebarOpen !== options.sidebarOpen;
-      const columnsChanged = next.columns !== options.columns;
+      const columnsChanged =
+        next.columns !== options.columns || next.kind !== options.kind;
       if (!sidebarChanged && !columnsChanged) return;
       const sidebarAnimation: SidebarAnimationMode | null = sidebarChanged
         ? next.sidebarOpen

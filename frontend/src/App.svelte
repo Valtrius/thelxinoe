@@ -68,6 +68,7 @@
   let pendingRoute: AppRoute | undefined;
   function zoomWheel(node: HTMLElement) {
     const wheel = createCardGridWheelHandler({
+      kind: 'poster',
       anchorAttribute: 'data-layout-key',
       motion: mediaMotion,
       getColumns: () => get(appearance).poster_columns,

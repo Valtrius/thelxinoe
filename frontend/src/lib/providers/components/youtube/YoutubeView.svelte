@@ -356,6 +356,7 @@
   });
 
   const handleCardGridWheel = createCardGridWheelHandler({
+    kind: 'video',
     anchorAttribute: 'data-video-id',
     motion: layoutMotion,
     getColumns: () => cardColumns,
@@ -921,6 +922,7 @@
 
   <div
     use:scaleYoutubeMediaScope={{
+      kind: 'video',
       columns: cardColumns,
       sidebarOpen: !compactViewport.current && desktopWatchlistSidebarOpen,
     }}
