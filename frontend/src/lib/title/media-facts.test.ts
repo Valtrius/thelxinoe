@@ -67,6 +67,33 @@ describe('media facts', () => {
     });
   });
 
+  it.each([
+    [3840, 2160, '2160p'],
+    [3840, 1600, '2160p'],
+    [1920, 1080, '1080p'],
+    [1920, 800, '1080p'],
+    [1280, 720, '720p'],
+    [1280, 534, '720p'],
+    [854, 480, '480p'],
+    [720, 576, '576p'],
+    [2160, 3840, '2160p'],
+    [1600, 3840, '2160p'],
+    [1080, 1920, '1080p'],
+    [800, 1920, '1080p'],
+    [720, 1280, '720p'],
+    [534, 1280, '720p'],
+    [480, 854, '480p'],
+    [360, 640, '360p'],
+    [1080, 1080, '1080p'],
+    [undefined, 1080, '1080p'],
+    [1920, undefined, '1080p'],
+    [640, undefined, ''],
+  ])('name a %s by %s picture %s', (width, height, label) => {
+    expect(
+      mediaFacts({ streams: [{ codec_type: 'video', width, height }] }).video,
+    ).toBe(label);
+  });
+
   it('leave out what ffprobe did not report', () => {
     expect(mediaFacts({})).toEqual({ video: '', audio: '', subtitles: '' });
     expect(

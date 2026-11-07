@@ -47,12 +47,14 @@ const language = (stream: Stream) => {
   const value = stream.tags?.language;
   return value && value !== 'und' ? value.toUpperCase() : '';
 };
-// Widescreen films are cropped in height, so the width decides first.
+// Widescreen films are cropped on their short side, so the long side decides first.
 function resolution({ width = 0, height = 0 }: Stream) {
-  if (width >= 3800 || height >= 2000) return '2160p';
-  if (width >= 1900 || height >= 1000) return '1080p';
-  if (width >= 1260 || height >= 700) return '720p';
-  return height ? `${height}p` : '';
+  const long = Math.max(width, height);
+  const short = width && height ? Math.min(width, height) : height;
+  if (long >= 3800 || short >= 2000) return '2160p';
+  if (long >= 1900 || short >= 1000) return '1080p';
+  if (long >= 1260 || short >= 700) return '720p';
+  return short ? `${short}p` : '';
 }
 function range(stream: Stream) {
   if (stream.side_data_list?.some((d) => d.side_data_type?.includes('DOVI')))
