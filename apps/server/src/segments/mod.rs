@@ -34,6 +34,7 @@ pub(crate) fn router() -> Router<AppState> {
             get(preferences).put(save_preferences),
         )
         .route("/api/v1/admin/segments", get(status).put(configure))
+        .route("/api/v1/admin/segments/analysis", get(analysis_results))
 }
 #[derive(Serialize, Deserialize, Clone)]
 pub(super) struct Segment {
@@ -177,7 +178,11 @@ async fn reanalyze(
             "Automatic analysis is available for episodes",
         ));
     }
+    let event_media = media.clone();
     storage::reanalyze_write_segment_analysis(&state.db, media, src).await?;
+    state
+        .emit(None, "segments.changed", json!({"media_id":event_media}))
+        .await?;
     Ok(Json(json!({"queued":true})))
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -199,6 +204,19 @@ async fn configure(
 }
 async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let items = storage::status(&state.db).await?;
-    Ok(Json(json!({"config":config(&state).await?,"items":items})))
+    Ok(Json(json!({"config":config(&state).await?})))
+}
+#[derive(Deserialize)]
+pub(super) struct AnalysisFilter {
+    show: Option<String>,
+    status: Option<String>,
+    limit: Option<u32>,
+}
+async fn analysis_results(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(filter): Query<AnalysisFilter>,
+) -> Result<Json<Value>> {
+    security::require(&state, &headers, Capability::ManageServer).await?;
+    Ok(Json(storage::analysis_results(&state.db, filter).await?))
 }

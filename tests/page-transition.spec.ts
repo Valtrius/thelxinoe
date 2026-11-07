@@ -133,7 +133,7 @@ test('settings sections, service tabs and detail pages also transition without l
     ['Online accounts', 'Preview admin'],
     ['Devices', 'Living room desktop'],
     ['Server', '2026.09.30'],
-    ['Episode analysis', 'Beyond the Horizon · First Contact'],
+    ['Episode analysis', 'Beyond the Horizon · S01E01'],
     ['Provider applications', 'Daily API budget'],
     ['Media services', 'Seerr'],
     ['Auto-delete', 'Video downloads'],

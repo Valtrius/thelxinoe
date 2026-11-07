@@ -15,6 +15,9 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
             if cfg.local || cfg.external {
                 let work = storage::claim_analysis(&state.db).await?;
                 if let Some((media, file, generation)) = work {
+                    state
+                        .emit(None, "segments.changed", json!({"media_id":media}))
+                        .await?;
                     let outcome = analyze(&state, &media, &file, &generation, cfg).await;
                     let interrupted = !idle(&state).await?;
                     let message = outcome.err().map(|e| e.to_string());

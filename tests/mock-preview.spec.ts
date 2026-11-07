@@ -462,7 +462,7 @@ test('every admin settings panel and service tab has populated mocks', async ({
     ['settings/online', 'Preview admin'],
     ['settings/devices', 'Living room desktop'],
     ['admin/server', '2026.09.30'],
-    ['admin/analysis', 'Beyond the Horizon · First Contact'],
+    ['admin/analysis', 'Beyond the Horizon · S01E01'],
     ['admin/providers', 'Daily API budget'],
     ['admin/services', 'Seerr'],
     ['admin/retention', 'Video downloads'],

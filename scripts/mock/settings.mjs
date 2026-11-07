@@ -250,16 +250,48 @@ export function settingsSeed() {
       config: { local: true, external: true },
       items: [
         {
-          media_id: 'episode-0',
-          title: 'Beyond the Horizon · First Contact',
-          state: 'complete',
+          media_id: 'episode-1',
+          file_id: 'episode-1-file',
+          show: { id: 'show-0', title: 'Beyond the Horizon' },
+          title: 'Beyond the Horizon · S01E02',
+          status: 'running',
           error: null,
+          analyzed_at: null,
+          segments: [],
         },
         {
-          media_id: 'episode-1',
-          title: 'Beyond the Horizon · The Crossing',
-          state: 'pending',
+          media_id: 'episode-2',
+          file_id: 'episode-2-file',
+          show: { id: 'show-1', title: 'Harbor Lights' },
+          title: 'Harbor Lights · S02E01',
+          status: 'failed',
+          error: 'Audio analysis timed out',
+          analyzed_at: 1789980000,
+          segments: [],
+        },
+        {
+          media_id: 'episode-0',
+          file_id: 'episode-0-file',
+          show: { id: 'show-0', title: 'Beyond the Horizon' },
+          title: 'Beyond the Horizon · S01E01',
+          status: 'found',
           error: null,
+          analyzed_at: 1789970000,
+          segments: [
+            { kind: 'Recap', start: 0, end: 48 },
+            { kind: 'Intro', start: 127, end: 188 },
+            { kind: 'Credits', start: 2410, end: 2470 },
+          ],
+        },
+        {
+          media_id: 'episode-3',
+          file_id: 'episode-3-file',
+          show: { id: 'show-1', title: 'Harbor Lights' },
+          title: 'Harbor Lights · S01E01',
+          status: 'nothing',
+          error: null,
+          analyzed_at: 1789960000,
+          segments: [],
         },
       ],
     },
@@ -607,7 +639,51 @@ export async function settingsApi(s, c) {
   if (path === '/me/segments') return save(s.skipping);
   if (path === '/admin/segments') {
     if (method === 'PUT') Object.assign(s.segments.config, body);
-    return json(s.segments);
+    return json({ config: s.segments.config });
+  }
+  if (path === '/admin/segments/analysis') {
+    const empty = {
+      episodes: 0,
+      intro: 0,
+      credits: 0,
+      nothing: 0,
+      failed: 0,
+      waiting: 0,
+    };
+    const totals = { ...empty };
+    const shows = new Map();
+    for (const episode of s.segments.items) {
+      if (!shows.has(episode.show.id))
+        shows.set(episode.show.id, { ...episode.show, ...empty });
+      for (const coverage of [totals, shows.get(episode.show.id)]) {
+        coverage.episodes += 1;
+        for (const [field, kind] of [
+          ['intro', 'Intro'],
+          ['credits', 'Credits'],
+        ])
+          if (episode.segments.some((segment) => segment.kind === kind))
+            coverage[field] += 1;
+        if (episode.status === 'nothing') coverage.nothing += 1;
+        if (episode.status === 'failed') coverage.failed += 1;
+        if (['waiting', 'running'].includes(episode.status))
+          coverage.waiting += 1;
+      }
+    }
+    const show = c.query.get('show');
+    const status = c.query.get('status');
+    return json({
+      items: s.segments.items
+        .filter(
+          (episode) =>
+            (!show || episode.show.id === show) &&
+            (!status ||
+              episode.status === status ||
+              (status === 'waiting' && episode.status === 'running')),
+        )
+        .slice(0, Number(c.query.get('limit') ?? 100)),
+      shows: [...shows.values()],
+      totals,
+    });
   }
   if (path === '/admin/jobs') {
     const kind = c.query.get('kind');

@@ -56,6 +56,7 @@ const effects: Record<string, { reload?: Revision[]; stale?: CachedPage[] }> = {
   'server.settings.changed': { reload: ['preferences', 'settings'] },
   'stack.changed': { reload: ['settings'], stale: ['discover'] },
   'jobs.changed': { reload: ['settings'] },
+  'segments.changed': { reload: ['settings'] },
   'recyclarr.changed': { reload: ['settings'] },
   'retention.changed': { reload: ['settings'] },
   'users.changed': { reload: ['settings'] },
