@@ -41,6 +41,7 @@
   import StatusChip from '../ui/StatusChip.svelte';
   import TitleMenu from './TitleMenu.svelte';
   import RequestSeasons from './RequestSeasons.svelte';
+  import { episodeToPlay } from './episodes';
   import { hasStatus, isTitleRef, type TitleStatus } from './status';
   import {
     asset,
@@ -156,18 +157,7 @@
         /^[\w-]{11}$/.test(v.key),
     ),
   );
-  // The next episode to play: one in progress, else the first unwatched.
-  const nextEpisode = $derived.by(() => {
-    const episodes = seasons
-      .filter((s) => s.number > 0)
-      .flatMap((s) => s.episodes)
-      .filter((e) => e.id && e.available);
-    return (
-      episodes.find((e) => !e.watched && e.position) ??
-      episodes.find((e) => !e.watched) ??
-      episodes[0]
-    );
-  });
+  const nextEpisode = $derived(episodeToPlay(seasons));
   // Seasons load from the library show, else from Sonarr by the title's reference.
   const series = $derived(
     item?.id ?? (reference && manager ? reference : null),

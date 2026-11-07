@@ -3,8 +3,11 @@ import type { Episode, Season } from './catalog';
 import type { TitleState } from './status';
 import {
   episodeCode,
+  episodeToPlay,
   phase,
   resumeText,
+  seasonFiles,
+  seasonToOpen,
   shown,
   summarize,
   wanted,
@@ -96,6 +99,27 @@ describe('episode phases', () => {
     ).toBe(NOW + 100);
   });
 
+  it('tell how much of a season is on disk, counting what has not aired', () => {
+    const here = (number: number) =>
+      episode(number, 'available', { available: true });
+    const coming = (number: number) =>
+      episode(number, 'upcoming', { air_date: NOW + 86400 });
+    const files = (episodes: Episode[]) =>
+      seasonFiles(summarize(season(episodes), NOW));
+
+    expect(files([here(1), here(2)])).toBe('complete');
+    expect(files([here(1), coming(2)])).toBe('ongoing');
+    expect(files([coming(1), coming(2)])).toBe('upcoming');
+    expect(files([here(1), episode(2, 'missing')])).toBe('partial');
+    expect(files([here(1), episode(2, 'missing'), coming(3)])).toBe('partial');
+    expect(files([here(1), episode(2, 'downloading'), coming(3)])).toBe(
+      'downloading',
+    );
+    expect(files([episode(1, 'missing'), coming(2)])).toBe('empty');
+    expect(files([episode(1, 'unavailable')])).toBe('empty');
+    expect(files([])).toBe('empty');
+  });
+
   it('filter unwatched episodes and the aired ones administrators can fetch', () => {
     const watched = episode(1, 'available', { watched: true });
     const missing = episode(2, 'unmonitored');
@@ -124,5 +148,96 @@ describe('episode phases', () => {
     ).toBe('');
     expect(resumeText(episode(1, null))).toBe('');
     expect(episodeCode(episode(6, null))).toBe('S02E06');
+  });
+});
+
+describe('going on with a series', () => {
+  const here = (id: string, extra: Partial<Episode> = {}) =>
+    episode(Number(id.slice(-1)), null, {
+      id,
+      season: Number(id.slice(1, 2)),
+      available: true,
+      ...extra,
+    });
+  const absent = (id: string, extra: Partial<Episode> = {}) =>
+    here(id, { id: null, available: false, ...extra });
+  const seasons = (...lists: Episode[][]): Season[] =>
+    lists.map((episodes, index) => ({
+      ...season(episodes),
+      number: index + 1,
+      title: `Season ${index + 1}`,
+    }));
+  const played = { watched: true };
+  const specials: Season = {
+    ...season([here('s01', { season: 0 })]),
+    number: 0,
+    title: 'Specials',
+  };
+
+  it('starts from the first available episode when nothing was watched', () => {
+    const list = seasons(
+      [absent('s11'), absent('s12')],
+      [here('s21'), here('s22')],
+    );
+    expect(episodeToPlay(list)?.id).toBe('s21');
+    expect(seasonToOpen(list)).toBe(2);
+  });
+
+  it('follows the last watched episode, past the ones it skipped', () => {
+    const list = seasons(
+      [here('s11'), here('s12', { position: 300 }), here('s13', played)],
+      [here('s21'), here('s22')],
+    );
+    expect(episodeToPlay(list)?.id).toBe('s21');
+    expect(seasonToOpen(list)).toBe(2);
+  });
+
+  it('resumes the episode in progress after the last watched', () => {
+    const list = seasons(
+      [here('s11', played), here('s12'), here('s13', { position: 300 })],
+      [here('s21')],
+    );
+    expect(episodeToPlay(list)?.id).toBe('s13');
+    expect(seasonToOpen(list)).toBe(1);
+  });
+
+  it('reaches over an absent episode to the next available one', () => {
+    const list = seasons([here('s11', played), absent('s12')], [here('s21')]);
+    expect(episodeToPlay(list)?.id).toBe('s21');
+    expect(seasonToOpen(list)).toBe(2);
+  });
+
+  it('opens the next season before its files are here, while Play looks back', () => {
+    const list = seasons(
+      [here('s11', { position: 300 }), here('s12', played)],
+      [absent('s21'), absent('s22')],
+    );
+    expect(episodeToPlay(list)?.id).toBe('s11');
+    expect(seasonToOpen(list)).toBe(2);
+
+    const caught = seasons([here('s11', played)], [absent('s21')]);
+    expect(episodeToPlay(caught)?.id).toBe('s11');
+    expect(seasonToOpen(caught)).toBe(2);
+  });
+
+  it('opens the last season once everything was watched, and Play restarts', () => {
+    const list = seasons(
+      [here('s11', played)],
+      [here('s21', played), here('s22', played)],
+    );
+    expect(episodeToPlay(list)?.id).toBe('s11');
+    expect(seasonToOpen(list)).toBe(2);
+  });
+
+  it('keeps specials out of the order and opens a series without files at its start', () => {
+    const list = [
+      ...seasons([absent('s11')], [absent('s21')]),
+      { ...specials, episodes: [here('s01', { season: 0, ...played })] },
+    ];
+    expect(episodeToPlay(list)).toBeUndefined();
+    expect(seasonToOpen(list)).toBe(1);
+    expect(episodeToPlay([specials])).toBeUndefined();
+    expect(seasonToOpen([specials])).toBe(0);
+    expect(seasonToOpen([])).toBeNull();
   });
 });

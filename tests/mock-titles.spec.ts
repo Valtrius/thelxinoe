@@ -919,13 +919,119 @@ test('episode rows show stills, mark seasons watched and search Sonarr', async (
   await expect(
     page.getByText('Marked watched up to this episode.'),
   ).toBeVisible();
-  await expect(page.getByRole('tab', { name: 'Season 1' })).toContainText(
-    '3/4',
+  await expect(page.getByRole('tab', { name: 'Season 1' })).toHaveAttribute(
+    'title',
+    '4 of 4 episodes available · 3 watched',
   );
   await page.getByRole('button', { name: 'Unwatched 1' }).click();
   await expect(
     page.getByRole('list', { name: 'Season 1 episodes' }).getByRole('listitem'),
   ).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('a series opens where watching goes on and its tabs show what is on disk', async ({
+  page,
+}) => {
+  const errors = track(page);
+  const tab = (name: string) => page.getByRole('tab', { name });
+  const opens = (name: string) =>
+    expect(tab(name)).toHaveAttribute('aria-selected', 'true');
+  const watch = async (id: string) =>
+    expect(
+      (
+        await page.request.put(`/api/v1/catalog/${id}/state`, {
+          data: { watched: true },
+        })
+      ).ok(),
+    ).toBe(true);
+
+  await page.goto('/#library/shows/show-0');
+  await opens('Season 1');
+  await expect(tab('Season 1')).toHaveAttribute(
+    'data-season-files',
+    'complete',
+  );
+  await expect(tab('Season 1')).toContainText('4/4');
+  await expect(tab('Season 2')).toHaveAttribute('data-season-files', 'partial');
+  await expect(tab('Season 2')).toContainText('4/6');
+  await expect(tab('Season 2')).toHaveAttribute(
+    'title',
+    '4 of 6 episodes available · 1 upcoming · 0 watched',
+  );
+
+  // Play and the opened season follow the last watched, past what it skipped.
+  await watch('episode-3');
+  await page.reload();
+  await opens('Season 2');
+  await expect(page.getByRole('button', { name: 'Play S2E1' })).toBeVisible();
+
+  // The next episode has no file yet, so Play has to look elsewhere.
+  await watch('episode-7');
+  await page.reload();
+  await opens('Season 2');
+  await expect(page.getByRole('button', { name: 'Resume S1E1' })).toBeVisible();
+
+  // A link still names its own season.
+  await page.goto('/#library/shows/show-0/season-0/episode-1');
+  await opens('Season 1');
+
+  await page.goto('/#library/shows/tmdb%3A47');
+  await expect(tab('Season 1')).toHaveAttribute('data-season-files', 'empty');
+  await expect(tab('Season 1')).toContainText('0/8');
+  await page.goto('/#library/shows/tmdb%3A46');
+  await expect(tab('Season 1')).toHaveAttribute(
+    'data-season-files',
+    'upcoming',
+  );
+  await expect(tab('Season 1')).not.toContainText('/');
+  expect(errors).toEqual([]);
+});
+
+test('a season opened past the end of a long strip scrolls into it, not the page', async ({
+  page,
+}) => {
+  const errors = track(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route('**/api/v1/catalog/show-0/seasons', async (route) => {
+    const response = await route.fetch();
+    const [first] = (await response.json()).seasons;
+    const seasons = Array.from({ length: 14 }, (_, index) => ({
+      ...first,
+      number: index + 1,
+      title: `Season ${index + 1}`,
+      episodes: first.episodes.map((episode: object) => ({
+        ...episode,
+        season: index + 1,
+        watched: index < 11,
+        position: null,
+      })),
+    }));
+    await route.fulfill({ response, json: { seasons } });
+  });
+  await page.goto('/#library/shows/show-0');
+  const tab = page.getByRole('tab', { name: 'Season 12', exact: true });
+  await expect(tab).toHaveAttribute('aria-selected', 'true');
+  const staysInStrip = () =>
+    expect
+      .poll(() =>
+        tab.evaluate((element) => {
+          const strip = element.parentElement!.getBoundingClientRect();
+          const { left, right } = element.getBoundingClientRect();
+          return left >= strip.left && right <= strip.right;
+        }),
+      )
+      .toBe(true);
+  await staysInStrip();
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'Beyond the Horizon' }),
+  ).toBeInViewport();
+
+  // A strip that narrows, as on a turning phone, keeps it too.
+  await page.setViewportSize({ width: 1440, height: 844 });
+  await staysInStrip();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await staysInStrip();
   expect(errors).toEqual([]);
 });
 
