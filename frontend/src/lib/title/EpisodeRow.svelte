@@ -36,6 +36,7 @@
     toggle,
     play,
     changed,
+    watchedChanged,
   } = $props<{
     episode: Episode;
     /** The series name, which episode titles from files may repeat. */
@@ -52,6 +53,7 @@
     toggle: () => void;
     play: (episode: Episode, fileId?: string) => void;
     changed: () => void;
+    watchedChanged: (media: string, watched: boolean, through: boolean) => void;
   }>();
   let searching = $state(false),
     releases = $state(false);
@@ -255,6 +257,7 @@
         : null}
       play={(fileId) => play(episode, fileId)}
       {changed}
+      {watchedChanged}
     />
   </div>
   {#if releases && series && episode.manager_id}<ReleaseSearch

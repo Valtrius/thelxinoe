@@ -4,6 +4,7 @@ import {
   pauseAnimations,
   seekAnimations,
 } from './helpers/paused-animations';
+import { responseGate } from './helpers/response-gate';
 
 test.beforeEach(async ({ request }) => {
   await request.post('/__mock/reset');
@@ -27,6 +28,12 @@ const filter = (page: Page, name: RegExp) =>
 const watched = (page: Page, title: string) =>
   page.getByRole('button', { name: `Watched: ${title}`, exact: true });
 // Copies in a layer carry no motion keys, so this only finds the row itself.
+const more = (page: Page, title: string) =>
+  page
+    .getByRole('tabpanel')
+    .getByRole('button', { name: `More actions for ${title}`, exact: true });
+const rows = (page: Page) =>
+  page.locator('[role="tabpanel"] ol [data-episode]');
 const row = (page: Page, season: number, number: number) =>
   page.locator(
     `[role="tabpanel"] ol [data-motion-row^="${season}:${number}:"]`,
@@ -203,6 +210,9 @@ test('an episode marked watched leaves the Unwatched filter gradually', async ({
   await expect(row(page, 1, 1)).toHaveCount(0);
   await expect(copies).toContainText('First Contact');
   await expect.poll(() => frames(row(page, 1, 2), 'transform')).not.toBeNull();
+  // The reload that follows every mark brings the same rows, and must not end it.
+  await expect(row(page, 1, 2)).toHaveClass(/bg-accent-soft/);
+  await expect(copies).toHaveCount(1);
   await finishAnimations(page);
   await expect(layer).toHaveCount(0);
   await expect(listed(page)).toHaveCount(3);
@@ -222,6 +232,74 @@ test('a season marked watched empties the Unwatched filter gradually', async ({
   const height = await frames(root, 'height');
   expect(parseFloat(height![1])).toBeLessThan(parseFloat(height![0]));
   await finishAnimations(page);
+  await expect(layer).toHaveCount(0);
+  expect(await heldStyle(root)).toEqual(['', '']);
+});
+
+for (const { owner, item, left } of [
+  { owner: 'First Contact', item: 'Mark watched', left: 3 },
+  { owner: 'The Signal', item: 'Mark watched up to here', left: 1 },
+  { owner: 'Season 1', item: 'Mark season watched', left: 0 },
+]) {
+  test(`${item} in a menu leaves the Unwatched filter gradually`, async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await open(page);
+    await filter(page, /^Unwatched 4/).click();
+    await more(page, owner).click();
+    const reload = page.waitForResponse('**/seasons');
+    await pauseAnimations(page);
+    await page.getByRole('menuitem', { name: item, exact: true }).click();
+    const { copies, layer } = list(page);
+    await expect(row(page, 1, 1)).toHaveCount(0);
+    await expect(copies.first()).toContainText('First Contact');
+    await expect(rows(page)).toHaveCount(left);
+    // Still reloads, though the row whose menu asked for it may be gone by now.
+    await reload;
+    await finishAnimations(page);
+    await expect(layer).toHaveCount(0);
+    await expect(rows(page)).toHaveCount(left);
+    await expect(tab(page, 'Season 1')).toContainText(`${4 - left}/4`);
+    expect(errors).toEqual([]);
+  });
+}
+
+test('a refresh that changes the height of the list ends its animation', async ({
+  page,
+}) => {
+  await open(page);
+  await watched(page, 'First Contact').click();
+  await expect(filter(page, /^Unwatched 3/)).toBeVisible();
+  const gate = responseGate();
+  await page.route('**/seasons', async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    const [season] = json.seasons;
+    for (const number of [5, 6])
+      season.episodes.push({
+        ...season.episodes[1],
+        id: `new-${number}`,
+        number,
+        title: `New episode ${number}`,
+      });
+    await gate.promise;
+    await route.fulfill({ response, json });
+  });
+  await more(page, 'Season 1').click();
+  await page
+    .getByRole('menuitem', { name: 'Add to Watch Later', exact: true })
+    .click();
+  await expect(page.getByRole('menu')).toHaveCount(0);
+
+  await pauseAnimations(page);
+  await filter(page, /^Unwatched 3/).click();
+  const { root, layer, copies } = list(page);
+  await expect(copies).toHaveCount(1);
+  await expect(root).toHaveCSS('overflow', 'clip');
+  gate.release();
+  await expect(rows(page)).toHaveCount(5);
   await expect(layer).toHaveCount(0);
   expect(await heldStyle(root)).toEqual(['', '']);
 });

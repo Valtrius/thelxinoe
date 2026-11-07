@@ -192,13 +192,28 @@
     );
   });
 
+  // "Up to here" also covers earlier seasons, which can wait for the reload.
+  function showWatched(media: string, value: boolean, through = false) {
+    const marked = view.flatMap((entry: Season) => {
+      if (entry.id === media) return entry.episodes;
+      const episode = entry.episodes.find((item) => item.id === media);
+      if (!episode) return [];
+      return through
+        ? entry.episodes.filter((item) => item.number <= episode.number)
+        : [episode];
+    });
+    void listMotion.commit(() => {
+      for (const { id } of marked) if (id) toggled[id] = value;
+    });
+  }
+
   async function toggleWatched(episode: Episode) {
     if (!episode.id) return;
     busy = episode.id;
     const value = !watched(episode);
     try {
       await setFlag(episode.id, 'watched', value);
-      void listMotion.commit(() => (toggled[episode.id!] = value));
+      showWatched(episode.id, value);
       changed();
     } catch (caught) {
       showToast({
@@ -215,12 +230,11 @@
   async function markSeason() {
     if (!season?.id) return;
     marking = true;
+    const media = season.id;
     const value = !finished;
     try {
-      await setWatched(season.id, value);
-      void listMotion.commit(() => {
-        for (const episode of library) toggled[episode.id!] = value;
-      });
+      await setWatched(media, value);
+      showWatched(media, value);
       changed();
     } catch (caught) {
       showToast({
@@ -420,6 +434,7 @@
                     ? { series, season: season.number }
                     : null}
                   {changed}
+                  watchedChanged={showWatched}
                 />{/key}
             </div>
           </div>
@@ -466,6 +481,7 @@
                   toggle={() => void toggleWatched(episode)}
                   {play}
                   {changed}
+                  watchedChanged={showWatched}
                 />
               {:else}<li
                   class="py-6 text-sm text-muted"

@@ -68,6 +68,7 @@
     radarr = null,
     play,
     changed,
+    watchedChanged,
     open = $bindable(false),
   } = $props<{
     /** The library item; a Sonarr episode or Radarr movie not in the library has none. */
@@ -88,6 +89,12 @@
     radarr?: string | null;
     play?: (fileId: string) => void;
     changed?: () => void;
+    /** Called before `changed`, for showing the new state ahead of its reload. */
+    watchedChanged?: (
+      media: string,
+      watched: boolean,
+      through: boolean,
+    ) => void;
     open?: boolean;
   }>();
   type Requested = TitleDialogKind | 'releases';
@@ -210,11 +217,17 @@
     const value = !flags[key];
     void act('Saving', done, async () => {
       flags = await setFlag(media, key, value);
+      if (key === 'watched') watchedChanged?.(media, value, false);
     });
   }
 
   function mark(watched: boolean, through: boolean, done: string) {
-    if (id) void act('Saving', done, () => setWatched(id, watched, through));
+    if (!id) return;
+    const media = id;
+    void act('Saving', done, async () => {
+      await setWatched(media, watched, through);
+      watchedChanged?.(media, watched, through);
+    });
   }
 
   function monitor(value: boolean) {

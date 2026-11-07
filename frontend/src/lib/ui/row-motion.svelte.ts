@@ -191,6 +191,7 @@ export class RowMotion {
   private running: Animation[] = [];
   private layer?: HTMLElement;
   private leaving: { item: Capture; copy: HTMLElement }[] = [];
+  private resizes?: ResizeObserver;
   private turn = 0;
 
   hold() {
@@ -256,7 +257,7 @@ export class RowMotion {
     if (resizing) plans.push(resizing);
     if (previous) this.dissolve(root, content, previous, seen, plans);
     else this.move(root, content, before, plans, live);
-    this.play(root, plans, to);
+    this.play(root, content, plans, to);
   }
 
   private dissolve(
@@ -375,7 +376,12 @@ export class RowMotion {
     return layer;
   }
 
-  private play(root: HTMLElement, plans: AnimationPlan[], height: number) {
+  private play(
+    root: HTMLElement,
+    content: HTMLElement,
+    plans: AnimationPlan[],
+    height: number,
+  ) {
     const animations = playAnimations(plans);
     this.running = animations;
     if (!animations.length) {
@@ -385,6 +391,13 @@ export class RowMotion {
     // Only now, with the height animating: any sooner and the next layout would
     // already be at the new height, and scroll the page there.
     root.style.height = `${height}px`;
+    // Content that changes size under the animation, such as from a refresh,
+    // would otherwise stay clipped to this height until it ends.
+    this.resizes = new ResizeObserver(() => {
+      if (Math.abs(content.getBoundingClientRect().height - height) >= 1)
+        this.settle();
+    });
+    this.resizes.observe(content);
     void Promise.allSettled(animations.map((item) => item.finished)).then(
       () => {
         if (this.running === animations) this.clear(root);
@@ -393,6 +406,7 @@ export class RowMotion {
   }
 
   private clear(root: HTMLElement) {
+    this.resizes?.disconnect();
     this.layer?.remove();
     this.layer = undefined;
     this.leaving = [];
@@ -405,6 +419,7 @@ export class RowMotion {
    * in it. They finish fading underneath, so that nothing jumps on screen.
    */
   private interrupt() {
+    this.resizes?.disconnect();
     const copies = [...(this.layer?.children ?? [])] as HTMLElement[];
     for (const animation of this.running) {
       const { target } = animation.effect as KeyframeEffect;
