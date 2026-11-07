@@ -266,7 +266,7 @@ for (const { owner, item, left } of [
   });
 }
 
-test('a refresh that changes the height of the list ends its animation', async ({
+test('a refresh that changes the height of the list stops holding it', async ({
   page,
 }) => {
   await open(page);
@@ -300,8 +300,40 @@ test('a refresh that changes the height of the list ends its animation', async (
   await expect(root).toHaveCSS('overflow', 'clip');
   gate.release();
   await expect(rows(page)).toHaveCount(5);
+  await expect.poll(() => heldStyle(root)).toEqual(['', '']);
+  expect(await frames(root, 'height')).toBeNull();
+  // What is fading and moving has no reason to stop.
+  await expect(copies).toHaveCount(1);
+  await finishAnimations(page);
   await expect(layer).toHaveCount(0);
   expect(await heldStyle(root)).toEqual(['', '']);
+});
+
+test('a filter chosen during a crossfade leaves it running', async ({
+  page,
+}) => {
+  await open(page);
+  await pauseAnimations(page);
+  await tab(page, 'Season 2').click();
+  const { root, content, copies } = panel(page);
+  await expect(copies).toHaveCount(1);
+  await seekAnimations(page, 0.5);
+  const incoming = await opacity(content);
+  const outgoing = await opacity(copies);
+
+  await filter(page, /^Missing 1/).click();
+  await expect(listed(page)).toHaveCount(1);
+  await expect.poll(() => frames(list(page).root, 'height')).not.toBeNull();
+  // It now follows the list's height, frame by frame.
+  await expect.poll(() => heldStyle(root)).toEqual(['', '']);
+  expect(await frames(root, 'height')).toBeNull();
+  expect(await opacity(content)).toBeCloseTo(incoming);
+  expect(await opacity(copies)).toBeCloseTo(outgoing);
+
+  await finishAnimations(page);
+  await expect(panel(page).layer).toHaveCount(0);
+  await expect(list(page).layer).toHaveCount(0);
+  expect(await heldStyle(list(page).root)).toEqual(['', '']);
 });
 
 test('a season tab replaces a filter that is still gliding', async ({

@@ -391,11 +391,17 @@ export class RowMotion {
     // Only now, with the height animating: any sooner and the next layout would
     // already be at the new height, and scroll the page there.
     root.style.height = `${height}px`;
-    // Content that changes size under the animation, such as from a refresh,
-    // would otherwise stay clipped to this height until it ends.
+    // Content that changes size under the animation, from a refresh or a list
+    // moving inside it, would stay clipped to this height until it ends. Fades
+    // and moving rows carry on, so that nothing jumps.
     this.resizes = new ResizeObserver(() => {
-      if (Math.abs(content.getBoundingClientRect().height - height) >= 1)
-        this.settle();
+      if (Math.abs(content.getBoundingClientRect().height - height) < 1) return;
+      this.resizes?.disconnect();
+      for (const animation of animations)
+        if ((animation.effect as KeyframeEffect).target === root)
+          animation.cancel();
+      root.style.height = '';
+      root.style.overflow = '';
     });
     this.resizes.observe(content);
     void Promise.allSettled(animations.map((item) => item.finished)).then(
