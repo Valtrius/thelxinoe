@@ -68,6 +68,9 @@ img[data-arrived] {
 /* Preserve the existing application breakpoints without changing provider sm/md/lg. */
 @custom-variant service-narrow (@media (max-width: 1050px));
 @custom-variant narrow (@media (max-width: 1000px));
+/* Settings tables pin their columns, which stop fitting beside the sidebars well
+   above the compact breakpoint. Declared first so that `compact:` overrides it. */
+@custom-variant table-stack (@container settings (max-width: 46rem));
 /* Keep compact and touch identical to the queries in lib/responsive.ts. */
 @custom-variant compact {
   @media (max-width: 720px),
@@ -75,6 +78,9 @@ img[data-arrived] {
     @slot;
   }
 }
+/* The coverage table's short columns fit far below table-stack. Declared after
+   `compact`, whose cell padding it replaces. */
+@custom-variant coverage-stack (@container settings (max-width: 24rem));
 @custom-variant touch (@media (pointer: coarse) and (hover: none));
 /* Phones zoom card grids far below their desktop size. Card parts marked
    `phone-card:card-pixels` lay out in real pixels again, so the sizes given

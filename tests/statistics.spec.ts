@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
+import { responseGate } from './helpers/response-gate';
 import { installUiFixture } from './helpers/ui-fixture';
 import { sources } from '../frontend/src/lib/statistics/helpers';
 import type {
@@ -484,6 +485,69 @@ test('history ignores stale responses when the administrator scope changes', asy
   await expect(
     page.getByText('History fixture', { exact: true }),
   ).toBeVisible();
+});
+
+test('playback history keeps its rows and columns until a new scope answers', async ({
+  page,
+}) => {
+  const state = await fixture(page, 'admin');
+  await page.goto('/');
+  const table = page.getByRole('table', { name: 'Playback history' });
+  await expect(table.getByText('History fixture')).toBeVisible();
+  const user = table.getByRole('columnheader', { name: 'User' });
+  await expect(user).toHaveCount(0);
+  const gate = responseGate();
+  state.setHistoryOverride((route, url) =>
+    url.pathname === '/api/v1/admin/history'
+      ? gate.promise.then(() =>
+          route.fulfill({ json: historyPayload('Everyone history') }),
+        )
+      : undefined,
+  );
+  await page
+    .getByRole('combobox', { name: 'Statistics user' })
+    .selectOption('all');
+  const root = table.locator('xpath=ancestor::*[@aria-busy][1]');
+  await expect(root).toHaveAttribute('aria-busy', 'true');
+  await expect(root.locator('[data-motion-indicator]')).toHaveCount(1);
+  await expect(table.getByText('History fixture')).toBeVisible();
+  await expect(user).toHaveCount(0);
+  gate.release();
+  await expect(table.getByText('Everyone history')).toBeVisible();
+  await expect(user).toBeVisible();
+  await expect(root).toHaveAttribute('aria-busy', 'false');
+  await expect(table.getByText('History fixture')).toHaveCount(0);
+});
+
+test('playback history cancels a read a newer scope replaced', async ({
+  page,
+}) => {
+  const state = await fixture(page, 'admin');
+  await page.goto('/');
+  const table = page.getByRole('table', { name: 'Playback history' });
+  await expect(table.getByText('History fixture')).toBeVisible();
+  const cancelled = page.waitForEvent(
+    'requestfailed',
+    (request) =>
+      new URL(request.url()).pathname === '/api/v1/admin/history' &&
+      !new URL(request.url()).searchParams.has('user'),
+  );
+  state.setHistoryOverride((_route, url) =>
+    url.pathname === '/api/v1/admin/history' && !url.searchParams.has('user')
+      ? Promise.resolve()
+      : undefined,
+  );
+  const scope = page.getByRole('combobox', { name: 'Statistics user' });
+  await scope.selectOption('all');
+  await expect
+    .poll(() => state.historyQueries.at(-1)?.pathname)
+    .toBe('/api/v1/admin/history');
+  await scope.selectOption('bob');
+  await cancelled;
+  await expect
+    .poll(() => state.historyQueries.at(-1)?.searchParams.get('user'))
+    .toBe('bob');
+  await expect(table.getByText('History fixture')).toBeVisible();
 });
 
 test('statistics failures can be retried without showing older time attribution', async ({

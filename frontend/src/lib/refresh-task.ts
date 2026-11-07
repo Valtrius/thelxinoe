@@ -6,12 +6,19 @@ export class RefreshTask {
   private started = false;
   private completed = Date.now();
   private timer?: ReturnType<typeof setTimeout>;
+  private reading?: AbortController;
 
   constructor(
-    private load: () => Promise<void>,
+    private load: (signal: AbortSignal) => Promise<void>,
     private interval: number | (() => number),
     private pollWhen: () => boolean = () => true,
   ) {}
+
+  /** For a change the read in flight cannot answer: cancels it and reads at once. */
+  restart = (): Promise<void> => {
+    this.reading?.abort();
+    return this.refresh();
+  };
 
   refresh = (): Promise<void> => {
     if (this.stopped) return Promise.resolve();
@@ -31,7 +38,12 @@ export class RefreshTask {
   private async drain() {
     do {
       this.dirty = false;
-      await this.load();
+      const { signal } = (this.reading = new AbortController());
+      try {
+        await this.load(signal);
+      } catch (caught) {
+        if (!signal.aborted) throw caught;
+      }
     } while (this.dirty && !document.hidden && !this.stopped);
   }
 
@@ -82,6 +94,7 @@ export class RefreshTask {
   stop = () => {
     this.stopped = true;
     this.dirty = false;
+    this.reading?.abort();
     clearTimeout(this.timer);
     document.removeEventListener('visibilitychange', this.resume);
     window.removeEventListener('focus', this.resume);

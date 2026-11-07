@@ -22,6 +22,92 @@ function deferred() {
   return { promise, resolve };
 }
 
+describe('restarting a read', () => {
+  it('cancels the read in flight and starts the next one at once', async () => {
+    const first = deferred(),
+      second = deferred();
+    const signals: AbortSignal[] = [];
+    const load = vi.fn((signal: AbortSignal) => {
+      signals.push(signal);
+      return signals.length === 1 ? first.promise : second.promise;
+    });
+    const task = new RefreshTask(load, 1000);
+    task.start();
+    expect(signals[0].aborted).toBe(false);
+    const done = task.restart();
+    expect(signals[0].aborted).toBe(true);
+    first.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(signals[1].aborted).toBe(false);
+    second.resolve();
+    await done;
+    expect(load).toHaveBeenCalledTimes(2);
+    task.stop();
+  });
+
+  it('does not report the failure of a read it cancelled', async () => {
+    const load = vi
+      .fn<(signal: AbortSignal) => Promise<void>>()
+      .mockImplementationOnce(
+        (signal) =>
+          new Promise((_, reject) =>
+            signal.addEventListener('abort', () => reject(signal.reason)),
+          ),
+      )
+      .mockResolvedValue();
+    const task = new RefreshTask(load, 1000);
+    const running = task.refresh();
+    await expect(task.restart()).resolves.toBeUndefined();
+    await expect(running).resolves.toBeUndefined();
+    expect(load).toHaveBeenCalledTimes(2);
+    task.stop();
+  });
+
+  it('still reports a read that failed by itself', async () => {
+    const load = vi.fn().mockRejectedValue(new Error('offline'));
+    const task = new RefreshTask(load, 1000);
+    await expect(task.refresh()).rejects.toThrow('offline');
+    task.stop();
+  });
+
+  it('starts a read when none is in flight', async () => {
+    const load = vi.fn().mockResolvedValue(undefined);
+    const task = new RefreshTask(load, 1000);
+    await task.restart();
+    expect(load).toHaveBeenCalledTimes(1);
+    task.stop();
+  });
+
+  it('a plain refresh leaves the read in flight alone', () => {
+    const pending = deferred();
+    const signals: AbortSignal[] = [];
+    const task = new RefreshTask((signal) => {
+      signals.push(signal);
+      return pending.promise;
+    }, 1000);
+    task.start();
+    void task.refresh();
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(false);
+    pending.resolve();
+    task.stop();
+  });
+
+  it('stopping cancels the read in flight', () => {
+    const pending = deferred();
+    const signals: AbortSignal[] = [];
+    const task = new RefreshTask((signal) => {
+      signals.push(signal);
+      return pending.promise;
+    }, 1000);
+    task.start();
+    task.stop();
+    expect(signals[0].aborted).toBe(true);
+    pending.resolve();
+  });
+});
+
 describe('visible-page refreshes', () => {
   it('waits for slow reads instead of accumulating periodic catch-ups', async () => {
     const pending = deferred();

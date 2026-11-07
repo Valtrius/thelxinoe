@@ -26,10 +26,17 @@
   import Button from './ui/Button.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
+  import { reveal } from './ui/reveal';
+  import { RowMotion } from './ui/row-motion.svelte';
+  import RowMotionBody from './ui/RowMotionBody.svelte';
   import SettingsCard from './ui/SettingsCard.svelte';
   import StatusChip from './ui/StatusChip.svelte';
   import Switch from './ui/Switch.svelte';
-  import { cardBlockClass, formControlClass } from './ui/styles';
+  import {
+    cardBlockClass,
+    formControlClass,
+    quietDisabledClass,
+  } from './ui/styles';
   import { twMerge } from 'tailwind-merge';
 
   const ids = $props.id();
@@ -47,15 +54,20 @@
   };
   const stateKeys = Object.keys(states) as Job['state'][];
 
+  const motion = new RowMotion();
   let kind = $state('');
   let shown = $state<Job['state'] | ''>('');
   let showAutomatic = $state(false);
   let result = $state<JobPage | null>(null);
   let totals = $state<JobPage['totals'] | null>(null);
+  // The state `result` was read for, which `shown` is ahead of during a read.
+  let appliedState = $state<Job['state'] | ''>('');
   let error = $state('');
   let loadingOlder = $state(false);
   let limit: number | undefined;
   let since: number | undefined;
+  // The filters `result` answers. A read of any others replaces the rows.
+  let shownQuery: string | undefined;
   let now = $state(Date.now() / 1000);
   const expanded = new SvelteSet<string>();
 
@@ -86,7 +98,7 @@
     return result?.items.filter((job) => !pinned.has(job.id)) ?? [];
   });
   const days = $derived(auditDays(history, display.timezone));
-  const hasOlder = $derived(!!result && hasOlderJobs(result, shown));
+  const hasOlder = $derived(!!result && hasOlderJobs(result, appliedState));
   const clock = $derived(
     dateFormat('en', {
       hour: display.timeFormat === '12h' ? 'numeric' : '2-digit',
@@ -98,23 +110,43 @@
   );
 
   const requests = new LatestRequest();
-  async function load() {
+  async function load(signal: AbortSignal) {
     const latest = requests.begin();
+    const requested = shown;
+    const requestedQuery = query;
+    const replacing = requestedQuery !== shownQuery;
     try {
       const search = jobsQuery(filters, { limit, since });
       const page = await api<JobPage>(
         search ? `/admin/jobs?${search}` : '/admin/jobs',
+        'GET',
+        undefined,
+        signal,
       );
       if (!latest()) return;
-      result = page;
-      totals = page.totals;
-      // New jobs add to the older ones someone loaded instead of pushing them off the list.
-      if (limit) since = page.items.at(-1)?.created_at ?? since;
-      now = Date.now() / 1000;
-      error = '';
+      await motion.commit(
+        () => {
+          result = page;
+          totals = page.totals;
+          appliedState = requested;
+          shownQuery = requestedQuery;
+          // New jobs add to the older ones someone loaded instead of pushing them off the list.
+          if (limit) since = page.items.at(-1)?.created_at ?? since;
+          now = Date.now() / 1000;
+          error = '';
+        },
+        { live: !replacing && !loadingOlder },
+      );
     } catch (caught) {
-      if (latest() && !isServerUpdateInterruption(caught))
+      if (!latest() || isServerUpdateInterruption(caught)) return;
+      await motion.commit(() => {
+        // Rows that do not match the filters cannot stay on show.
+        if (replacing) {
+          result = null;
+          shownQuery = undefined;
+        }
         error = String(caught);
+      });
     }
   }
   async function loadOlder() {
@@ -129,24 +161,29 @@
   }
 
   const reads = new RefreshTask(load, 30_000);
-  onMount(() => reads.start(false));
+  onMount(() => {
+    motion.hold();
+    return reads.start(false);
+  });
   onDestroy(() => requests.invalidate());
   let loadedQuery: string | undefined;
   $effect(() => {
     void revisions.settings;
     const next = query;
     untrack(() => {
-      if (loadedQuery !== next) {
-        if (loadedQuery !== undefined) {
-          requests.invalidate();
-          result = null;
-          limit = undefined;
-          since = undefined;
-          loadingOlder = false;
-        }
-        loadedQuery = next;
+      if (loadedQuery === next) {
+        void reads.refresh();
+        return;
       }
-      void reads.refresh();
+      if (loadedQuery !== undefined) {
+        requests.invalidate();
+        motion.hold();
+        limit = undefined;
+        since = undefined;
+        loadingOlder = false;
+      }
+      loadedQuery = next;
+      void reads.restart();
     });
   });
 
@@ -199,13 +236,13 @@
   }
 </script>
 
-{#snippet heading(label: string, count: string)}
-  <tbody class="compact:block">
-    <tr class="compact:block">
+{#snippet heading(key: string, label: string, count: string)}
+  <tbody class="table-stack:block" data-motion-row={`heading:${key}`}>
+    <tr class="table-stack:block">
       <th
         scope="colgroup"
         colspan="5"
-        class="bg-surface-strong px-5.5 py-1.5 text-[0.7rem] font-semibold tracking-normal text-foreground normal-case compact:block compact:px-4"
+        class="bg-surface-strong px-5.5 py-1.5 text-[0.7rem] font-semibold tracking-normal text-foreground normal-case compact:px-4 table-stack:block"
       >
         {label}<span class="ml-2 font-normal text-muted">{count}</span>
       </th>
@@ -225,22 +262,25 @@
     $attention.some(
       (item) => item.target === 'jobs' && item.resource === job.id,
     )}
-  <tbody class="border-b border-line compact:block">
+  <tbody
+    class="border-b border-line table-stack:block"
+    data-motion-row={job.id}
+  >
     <tr
-      class="compact:grid compact:grid-cols-[auto_minmax(0,1fr)_auto] compact:items-baseline compact:gap-x-3 compact:gap-y-1 compact:px-4 compact:py-2"
+      class="compact:px-4 table-stack:grid table-stack:grid-cols-[auto_minmax(0,1fr)_auto] table-stack:items-baseline table-stack:gap-x-3 table-stack:gap-y-1 table-stack:px-5.5 table-stack:py-2"
     >
       <td
-        class="px-5.5 py-1.5 whitespace-nowrap tabular-nums compact:order-3 compact:border-0 compact:p-0 compact:text-muted"
+        class="px-5.5 py-1.5 whitespace-nowrap tabular-nums table-stack:order-3 table-stack:border-0 table-stack:p-0 table-stack:text-muted"
         title={formatTimestamp(moment)}
       >
         {pinned ? formatTimestamp(moment) : clock.format(moment * 1000)}
       </td>
       <td
-        class="px-3 py-1.5 compact:order-1 compact:col-span-2 compact:border-0 compact:p-0"
+        class="px-3 py-1.5 table-stack:order-1 table-stack:col-span-2 table-stack:border-0 table-stack:p-0"
       >
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 text-left font-medium whitespace-nowrap hover:text-accent compact:whitespace-normal"
+          class="inline-flex items-center gap-1.5 text-left font-medium hover:text-accent"
           aria-expanded={open}
           aria-controls={`${ids}-${job.id}`}
           title={job.kind}
@@ -258,18 +298,18 @@
         </button>
       </td>
       <td
-        class="px-3 py-1.5 wrap-anywhere compact:order-4 compact:border-0 compact:p-0 compact:text-muted"
+        class="px-3 py-1.5 wrap-anywhere table-stack:order-4 table-stack:border-0 table-stack:p-0 table-stack:text-muted"
       >
         {#if target}{target}{:else}<span class="text-muted italic">Removed</span
           >{/if}
       </td>
       <td
-        class="px-3 py-1.5 whitespace-nowrap tabular-nums compact:order-5 compact:border-0 compact:p-0 compact:text-right compact:text-muted"
+        class="px-3 py-1.5 whitespace-nowrap tabular-nums table-stack:order-5 table-stack:border-0 table-stack:p-0 table-stack:text-right table-stack:text-muted"
       >
         {runTime === null ? '—' : formatJobDuration(runTime)}
       </td>
       <td
-        class="py-1.5 pr-5.5 pl-3 whitespace-nowrap compact:order-2 compact:border-0 compact:p-0 compact:text-right"
+        class="py-1.5 pr-5.5 pl-3 whitespace-nowrap table-stack:order-2 table-stack:border-0 table-stack:p-0 table-stack:text-right"
       >
         <span class="inline-flex items-center gap-2">
           <StatusChip tone={tones[job.state]}>{states[job.state]}</StatusChip>
@@ -284,31 +324,34 @@
       </td>
     </tr>
     {#if job.error}
-      <tr class="compact:block">
+      <tr class="table-stack:block">
         <td
           colspan="5"
-          class="px-5.5 pt-0 pb-2 text-danger wrap-anywhere compact:block compact:border-0 compact:px-4"
+          class="px-5.5 pt-0 pb-2 text-danger wrap-anywhere compact:px-4 table-stack:block table-stack:border-0"
         >
           {job.error}
         </td>
       </tr>
     {/if}
-    <tr class="compact:block" hidden={!open} id={`${ids}-${job.id}`}>
-      <td
-        colspan="5"
-        class="border-t border-line bg-surface-soft px-5.5 py-3 compact:block compact:px-4"
-      >
+    <!-- Stays in the page for aria-controls, and only shows with its details. -->
+    <tr class="not-has-[div]:hidden table-stack:block" id={`${ids}-${job.id}`}>
+      <td colspan="5" class="border-0 p-0 table-stack:block">
         {#if open}
-          <dl
-            class="m-0 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-x-6 gap-y-2.5"
+          <div
+            transition:reveal
+            class="border-b border-line bg-surface-soft px-5.5 py-3 compact:px-4 table-stack:border-t table-stack:border-b-0"
           >
-            {#each details(job) as [label, value] (label)}
-              <div class="min-w-0">
-                <dt class="text-[0.62rem] text-muted">{label}</dt>
-                <dd class="m-0 tabular-nums wrap-anywhere">{value}</dd>
-              </div>
-            {/each}
-          </dl>
+            <dl
+              class="m-0 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-x-6 gap-y-2.5"
+            >
+              {#each details(job) as [label, value] (label)}
+                <div class="min-w-0">
+                  <dt class="text-[0.62rem] text-muted">{label}</dt>
+                  <dd class="m-0 tabular-nums wrap-anywhere">{value}</dd>
+                </div>
+              {/each}
+            </dl>
+          </div>
         {/if}
       </td>
     </tr>
@@ -342,70 +385,90 @@
       >Show automatic metadata refreshes</Switch
     >
   </div>
-  {#if error}
-    <div class={cardBlockClass}>
-      <Notice variant="error" role="alert" class="mb-0">{error}</Notice>
-    </div>
-  {/if}
-  {#if !result}
-    {#if !error}
-      <div class={cardBlockClass}>
-        <ContentSkeleton label="Loading background jobs" />
+  <RowMotionBody {motion} loaded={!!result} class="divide-y divide-line">
+    {#if error}
+      <div class={cardBlockClass} data-motion-row="error">
+        <Notice variant="error" role="alert" class="mb-0">{error}</Notice>
       </div>
     {/if}
-  {:else if failures.length || inProgress.length || history.length}
-    <!-- Below the compact breakpoint each job stacks into two lines. -->
-    <table class="w-full border-collapse text-left text-xs compact:block">
-      <caption class="sr-only">Background jobs</caption>
-      <thead
-        class="border-b border-line bg-surface-soft text-[0.62rem] text-muted compact:hidden"
-      >
-        <tr>
-          <th scope="col" class="w-0 px-5.5 py-2 font-medium">Time</th>
-          <th scope="col" class="w-0 px-3 py-2 font-medium">Job</th>
-          <th scope="col" class="px-3 py-2 font-medium">Target</th>
-          <th scope="col" class="w-0 px-3 py-2 font-medium">Duration</th>
-          <th scope="col" class="w-0 py-2 pr-5.5 pl-3 font-medium">Status</th>
-        </tr>
-      </thead>
-      {#if failures.length}
-        {@render heading(
-          'Needs attention',
-          `${failures.length} ${failures.length === 1 ? 'job' : 'jobs'}`,
-        )}
-        {#each failures as job (job.id)}{@render row(job, true)}{/each}
+    {#if !result}
+      {#if motion.stale && !error}
+        <div class={cardBlockClass}>
+          <ContentSkeleton label="Loading background jobs" />
+        </div>
       {/if}
-      {#if inProgress.length}
-        {@render heading(
-          'In progress',
-          `${inProgress.length} ${inProgress.length === 1 ? 'job' : 'jobs'}`,
-        )}
-        {#each inProgress as job (job.id)}{@render row(job, true)}{/each}
-      {/if}
-      {#each days as day, index (day.key)}
-        {@const partial = index === days.length - 1 && hasOlder}
-        {@render heading(
-          day.label,
-          `${day.rows.length}${partial ? '+' : ''} ${day.rows.length === 1 && !partial ? 'job' : 'jobs'}`,
-        )}
-        {#each day.rows as job (job.id)}{@render row(job, false)}{/each}
-      {/each}
-    </table>
-  {:else if !error}
-    <p class="m-0 {cardBlockClass} text-xs text-muted" role="status">
-      {kind || shown || !showAutomatic
-        ? 'No jobs match these filters.'
-        : 'No background jobs yet.'}
-    </p>
-  {/if}
-  {#if hasOlder}
-    <div class={cardBlockClass}>
-      <Button
-        variant="secondary"
-        size="form"
-        disabled={loadingOlder}
-        onclick={() => void loadOlder()}>Load older jobs</Button
+    {:else if failures.length || inProgress.length || history.length}
+      <!-- Pinned columns stay put between filters. When they stop fitting, each job stacks into two lines. -->
+      <table
+        class="w-full table-fixed border-separate border-spacing-0 text-left text-xs table-stack:block"
       >
-    </div>
-  {/if}
+        <caption class="sr-only">Background jobs</caption>
+        <colgroup class="table-stack:hidden">
+          <col class="w-42" />
+          <col class="w-46" />
+          <col />
+          <col class="w-23" />
+          <col class="w-44" />
+        </colgroup>
+        <thead
+          class="border-b border-line bg-surface-soft text-[0.62rem] text-muted table-stack:hidden"
+          data-motion-row="head"
+        >
+          <tr>
+            <th scope="col" class="px-5.5 py-2 font-medium">Time</th>
+            <th scope="col" class="px-3 py-2 font-medium">Job</th>
+            <th scope="col" class="px-3 py-2 font-medium">Target</th>
+            <th scope="col" class="px-3 py-2 font-medium">Duration</th>
+            <th scope="col" class="py-2 pr-5.5 pl-3 font-medium">Status</th>
+          </tr>
+        </thead>
+        {#if failures.length}
+          {@render heading(
+            'attention',
+            'Needs attention',
+            `${failures.length} ${failures.length === 1 ? 'job' : 'jobs'}`,
+          )}
+          {#each failures as job (job.id)}{@render row(job, true)}{/each}
+        {/if}
+        {#if inProgress.length}
+          {@render heading(
+            'progress',
+            'In progress',
+            `${inProgress.length} ${inProgress.length === 1 ? 'job' : 'jobs'}`,
+          )}
+          {#each inProgress as job (job.id)}{@render row(job, true)}{/each}
+        {/if}
+        {#each days as day, index (day.key)}
+          {@const partial = index === days.length - 1 && hasOlder}
+          {@render heading(
+            day.key,
+            day.label,
+            `${day.rows.length}${partial ? '+' : ''} ${day.rows.length === 1 && !partial ? 'job' : 'jobs'}`,
+          )}
+          {#each day.rows as job (job.id)}{@render row(job, false)}{/each}
+        {/each}
+      </table>
+    {:else if !error}
+      <p
+        class="m-0 {cardBlockClass} text-xs text-muted"
+        role="status"
+        data-motion-row="empty"
+      >
+        {kind || shown || !showAutomatic
+          ? 'No jobs match these filters.'
+          : 'No background jobs yet.'}
+      </p>
+    {/if}
+    {#if hasOlder}
+      <div class={cardBlockClass} data-motion-row="older">
+        <Button
+          variant="secondary"
+          size="form"
+          class={quietDisabledClass}
+          disabled={loadingOlder || motion.holding}
+          onclick={() => void loadOlder()}>Load older jobs</Button
+        >
+      </div>
+    {/if}
+  </RowMotionBody>
 </SettingsCard>

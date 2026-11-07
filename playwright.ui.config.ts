@@ -18,6 +18,7 @@ export default defineConfig({
         'statistics.spec.ts',
         'provider-setup.spec.ts',
         'settings-details.spec.ts',
+        'settings-table-motion.spec.ts',
         'seerr.spec.ts',
         'music-requests.spec.ts',
         'service-onboarding.spec.ts',
