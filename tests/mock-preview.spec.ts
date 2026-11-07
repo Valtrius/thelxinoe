@@ -806,18 +806,18 @@ test('library hierarchy, watchlist edits, online feeds and statistics work', asy
   await page.getByRole('button', { name: 'Smaller poster cards' }).click();
   await expect(
     page.getByRole('group', { name: 'Poster density' }),
-  ).toContainText('7 columns');
+  ).toContainText('10 columns');
   await expect
     .poll(
       async () =>
         (await (await page.request.get('/api/v1/me/appearance')).json())
           .poster_columns,
     )
-    .toBe(7);
+    .toBe(10);
   await page.reload();
   await expect(
     page.getByRole('group', { name: 'Poster density' }),
-  ).toContainText('7 columns');
+  ).toContainText('10 columns');
   expect(errors).toEqual([]);
   const diagnostic = await page.request.get('/__mock/diagnostics');
   expect((await diagnostic.json()).unhandled).toEqual([]);

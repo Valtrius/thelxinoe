@@ -209,7 +209,7 @@ export function createMockState() {
       youtube_card_shortcuts: [],
       theme: 'light',
       sidebar_collapsed: false,
-      poster_columns: 6,
+      poster_columns: 9,
       video_columns: 6,
       animation_duration_ms: 200,
       fade_watched: true,

@@ -1,31 +1,40 @@
 <script lang="ts">
   import { onMount, tick, type Snippet } from 'svelte';
   import { appearance } from '../appearance';
-  import { scaleCardScope } from '../card-grid-zoom';
+  import {
+    provideCardGridColumns,
+    scaleCardScope,
+    type CardKind,
+  } from '../card-grid-zoom';
   import { createLayoutMotion } from '../layout-motion';
   import { compactViewport } from '../responsive';
   let {
     children,
     revision = '',
     label = 'Media collection',
-    mobileColumns = 3,
+    kind = 'poster',
     class: className = '',
   } = $props<{
     children: Snippet;
     revision?: string;
     label?: string;
-    mobileColumns?: number;
+    kind?: CardKind;
     class?: string;
   }>();
   let root: HTMLDivElement;
   let width = $state(1200);
   const columns = $derived(
     compactViewport.current
-      ? mobileColumns
+      ? kind === 'poster'
+        ? 3
+        : 2
       : width < 640
         ? Math.max(1, Math.min(3, Math.floor(width / 150)))
-        : $appearance.poster_columns,
+        : kind === 'poster'
+          ? $appearance.poster_columns
+          : $appearance.video_columns,
   );
+  provideCardGridColumns(() => columns);
   const motion = createLayoutMotion();
   $effect.pre(() => {
     void revision;
@@ -45,7 +54,7 @@
 <div
   bind:this={root}
   class="media-scope w-full min-w-0"
-  use:scaleCardScope={columns}
+  use:scaleCardScope={{ kind, columns }}
   use:motion.connect
 >
   <div

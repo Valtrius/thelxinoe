@@ -66,7 +66,7 @@
         >
       </div>{/if}
   </div>
-  <div class="min-w-0" use:scaleCardScope={columns}>
+  <div class="min-w-0" use:scaleCardScope={{ kind: 'video', columns }}>
     <div
       bind:this={rail}
       data-card-grid

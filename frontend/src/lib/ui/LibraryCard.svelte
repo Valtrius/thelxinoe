@@ -10,6 +10,7 @@
   import { attentionDescription, type AttentionItem } from '../attention';
   import type { ActivityItem } from '../activity';
   import { appearance } from '../appearance';
+  import { cardGridColumns, cardImageSizes } from '../card-grid-zoom';
   import {
     mediaCardMotionClass,
     mediaCardSignalClass,
@@ -130,6 +131,12 @@
       ? youtubeThumbnailSet(source)
       : libraryArtworkSet(source),
   );
+  // Rails have no grid above them and lay out at the video width, where `auto`
+  // still picks their variant.
+  const gridColumns = cardGridColumns();
+  const imageSizes = $derived(
+    gridColumns ? cardImageSizes(gridColumns()) : 'auto, 350px',
+  );
   $effect(() => {
     void source;
     narrow = false;
@@ -208,7 +215,7 @@
             class="absolute size-full scale-125 object-cover opacity-60 blur-xl"
             src={source}
             srcset={sourceSet}
-            sizes="auto, 350px"
+            sizes={imageSizes}
             loading="lazy"
             alt=""
             aria-hidden="true"
@@ -217,7 +224,7 @@
           class={`absolute size-full ${narrow ? 'object-contain' : 'object-cover'} ${mediaCardThumbnailClass} ${item.status?.inactive ? 'opacity-45 grayscale' : ''}`}
           src={source}
           srcset={sourceSet}
-          sizes="auto, 350px"
+          sizes={imageSizes}
           alt=""
           loading="lazy"
           data-art={backdrop ? 'backdrop' : narrow ? 'contained' : 'cover'}

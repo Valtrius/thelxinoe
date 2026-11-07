@@ -25,7 +25,7 @@ const defaults: Appearance = {
   youtube_card_shortcuts: [],
   theme: 'system',
   sidebar_collapsed: false,
-  poster_columns: 6,
+  poster_columns: 9,
   video_columns: 6,
   animation_duration_ms: defaultAnimationDuration,
   fade_watched: true,

@@ -64,7 +64,7 @@
       {@render cards()}
     </div>
   {:else}
-    <MediaGrid {label} mobileColumns={shape === 'landscape' ? 2 : 3}>
+    <MediaGrid {label} kind={shape === 'landscape' ? 'video' : 'poster'}>
       {@render cards()}
     </MediaGrid>
   {/if}

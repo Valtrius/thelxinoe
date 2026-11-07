@@ -300,6 +300,7 @@
   }
 
   const handleCardGridWheel = createCardGridWheelHandler({
+    kind: 'video',
     anchorAttribute: 'data-stream-id',
     motion: layoutMotion,
     getColumns: () => cardColumns,
@@ -356,7 +357,7 @@
 
   <div
     use:connectLayoutMotion
-    use:scaleCardScope={cardColumns}
+    use:scaleCardScope={{ kind: 'video', columns: cardColumns }}
     onwheel={handleCardGridWheel}
     data-sidebar-resize="xy"
     class={`relative ${account ? 'pt-3 pr-1' : 'pr-3'}`}

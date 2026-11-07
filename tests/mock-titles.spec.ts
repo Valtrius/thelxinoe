@@ -506,6 +506,10 @@ for (const touch of [false, true])
       page,
     }) => {
       const errors = track(page);
+      // Cards wide enough for a menu to leave the next card's middle uncovered.
+      await page.request.patch('/api/v1/me/appearance', {
+        data: { poster_columns: 6 },
+      });
       await page.goto('/#library/movies');
       const first = card(page, 'movie-0');
       const below = card(page, 'movie-1').locator('.card-primary');

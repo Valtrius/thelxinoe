@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from './Button.svelte';
+  import { CARD_KINDS, nextCardColumns } from '../card-grid-zoom';
   // `row` renders only the stepper; the surrounding SettingRow shows the label.
   let {
     label,
@@ -15,6 +16,7 @@
     variant?: 'stack' | 'row';
   }>();
   const cardType = $derived(label === 'Poster density' ? 'poster' : 'video');
+  const limits = $derived(CARD_KINDS[cardType]);
 </script>
 
 {#snippet stepper()}
@@ -23,8 +25,8 @@
     size="form"
     class="min-w-7.5 p-1.5"
     aria-label={`Larger ${cardType} cards`}
-    disabled={columns <= 3}
-    onclick={() => onChange(columns - 1)}>−</Button
+    disabled={columns <= limits.minColumns}
+    onclick={() => onChange(nextCardColumns(columns, -1, cardType))}>−</Button
   >
   <span aria-live="polite" class="min-w-18 text-center">{columns} columns</span>
   <Button
@@ -32,8 +34,8 @@
     size="form"
     class="min-w-7.5 p-1.5"
     aria-label={`Smaller ${cardType} cards`}
-    disabled={columns >= 12}
-    onclick={() => onChange(columns + 1)}>+</Button
+    disabled={columns >= limits.maxColumns}
+    onclick={() => onChange(nextCardColumns(columns, 1, cardType))}>+</Button
   >
 {/snippet}
 

@@ -39,7 +39,7 @@ impl Default for Appearance {
             youtube_card_shortcuts: vec![],
             theme: "system".into(),
             sidebar_collapsed: false,
-            poster_columns: 6,
+            poster_columns: 9,
             video_columns: 6,
             animation_duration_ms: 200,
             fade_watched: true,
@@ -127,7 +127,7 @@ pub async fn update(
         .is_some_and(|v| !["light", "system", "dark"].contains(&v))
         || change
             .poster_columns
-            .is_some_and(|v| !(3..=12).contains(&v))
+            .is_some_and(|v| !(5..=18).contains(&v))
         || change.video_columns.is_some_and(|v| !(3..=12).contains(&v))
         || change
             .thumbnail_fit
@@ -135,7 +135,7 @@ pub async fn update(
             .is_some_and(|v| !["contain", "cover"].contains(&v))
     {
         return Err(ApiError::bad(
-            "Choose a supported theme, thumbnail fit and 3 to 12 card columns",
+            "Choose a supported theme, thumbnail fit, 5 to 18 poster columns and 3 to 12 video columns",
         ));
     }
     let value = storage::update(&state.db, change, p).await?;
@@ -271,23 +271,11 @@ mod tests {
     #[tokio::test]
     async fn partial_preferences_preserve_theme_and_stay_private() {
         let (_temp, state, alice) = fixture().await;
-        assert_eq!(
-            call(
-                &state,
-                "/api/v1/me/appearance",
-                "PATCH",
-                json!({"theme":"dark"}),
-                &alice
-            )
-            .await
-            .2["theme"],
-            "dark"
-        );
         let saved = call(
             &state,
             "/api/v1/me/appearance",
             "PATCH",
-            json!({"poster_columns":9}),
+            json!({"theme":"dark"}),
             &alice,
         )
         .await;
@@ -298,14 +286,42 @@ mod tests {
             &state,
             "/api/v1/me/appearance",
             "PATCH",
+            json!({"poster_columns":12}),
+            &alice,
+        )
+        .await;
+        assert_eq!(saved.2["theme"], "dark");
+        assert_eq!(saved.2["poster_columns"], 12);
+        assert_eq!(saved.2["video_columns"], 6);
+        let saved = call(
+            &state,
+            "/api/v1/me/appearance",
+            "PATCH",
             json!({"video_columns":4}),
             &alice,
         )
         .await;
-        assert_eq!(saved.2["poster_columns"], 9);
+        assert_eq!(saved.2["poster_columns"], 12);
         assert_eq!(saved.2["video_columns"], 4);
-        for field in ["poster_columns", "video_columns"] {
-            for columns in [2, 13] {
+        for (field, valid, invalid) in [
+            ("poster_columns", [5, 18], [4, 19]),
+            ("video_columns", [3, 12], [2, 13]),
+        ] {
+            for columns in valid {
+                assert_eq!(
+                    call(
+                        &state,
+                        "/api/v1/me/appearance",
+                        "PATCH",
+                        json!({field:columns}),
+                        &alice,
+                    )
+                    .await
+                    .2[field],
+                    columns
+                );
+            }
+            for columns in invalid {
                 assert_eq!(
                     call(
                         &state,
