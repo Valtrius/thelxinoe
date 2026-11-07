@@ -1031,6 +1031,88 @@ INSERT INTO edition_progress VALUES ('alice','e2','',30,60,1);")?;
 }
 
 #[tokio::test]
+async fn top_level_lists_return_whole_metadata_for_their_page() {
+    let (_temp, state, alice, _) = api_fixture().await;
+    let metadata = |title: &str| {
+        json!({"title":title,"overview":format!("About {title}"),"tagline":"Kept",
+            "belongs_to_collection":{"id":7,"name":"Set","poster_path":"/set.jpg"},
+            "genres":[{"id":1,"name":"Drama"}],"vote_average":7.5,"runtime":90,
+            "release_date":"2001-02-03","credits":{"cast":[{"name":"Someone"}]}})
+        .to_string()
+    };
+    let (first, second) = (metadata("Aaa"), metadata("Aab"));
+    state
+        .db
+        .write("test.fixture", move |db| {
+            db.execute(
+                "UPDATE media SET metadata=?1 WHERE id='movie-matched'",
+                [first],
+            )?;
+            db.execute(
+                "UPDATE media SET metadata=?1 WHERE id='movie-plain'",
+                [second],
+            )?;
+            db.execute("INSERT INTO media_sources VALUES ('movie-plain','f2')", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    replace(
+        &state,
+        snapshot(vec![(
+            "radarr",
+            inventory(
+                "radarr",
+                json!([{"id":3,"tmdbId":103,"title":"Aac","monitored":true,"isAvailable":false}]),
+                json!({}),
+                json!([]),
+            ),
+        )]),
+    );
+    let list = |query: &'static str| {
+        let (state, alice) = (state.clone(), alice.clone());
+        async move {
+            let (status, _, body) = call(
+                &state,
+                &format!("/api/v1/catalog?{query}"),
+                "GET",
+                Value::Null,
+                &alice,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{query}: {body}");
+            body
+        }
+    };
+
+    let body = list("kind=movie&limit=1").await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    let item = &body["items"][0];
+    assert_eq!(item["title"], "Aaa");
+    assert_eq!(item["year"], 2001);
+    assert_eq!(item["overview"], "About Aaa");
+    assert_eq!(item["metadata"]["tagline"], "Kept");
+    assert_eq!(item["metadata"]["credits"]["cast"][0]["name"], "Someone");
+    assert_eq!(item["metadata"]["belongs_to_collection"]["name"], "Set");
+    assert_eq!(item["rating"], 7.5);
+    assert_eq!(item["runtime"], 90);
+
+    // Facts of titles outside the page still filter and count.
+    let body = list("kind=movie&collection=7&genre=Drama&sort=rating&order=desc&limit=1").await;
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["genres"], json!(["Drama"]));
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+
+    // A title only Radarr knows has no metadata to read.
+    let body = list("kind=movie&q=Aac").await;
+    assert_eq!(body["items"][0]["virtual"], true);
+    assert!(body["items"][0].get("metadata").is_none());
+
+    let body = list("kind=movie&limit=0").await;
+    assert_eq!(body["items"], json!([]));
+}
+
+#[tokio::test]
 async fn top_level_lists_filter_and_sort_before_they_are_cut() {
     let (_temp, state, alice, _) = api_fixture().await;
     state.db.write("test.fixture", |db| {

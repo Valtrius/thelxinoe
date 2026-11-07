@@ -217,9 +217,140 @@ fn music_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     Ok(item)
 }
 
+/// What a movie or show list sorts and filters by, out of metadata that often holds
+/// kilobytes per title. The rest is read for the page returned.
+const LISTED: [&str; 9] = [
+    "title",
+    "name",
+    "release_date",
+    "first_air_date",
+    "vote_average",
+    "genres",
+    "runtime",
+    "status",
+    "belongs_to_collection",
+];
+/// Keys `Value` reads as serde_json's own wrappers rather than as fields.
+const PRIVATE: &str = "$serde_json::private::";
+
+/// The listed fields, read without building the rest. It fails wherever reading the
+/// whole metadata into a `Value` could fail or read it differently.
+struct ListedMetadata(Value);
+impl<'de> serde::Deserialize<'de> for ListedMetadata {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Fields;
+        impl<'de> serde::de::Visitor<'de> for Fields {
+            type Value = ListedMetadata;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut fields: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut listed = serde_json::Map::new();
+                while let Some(Key(key)) = fields.next_key()? {
+                    if LISTED.contains(&key.as_str()) {
+                        listed.insert(key, fields.next_value()?);
+                    } else {
+                        fields.next_value::<Unread>()?;
+                    }
+                }
+                Ok(ListedMetadata(Value::Object(listed)))
+            }
+        }
+        deserializer.deserialize_map(Fields)
+    }
+}
+
+/// An object key that `Value` reads as a field.
+struct Key(String);
+impl<'de> serde::Deserialize<'de> for Key {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        if key.starts_with(PRIVATE) {
+            return Err(serde::de::Error::custom("serde_json wrapper"));
+        }
+        Ok(Key(key))
+    }
+}
+
+/// A value checked as reading it into a `Value` would check it, without keeping it.
+struct Unread;
+impl<'de> serde::Deserialize<'de> for Unread {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        deserializer.deserialize_any(Unread)
+    }
+}
+impl<'de> serde::de::Visitor<'de> for Unread {
+    type Value = Unread;
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+    fn visit_bool<E>(self, _: bool) -> std::result::Result<Self, E> {
+        Ok(Unread)
+    }
+    fn visit_i64<E>(self, _: i64) -> std::result::Result<Self, E> {
+        Ok(Unread)
+    }
+    fn visit_u64<E>(self, _: u64) -> std::result::Result<Self, E> {
+        Ok(Unread)
+    }
+    fn visit_f64<E>(self, _: f64) -> std::result::Result<Self, E> {
+        Ok(Unread)
+    }
+    fn visit_str<E>(self, _: &str) -> std::result::Result<Self, E> {
+        Ok(Unread)
+    }
+    fn visit_unit<E>(self) -> std::result::Result<Self, E> {
+        Ok(Unread)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut items: A,
+    ) -> std::result::Result<Self, A::Error> {
+        while items.next_element::<Unread>()?.is_some() {}
+        Ok(Unread)
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut fields: A,
+    ) -> std::result::Result<Self, A::Error> {
+        while fields.next_entry::<Key, Unread>()?.is_some() {}
+        Ok(Unread)
+    }
+}
+
+/// A `media_row` card holding only the listed metadata, and the metadata as stored.
+fn listed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(Value, Box<str>)> {
+    let stored = r.get::<_, String>(6)?;
+    let metadata = match serde_json::from_str::<ListedMetadata>(&stored) {
+        Ok(listed) => listed.0,
+        // What the quick read can't vouch for is read as a page reads it.
+        Err(_) => match whole_metadata(&stored) {
+            Value::Object(mut fields) => {
+                fields.retain(|key, _| LISTED.contains(&key.as_str()));
+                Value::Object(fields)
+            }
+            other => other,
+        },
+    };
+    Ok((card_row(r, metadata)?, stored.into_boxed_str()))
+}
+
 /// Every top-level movie or show in a fixed order, with when it joined the library and
-/// what its files weigh. A show is available once any of its episodes is.
-pub(super) async fn titles(db: &Database, kind: String) -> anyhow::Result<Vec<(Value, Facts)>> {
+/// what its files weigh. A show is available once any of its episodes is. Each card holds
+/// only the metadata its list needs, beside the whole metadata as stored.
+pub(super) async fn titles(
+    db: &Database,
+    kind: String,
+) -> anyhow::Result<Vec<(Value, Facts, Box<str>)>> {
     db.read("library.titles", move |db| {
         let mut query = db.prepare("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,
                 CASE m.kind WHEN 'show' THEN EXISTS(SELECT 1 FROM media s JOIN media e ON e.parent_id=s.id JOIN media_sources ms ON ms.media_id=e.id JOIN media_files f ON f.id=ms.file_id WHERE s.parent_id=m.id AND f.present=1)
@@ -232,14 +363,16 @@ pub(super) async fn titles(db: &Database, kind: String) -> anyhow::Result<Vec<(V
             FROM media m WHERE m.kind=?1 AND m.parent_id IS NULL ORDER BY m.id")?;
         Ok(query
             .query_map([kind], |r| {
+                let (card, metadata) = listed_row(r)?;
                 Ok((
-                    media_row(r)?,
+                    card,
                     Facts {
                         added: Some(r.get(8)?),
                         size: r.get::<_, Option<i64>>(9)?.filter(|size| *size > 0),
                         episodes: Some(r.get::<_, i64>(10)?).filter(|count| *count > 0),
                         ..Facts::default()
                     },
+                    metadata,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
@@ -317,8 +450,14 @@ pub(super) async fn keep(db: &Database, media_id: String) -> anyhow::Result<Prot
 }
 
 pub(super) fn media_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
-    let metadata =
-        serde_json::from_str::<Value>(&r.get::<_, String>(6)?).unwrap_or_else(|_| json!({}));
+    card_row(r, whole_metadata(&r.get::<_, String>(6)?))
+}
+
+pub(super) fn whole_metadata(stored: &str) -> Value {
+    serde_json::from_str::<Value>(stored).unwrap_or_else(|_| json!({}))
+}
+
+fn card_row(r: &rusqlite::Row<'_>, metadata: Value) -> rusqlite::Result<Value> {
     let title = metadata
         .get("title")
         .or_else(|| metadata.get("name"))
@@ -336,4 +475,78 @@ pub(super) fn media_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     Ok(
         json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"title":title,"overview":overview,"parent_id":r.get::<_,Option<String>>(3)?,"year":year,"sort_number":r.get::<_,Option<i64>>(5)?,"metadata":metadata,"available":r.get::<_,bool>(7)?}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A list reads the same title and year from the fields it keeps as a page does from
+    /// the whole metadata, whatever those fields hold.
+    #[test]
+    fn listed_cards_match_whole_cards() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for metadata in [
+            r#"{"title":"Own","name":"Other","overview":"Kept","release_date":"2001-02-03"}"#,
+            r#"{"title":null,"name":"Other","first_air_date":"2002-03-04"}"#,
+            r#"{"title":7,"name":"Other","release_date":"unknown"}"#,
+            r#"{"name":"Other","first_air_date":null,"release_date":"20"}"#,
+            r#"{"title":"Escaped","extra":{"title":"Nested"},"genres":[{"name":"Drama"}]}"#,
+            r#"{"title":"First","title":"Last"}"#,
+            r#"{"title":"Own","release_date":"2001-02-03","overview":"\uD800"}"#,
+            r#"{"title":"Own","release_date":"2001-02-03","popularity":1e400}"#,
+            r#"{"title":"Own","release_date":"2001-02-03","extra":{"\uDC00":1}}"#,
+            r#"{"$serde_json::private::RawValue":"{\"title\":\"Wrapped\",\"release_date\":\"2001-01-01\"}"}"#,
+            r#"{"\u0024serde_json::private::RawValue":"{\"title\":\"Wrapped\",\"genres\":[]}"}"#,
+            r#"{"$serde_json::private::RawValue":"[1]"}"#,
+            r#"{"$serde_json::private::RawValue":"not json","title":"Own"}"#,
+            r#"{"title":"Own","extra":{"$serde_json::private::RawValue":"not json"}}"#,
+            r#"{"title":"Own","extra":[{"$serde_json::private::RawValue":"{}"}]}"#,
+            r#"{"title":"Own","$serde_json::private::RawValue":"{}"}"#,
+            &format!(
+                r#"{{"title":"Own","release_date":"2001-02-03","extra":{}1{}}}"#,
+                "[".repeat(200),
+                "]".repeat(200)
+            ),
+            &format!(
+                r#"{{"title":"Own","release_date":"2001-02-03","extra":{}1{}}}"#,
+                "[".repeat(100),
+                "]".repeat(100)
+            ),
+            r#"[{"title":"Not an object"}]"#,
+            r#""text""#,
+            "{",
+            "",
+        ] {
+            let row = |r: &rusqlite::Row<'_>| Ok((listed_row(r)?.0, media_row(r)?));
+            let (listed, whole) = db
+                .query_row(
+                    "SELECT 'id','movie','Stored',NULL,1999,NULL,?1,1",
+                    [metadata],
+                    row,
+                )
+                .unwrap();
+            assert_eq!(listed["title"], whole["title"], "{metadata}");
+            assert_eq!(listed["year"], whole["year"], "{metadata}");
+            let mut kept = whole["metadata"].clone();
+            if let Some(fields) = kept.as_object_mut() {
+                fields.retain(|key, _| LISTED.contains(&key.as_str()));
+            }
+            assert_eq!(listed["metadata"], kept, "{metadata}");
+        }
+    }
+
+    #[test]
+    fn listed_cards_leave_out_what_only_a_page_shows() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        let listed = db
+            .query_row(
+                "SELECT 'id','movie','Stored',NULL,1999,NULL,?1,1",
+                [r#"{"title":"Own","overview":"Long","credits":{"cast":[]},"runtime":90}"#],
+                |r| Ok(listed_row(r)?.0),
+            )
+            .unwrap();
+        assert_eq!(listed["overview"], Value::Null);
+        assert_eq!(listed["metadata"], json!({"title":"Own","runtime":90}));
+    }
 }
