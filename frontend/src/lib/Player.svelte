@@ -45,6 +45,7 @@
     sessionRefused,
     time,
     replayGain,
+    shortSide,
     type MediaChoice,
     type MediaInfo,
     type Playback,
@@ -70,17 +71,17 @@
   const playerId = $props.id();
   const canResize = $derived(resizable && !compactViewport.current);
   let videoAspectRatio = $state(16 / 9);
-  let videoHeight = $state(0);
+  let videoSide = $state(0);
   const deliveredQuality = $derived.by(() => {
     if (!active?.video) return undefined;
     if (active.quality) return active.quality;
     const stream = active.probe.streams?.find((s) => s.codec_type === 'video');
-    const height = videoHeight || stream?.height;
+    const side = videoSide || shortSide(stream);
     const fps =
       parseFrameRate(stream?.avg_frame_rate) ??
       parseFrameRate(stream?.r_frame_rate);
-    return height
-      ? `${height}p${fps && fps > 30 ? Math.round(fps) : ''}`
+    return side
+      ? `${side}p${fps && fps > 30 ? Math.round(fps) : ''}`
       : undefined;
   });
   let resizedHeight = $state<number | null>(null);
@@ -332,7 +333,7 @@
   // The previous shape is kept while the next item loads; audio-only streams
   // have no dimensions and use the default video shape.
   function updateAspectRatio() {
-    videoHeight = player.videoHeight;
+    videoSide = Math.min(player.videoWidth, player.videoHeight);
     videoAspectRatio =
       player.videoWidth > 0 && player.videoHeight > 0
         ? player.videoWidth / player.videoHeight
@@ -678,7 +679,7 @@
     await stop();
     if (revision !== generation) return;
     position = 0;
-    videoHeight = 0;
+    videoSide = 0;
     const pending = {
       signal: preparation.signal,
       waiting: (value: boolean) => {

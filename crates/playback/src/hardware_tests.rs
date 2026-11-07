@@ -55,6 +55,118 @@ fn gpu() -> Accelerator {
 }
 
 #[test]
+fn a_conversion_limits_the_short_side_of_a_picture() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("output.mp4");
+    let convert = |input: &[&str], name: &str| {
+        let stream = json!({ "streams": [{ "codec_type": "video" }] });
+        let args = crate::video_conversion_args(&quality(name), &stream, None).unwrap();
+        let mut command = vec!["-v", "error", "-y"];
+        command.extend(input);
+        command.extend(args.output.iter().map(String::as_str));
+        command.push(output.to_str().unwrap());
+        run("ffmpeg", &command);
+        let stream = probe(&output)["streams"][0].clone();
+        (
+            stream["width"].as_u64().unwrap(),
+            stream["height"].as_u64().unwrap(),
+        )
+    };
+    for (size, name, expected) in [
+        ("1920x1080", "720p", (1280, 720)),
+        ("1080x1920", "720p", (720, 1280)),
+        ("1080x1920", "1080p", (1080, 1920)),
+        ("1080x1080", "720p", (720, 720)),
+        ("1080x1920", "auto", (1080, 1920)),
+        // A limit never enlarges a picture.
+        ("360x640", "720p", (360, 640)),
+        ("721x405", "720p", (720, 404)),
+    ] {
+        let source = format!("color=s={size}:d=0.1");
+        assert_eq!(
+            convert(&["-f", "lavfi", "-i", &source], name),
+            expected,
+            "{size} at {name}"
+        );
+    }
+    // Stored on its side and played upright, as a phone records.
+    let stored = temp.path().join("stored.mp4");
+    let rotated = temp.path().join("rotated.mp4");
+    run(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=s=1920x1080:d=0.1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            stored.to_str().unwrap(),
+        ],
+    );
+    run(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-display_rotation",
+            "90",
+            "-i",
+            stored.to_str().unwrap(),
+            "-c",
+            "copy",
+            rotated.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        convert(&["-i", rotated.to_str().unwrap()], "720p"),
+        (720, 1280)
+    );
+}
+
+#[test]
+fn a_picture_within_a_resolution_is_not_converted() {
+    let options = |name: &str| Options {
+        capabilities: Capabilities {
+            video: vec!["h264".into()],
+            hls: true,
+            ..Capabilities::default()
+        },
+        ..quality(name)
+    };
+    for ((width, height), name, converted) in [
+        ((1920, 1080), "1080p", false),
+        ((1080, 1920), "1080p", false),
+        ((720, 1280), "720p", false),
+        ((1920, 1080), "720p", true),
+        ((1080, 1920), "720p", true),
+    ] {
+        let source = Source {
+            id: "source".into(),
+            media_id: "media".into(),
+            generation: "fixture".into(),
+            edition: "public".into(),
+            path: "source.mp4".into(),
+            root: Default::default(),
+            size: 0,
+            modified: String::new(),
+            probe: json!({ "format": {}, "streams": [
+                { "index": 0, "codec_type": "video", "codec_name": "h264", "width": width, "height": height },
+            ] }),
+        };
+        let planned = crate::decision(&source, &options(name)).unwrap();
+        assert_eq!(
+            planned.encoding.video, converted,
+            "{width}x{height} at {name}"
+        );
+    }
+}
+
+#[test]
 fn gpu_conversions_use_only_what_the_probe_verified() {
     let convert = |accelerator: Option<&Accelerator>, stream: &Value, options: &Options| {
         let args =
@@ -73,7 +185,7 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
     assert!(decoded);
     assert_eq!(
         filter,
-        "scale_vaapi=w=-2:h='min(1080,ih)':format=p010,tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
+        "scale_vaapi=w='trunc(min(iw,iw*1080/min(iw,ih))/2)*2':h='trunc(min(ih,ih*1080/min(iw,ih))/2)*2':format=p010,tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
     );
     // Untagged primaries and matrix are BT.2020's, as in the software graph.
     let mut untagged = hdr10.clone();

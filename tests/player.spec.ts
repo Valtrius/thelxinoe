@@ -30,6 +30,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,0:00:00.00,0:00:01.00,Sign,,0,0,0,,{\pos(480,270)}Fixture sign
 `;
 let mp4: Buffer,
+  portrait: Buffer,
   segment: Buffer,
   shortSegment: Buffer,
   wav: Buffer,
@@ -178,6 +179,33 @@ test.beforeAll(() => {
       { windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
     );
     mp4 = readFileSync(file);
+    portrait = execFileSync(
+      'ffmpeg',
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=0x243841:size=270x480:rate=12',
+        '-t',
+        '10',
+        '-an',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-pix_fmt',
+        'yuv420p',
+        '-movflags',
+        'frag_keyframe+empty_moov',
+        '-f',
+        'mp4',
+        'pipe:1',
+      ],
+      { windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+    );
   } finally {
     try {
       unlinkSync(file);
@@ -292,6 +320,8 @@ async function fixture(
     autoQuality?: string;
     /** The stream offers both orientations and starts in this one. */
     orientation?: 'horizontal' | 'vertical';
+    /** The file is a vertical picture. */
+    portrait?: boolean;
     /** The vertical renditions, which fall back to their first when one is missing. */
     verticalQualities?: { value: string; label: string }[];
     local?: boolean;
@@ -700,7 +730,13 @@ async function fixture(
             : null,
           probe: {
             streams: [
-              { codec_type: 'video', height: 540, avg_frame_rate: '12/1' },
+              {
+                codec_type: 'video',
+                ...(options.portrait
+                  ? { width: 270, height: 480 }
+                  : { height: 540 }),
+                avg_frame_rate: '12/1',
+              },
             ],
           },
           replay_gain: 'off',
@@ -785,18 +821,19 @@ async function fixture(
       await media.promise;
       const url = new URL(route.request().url());
       const range = route.request().headers().range;
+      const file = options.portrait ? portrait : mp4;
       if (url.pathname.endsWith('.mp4') && range) {
         const [, from, to] = /^bytes=(\d+)-(\d*)$/.exec(range)!;
         const start = Number(from),
-          end = to ? Math.min(Number(to), mp4.length - 1) : mp4.length - 1;
+          end = to ? Math.min(Number(to), file.length - 1) : file.length - 1;
         return route.fulfill({
           status: 206,
           contentType: 'video/mp4',
           headers: {
             'Accept-Ranges': 'bytes',
-            'Content-Range': `bytes ${start}-${end}/${mp4.length}`,
+            'Content-Range': `bytes ${start}-${end}/${file.length}`,
           },
-          body: mp4.subarray(start, end + 1),
+          body: file.subarray(start, end + 1),
         });
       }
       if (
@@ -818,7 +855,7 @@ async function fixture(
           ? options.stalled
             ? shortSegment
             : segment
-          : mp4,
+          : file,
       });
     },
   );
@@ -3187,6 +3224,21 @@ test('Original playback shows its decoded resolution', async ({
   });
 });
 
+test('a vertical picture is named after its short side', async ({ page }) => {
+  await fixture(page, { local: true, portrait: true });
+  await decoded(page);
+  await expect(page.locator('.playback-mode')).toHaveText('270p · Original');
+  await page.getByRole('button', { name: 'Quality', exact: true }).click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto (270p)', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Original (270p)', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('menuitemradio', { name: '360p', exact: true }),
+  ).toHaveCount(0);
+});
 test('a stream offering both orientations switches between them in the player', async ({
   page,
 }) => {

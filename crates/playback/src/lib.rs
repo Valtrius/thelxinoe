@@ -118,13 +118,14 @@ pub(crate) fn frame_rate_filters(c: &Conversion, video: Option<&Value>) -> (Stri
         (String::new(), format!(",{fps}"))
     }
 }
-/// The `scale` size the quality asks for: at most its height, else the source's.
+/// The `scale` size the quality asks for: a short side of at most its resolution, whichever way
+/// the picture is turned, else the source's. H.264 needs even sides.
 pub(crate) fn picture_size(options: &Options) -> String {
-    match resolution(&options.quality) {
-        Some(height) => format!("w=-2:h='min({height},ih)'"),
-        // The picture keeps its size; H.264 only needs it even.
-        None => "w='trunc(iw/2)*2':h='trunc(ih/2)*2'".into(),
-    }
+    let side = |length: &str| match resolution(&options.quality) {
+        Some(limit) => format!("'trunc(min({length},{length}*{limit}/min(iw,ih))/2)*2'"),
+        None => format!("'trunc({length}/2)*2'"),
+    };
+    format!("w={}:h={}", side("iw"), side("ih"))
 }
 /// FFmpeg options converting the video to 8-bit SDR H.264, on the GPU when `hardware` can.
 pub(crate) fn video_conversion_args(
