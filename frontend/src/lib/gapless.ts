@@ -2,7 +2,7 @@ import type Hls from 'hls.js';
 import { api } from './api';
 import { inBackground } from './page-readiness';
 import { captureSession } from './session';
-import { followedQueue } from './music/queue-follow';
+import { extendedQueue, followedQueue } from './music/queue-follow';
 import { PlaybackActivity } from './playback-activity';
 import {
   capabilities,
@@ -169,6 +169,10 @@ export class GaplessQueue {
   private reading?: string;
   /** Opened as it was left: nothing is read until it plays. */
   private parked = false;
+  /** Reading the rest of the list this queue started from; clearing ends it. */
+  private extension = new AbortController();
+  /** Tracks added by hand, which the rest of the list doesn't add again. */
+  private inserted = new Set<string>();
   constructor(
     choices: MediaChoice[],
     private changed: (s: MusicState) => void,
@@ -918,6 +922,7 @@ export class GaplessQueue {
   /** Add tracks after the playing one, or at the end. */
   insert(items: MediaChoice[], next: boolean) {
     if (this.closed || !items.length) return;
+    for (const item of items) this.inserted.add(item.id);
     const finished = !this.entries.length && this.next >= this.choices.length;
     const at =
       next && !finished
@@ -995,9 +1000,52 @@ export class GaplessQueue {
     }
     this.update();
   }
+  /**
+   * Read what comes after this queue's tracks and add it when it arrives. A
+   * queue that can't get it plays on with what it has.
+   */
+  extend(read: NonNullable<MediaChoice['more']>) {
+    const { signal } = this.extension;
+    if (signal.aborted) return;
+    read(signal).then(
+      (items) => {
+        if (!signal.aborted) this.append(items);
+      },
+      () => {},
+    );
+  }
+  private append(list: MediaChoice[]) {
+    const items = list.filter((item) => !this.inserted.has(item.id));
+    if (this.closed || !this.ownsSession() || !items.length) return;
+    const count = this.choices.length;
+    const upNext = this.choices[this.advance(this.index)];
+    const { choices, order } = extendedQueue(
+      {
+        choices: this.choices,
+        order: this.order,
+        index: this.index,
+        shuffled: this.shuffled,
+      },
+      items,
+    );
+    this.choices = choices;
+    this.order = order;
+    // A track at the end of the queue now has the new tracks after it.
+    if (this.choices[this.advance(this.index)] !== upNext)
+      return this.resetAhead();
+    // Past the tracks loaded, a repeating queue no longer starts over.
+    if (
+      this.repeat === 'all' &&
+      this.next === 0 &&
+      (this.loading || this.entries.length)
+    )
+      this.next = count;
+    this.update();
+  }
   /** Keep only the playing track. */
   clear() {
     if (this.closed) return;
+    this.extension.abort();
     const current = this.choices[this.index];
     this.choices = current ? [current] : [];
     this.order = [...this.choices];
@@ -1033,6 +1081,7 @@ export class GaplessQueue {
     if (this.closing) return this.closing;
     this.closed = true;
     this.preparation.abort();
+    this.extension.abort();
     clearInterval(this.timer);
     clearInterval(this.heartbeat);
     this.sounding = undefined;

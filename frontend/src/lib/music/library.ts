@@ -1,4 +1,5 @@
 import { api, serverUrl } from '../api';
+import { inBackground } from '../page-readiness';
 import type { MediaChoice } from '../playback';
 
 /** A music item as the catalog lists it. */
@@ -39,12 +40,13 @@ export const catalogQuery = (
   )}`;
 
 /** Every page of a list, for queues that play a whole album or artist. */
-export async function listAll(path: string, pageSize = 500) {
+export async function listAll(
+  path: string,
+  read: (page: string) => Promise<MusicPage> = (page) => api<MusicPage>(page),
+) {
   const items: MusicItem[] = [];
   for (;;) {
-    const page = await api<MusicPage>(
-      `${path}&offset=${items.length}&limit=${pageSize}`,
-    );
+    const page = await read(`${path}&offset=${items.length}&limit=500`);
     items.push(...page.items);
     // A list without a total is not paged.
     if (!page.items.length || !(items.length < page.total)) return items;
@@ -66,25 +68,40 @@ export function trackChoice(track: MusicItem): MediaChoice {
     duration: track.duration ?? undefined,
   };
 }
+const playable = (track: MusicItem) =>
+  track.kind === 'track' && track.available;
 /** The playable tracks of a list as a queue, starting at `start` or the first. */
 export function trackQueue(
   tracks: MusicItem[],
   start?: MusicItem,
 ): MediaChoice | null {
-  const playable = tracks.filter(
-    (track) => track.kind === 'track' && track.available,
-  );
+  const list = tracks.filter(playable);
   const index = Math.max(
     0,
-    start ? playable.findIndex((track) => track.id === start.id) : 0,
+    start ? list.findIndex((track) => track.id === start.id) : 0,
   );
-  const first = playable[index];
+  const first = list[index];
   if (!first) return null;
   return {
     ...trackChoice(first),
     queueIndex: index,
-    queue: playable.map(trackChoice),
+    queue: list.map(trackChoice),
   };
+}
+/** The playable tracks of a list that `queue` started without, read in the
+ * background so a page opened meanwhile doesn't wait for them. */
+export async function restOfList(
+  path: string,
+  queue: MediaChoice[],
+  signal: AbortSignal,
+) {
+  const known = new Set(queue.map((choice) => choice.id));
+  const all = await listAll(path, (page) =>
+    inBackground(() => api<MusicPage>(page, 'GET', undefined, signal)),
+  );
+  return all
+    .filter((track) => playable(track) && !known.has(track.id))
+    .map(trackChoice);
 }
 export function shuffled<T>(items: T[]): T[] {
   const result = [...items];

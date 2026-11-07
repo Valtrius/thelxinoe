@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaChoice } from '../playback';
-import { followedQueue } from './queue-follow';
+import { extendedQueue, followedQueue } from './queue-follow';
 
 const list = (ids: string) =>
   [...ids].map((id): MediaChoice => ({ id, title: id }));
@@ -16,6 +16,45 @@ function follow(
 ) {
   return followedQueue({ choices, index, shuffled }, list(to), backwards);
 }
+
+describe('extendedQueue', () => {
+  const extend = (
+    from: string,
+    index: number,
+    more: string,
+    shuffled = false,
+  ) =>
+    extendedQueue(
+      {
+        choices: list(from),
+        order: shuffled ? list([...from].sort().join('')) : list(from),
+        index,
+        shuffled,
+      },
+      list(more),
+      backwards,
+    );
+
+  it('adds the rest of the list in order', () => {
+    const next = extend('abc', 1, 'de');
+    expect(ids(next.choices)).toBe('abcde');
+    expect(ids(next.order)).toBe('abcde');
+  });
+
+  it('keeps a track added by hand ahead of the rest of the list', () => {
+    expect(ids(extend('abxc', 0, 'de').choices)).toBe('abxcde');
+  });
+
+  it('mixes the rest into a shuffled queue after the next track', () => {
+    const next = extend('cabd', 0, 'ef', true);
+    expect(ids(next.choices)).toBe('cafedb');
+    expect(ids(next.order)).toBe('abcdef');
+  });
+
+  it('continues a shuffled queue that ran out', () => {
+    expect(ids(extend('ba', 2, 'cd', true).choices)).toBe('badc');
+  });
+});
 
 describe('followedQueue', () => {
   it('moves the playing track to its new place', () => {
