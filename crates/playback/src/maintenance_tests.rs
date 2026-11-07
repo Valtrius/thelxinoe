@@ -358,21 +358,42 @@ async fn a_keyframe_index_is_built_once_per_file_generation() {
         .await
         .unwrap()
     };
-    let vod = open().await;
     let media_tools = tools.media().unwrap();
+    // Where indexes can't be kept, starts still index the file.
+    let blocked = root.join("blocked");
+    std::fs::write(&blocked, "").unwrap();
+    let unkept = crate::vod::VodCache::open(
+        &root.join("cache"),
+        &blocked,
+        Arc::new(tokio::sync::Semaphore::new(4)),
+        tools.clone(),
+        Arc::new(crate::cache::Scanner::default()),
+        Arc::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        unkept.index(&source, &media_tools).await.unwrap().0,
+        [0.0, 2.0, 4.0, 6.0]
+    );
+    let vod = open().await;
     let (boundaries, _) = vod.index(&source, &media_tools).await.unwrap();
     assert_eq!(boundaries, [0.0, 2.0, 4.0, 6.0]);
-    // A kept index that no longer reads is built again.
+    // A kept index that no longer reads, or reads otherwise than written, is built again.
     let written = std::fs::read_dir(&kept)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect::<Vec<_>>();
     assert_eq!(written.len(), 1);
-    std::fs::write(&written[0], "[[0.0,2.0").unwrap();
-    assert_eq!(
-        open().await.index(&source, &media_tools).await.unwrap().0,
-        boundaries
-    );
+    let whole = std::fs::read_to_string(&written[0]).unwrap();
+    for changed in [whole.replacen("2.0", "6.0", 1), whole[..10].to_owned()] {
+        std::fs::write(&written[0], changed).unwrap();
+        assert_eq!(
+            open().await.index(&source, &media_tools).await.unwrap().0,
+            boundaries
+        );
+        assert_eq!(std::fs::read_to_string(&written[0]).unwrap(), whole);
+    }
     // Served from the index: the file is no longer there to read.
     std::fs::remove_file(&media).unwrap();
     assert_eq!(
@@ -420,5 +441,9 @@ async fn kept_keyframe_indexes_are_the_latest_written() {
     );
     assert!(!directory.join("0.json").exists());
     assert!(directory.join("1.json").exists());
-    assert_eq!(std::fs::read_to_string(latest).unwrap(), "[[0.0,6.0],0.0]");
+    assert!(
+        std::fs::read_to_string(latest)
+            .unwrap()
+            .starts_with(r#"{"index":[[0.0,6.0],0.0],"sha256":""#)
+    );
 }

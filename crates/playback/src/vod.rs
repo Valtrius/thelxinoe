@@ -77,7 +77,9 @@ impl VodCache {
     ) -> Result<Self> {
         let root = root.join("vod");
         tokio::fs::create_dir_all(&root).await?;
-        tokio::fs::create_dir_all(kept).await?;
+        if let Err(error) = tokio::fs::create_dir_all(kept).await {
+            tracing::warn!(%error, "Keyframe indexes will not outlive this process");
+        }
         Ok(Self {
             scanner,
             tools,
@@ -117,7 +119,7 @@ impl VodCache {
                 if let Some(index) = tokio::fs::read(&path)
                     .await
                     .ok()
-                    .and_then(|kept| serde_json::from_slice(&kept).ok())
+                    .and_then(|kept| kept_index(&kept))
                 {
                     return Ok(index);
                 }
@@ -1030,11 +1032,40 @@ fn index_key(source: &Source, tools: &MediaTools) -> String {
     hash.finalize().iter().map(|v| format!("{v:02x}")).collect()
 }
 
+/// A keyframe index as kept on disk, with the SHA-256 of its JSON: one that changed after
+/// it was written could still read as an index.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Kept {
+    index: Keyframes,
+    sha256: String,
+}
+
+fn index_sha256(index: &Keyframes) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let json = serde_json::to_vec(index).ok()?;
+    Some(
+        Sha256::digest(json)
+            .iter()
+            .map(|v| format!("{v:02x}"))
+            .collect(),
+    )
+}
+
+/// A kept keyframe index, if it is whole.
+fn kept_index(bytes: &[u8]) -> Option<Keyframes> {
+    let kept = serde_json::from_slice::<Kept>(bytes).ok()?;
+    (index_sha256(&kept.index)? == kept.sha256).then_some(kept.index)
+}
+
 /// Writes a keyframe index where later processes find it, then drops the oldest beyond
 /// `KEPT_INDEXES`.
 pub(crate) async fn keep_index(directory: &Path, path: &Path, index: &Keyframes) -> Result<()> {
+    let kept = Kept {
+        index: index.clone(),
+        sha256: index_sha256(index).context("Unwritable keyframe index")?,
+    };
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    tokio::fs::write(&temp, serde_json::to_vec(index)?).await?;
+    tokio::fs::write(&temp, serde_json::to_vec(&kept)?).await?;
     if let Err(error) = tokio::fs::rename(&temp, path).await {
         let _ = tokio::fs::remove_file(&temp).await;
         return Err(error.into());
