@@ -157,17 +157,26 @@
         selected = seasonToOpen(seasons);
     });
   });
-  // A season opened past the end of the strip scrolls into it without moving the page.
+  // The opened season stays inside the strip, which scrolls without moving the page.
+  function revealTab() {
+    const tab = tabs?.querySelector('[aria-selected="true"]');
+    if (!tabs || !tab) return;
+    const { left, right } = tab.getBoundingClientRect();
+    const strip = tabs.getBoundingClientRect();
+    // Whole pixels, since the browser rounds scrollLeft and could cut the tab.
+    tabs.scrollLeft +=
+      Math.floor(Math.min(0, left - strip.left)) +
+      Math.ceil(Math.max(0, right - strip.right));
+  }
   $effect(() => {
     void selected;
-    void tick().then(() => {
-      const tab = tabs?.querySelector('[aria-selected="true"]');
-      if (!tabs || !tab) return;
-      const { left, right } = tab.getBoundingClientRect();
-      const strip = tabs.getBoundingClientRect();
-      tabs.scrollLeft +=
-        Math.min(0, left - strip.left) + Math.max(0, right - strip.right);
-    });
+    void tick().then(revealTab);
+  });
+  $effect(() => {
+    if (!tabs) return;
+    const observer = new ResizeObserver(revealTab);
+    observer.observe(tabs);
+    return () => observer.disconnect();
   });
   $effect(() => {
     const episode = focusEpisode;

@@ -998,18 +998,26 @@ test('a season opened past the end of a long strip scrolls into it, not the page
   await page.goto('/#library/shows/show-0');
   const tab = page.getByRole('tab', { name: 'Season 12', exact: true });
   await expect(tab).toHaveAttribute('aria-selected', 'true');
-  await expect
-    .poll(() =>
-      tab.evaluate((element) => {
-        const strip = element.parentElement!.getBoundingClientRect();
-        const { left, right } = element.getBoundingClientRect();
-        return left >= strip.left && right <= strip.right;
-      }),
-    )
-    .toBe(true);
+  const staysInStrip = () =>
+    expect
+      .poll(() =>
+        tab.evaluate((element) => {
+          const strip = element.parentElement!.getBoundingClientRect();
+          const { left, right } = element.getBoundingClientRect();
+          return left >= strip.left && right <= strip.right;
+        }),
+      )
+      .toBe(true);
+  await staysInStrip();
   await expect(
     page.getByRole('heading', { level: 1, name: 'Beyond the Horizon' }),
   ).toBeInViewport();
+
+  // A strip that narrows, as on a turning phone, keeps it too.
+  await page.setViewportSize({ width: 1440, height: 844 });
+  await staysInStrip();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await staysInStrip();
   expect(errors).toEqual([]);
 });
 
