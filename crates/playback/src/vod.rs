@@ -64,7 +64,7 @@ pub struct VodCache {
 }
 type Keyframes = (Vec<f64>, f64);
 /// How many keyframe indexes are kept on disk, the latest written. A two-hour film's
-/// takes about 25 KB.
+/// takes about 29 KB.
 pub(crate) const KEPT_INDEXES: usize = 1024;
 impl VodCache {
     pub async fn open(
@@ -115,7 +115,7 @@ impl VodCache {
         );
         let task = tokio::spawn(async move {
             cell.get_or_try_init(|| async {
-                let path = kept.join(format!("{key}.json"));
+                let path = kept.join(format!("{key}.bin"));
                 if let Some(index) = tokio::fs::read(&path)
                     .await
                     .ok()
@@ -1032,40 +1032,37 @@ fn index_key(source: &Source, tools: &MediaTools) -> String {
     hash.finalize().iter().map(|v| format!("{v:02x}")).collect()
 }
 
-/// A keyframe index as kept on disk, with the SHA-256 of its JSON: one that changed after
-/// it was written could still read as an index.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Kept {
-    index: Keyframes,
-    sha256: String,
-}
-
-fn index_sha256(index: &Keyframes) -> Option<String> {
+/// A keyframe index as kept on disk: the SHA-256 of the rest, then the video start and
+/// the boundaries as little-endian `f64`s, which read back exactly. One that changed
+/// after it was written could still read as an index.
+pub(crate) fn kept_bytes(index: &Keyframes) -> Vec<u8> {
     use sha2::{Digest, Sha256};
-    let json = serde_json::to_vec(index).ok()?;
-    Some(
-        Sha256::digest(json)
-            .iter()
-            .map(|v| format!("{v:02x}"))
-            .collect(),
-    )
+    let values = std::iter::once(index.1)
+        .chain(index.0.iter().copied())
+        .flat_map(f64::to_le_bytes)
+        .collect::<Vec<_>>();
+    [Sha256::digest(&values).as_slice(), &values].concat()
 }
 
 /// A kept keyframe index, if it is whole.
-fn kept_index(bytes: &[u8]) -> Option<Keyframes> {
-    let kept = serde_json::from_slice::<Kept>(bytes).ok()?;
-    (index_sha256(&kept.index)? == kept.sha256).then_some(kept.index)
+pub(crate) fn kept_index(bytes: &[u8]) -> Option<Keyframes> {
+    use sha2::{Digest, Sha256};
+    let (sha256, values) = bytes.split_at_checked(32)?;
+    if values.is_empty() || values.len() % 8 != 0 || Sha256::digest(values).as_slice() != sha256 {
+        return None;
+    }
+    let mut values = values
+        .chunks_exact(8)
+        .map(|value| f64::from_le_bytes(value.try_into().unwrap()));
+    let video_start = values.next()?;
+    Some((values.collect(), video_start))
 }
 
 /// Writes a keyframe index where later processes find it, then drops the oldest beyond
 /// `KEPT_INDEXES`.
 pub(crate) async fn keep_index(directory: &Path, path: &Path, index: &Keyframes) -> Result<()> {
-    let kept = Kept {
-        index: index.clone(),
-        sha256: index_sha256(index).context("Unwritable keyframe index")?,
-    };
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    tokio::fs::write(&temp, serde_json::to_vec(&kept)?).await?;
+    tokio::fs::write(&temp, kept_bytes(index)).await?;
     if let Err(error) = tokio::fs::rename(&temp, path).await {
         let _ = tokio::fs::remove_file(&temp).await;
         return Err(error.into());

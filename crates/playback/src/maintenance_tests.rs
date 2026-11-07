@@ -385,14 +385,17 @@ async fn a_keyframe_index_is_built_once_per_file_generation() {
         .map(|entry| entry.unwrap().path())
         .collect::<Vec<_>>();
     assert_eq!(written.len(), 1);
-    let whole = std::fs::read_to_string(&written[0]).unwrap();
-    for changed in [whole.replacen("2.0", "6.0", 1), whole[..10].to_owned()] {
+    let whole = std::fs::read(&written[0]).unwrap();
+    let mut flipped = whole.clone();
+    // The sign of the second boundary, after the hash and the video start.
+    flipped[32 + 8 + 8 + 7] ^= 0x80;
+    for changed in [flipped, whole[..10].to_vec()] {
         std::fs::write(&written[0], changed).unwrap();
         assert_eq!(
             open().await.index(&source, &media_tools).await.unwrap().0,
             boundaries
         );
-        assert_eq!(std::fs::read_to_string(&written[0]).unwrap(), whole);
+        assert_eq!(std::fs::read(&written[0]).unwrap(), whole);
     }
     // Served from the index: the file is no longer there to read.
     std::fs::remove_file(&media).unwrap();
@@ -441,9 +444,22 @@ async fn kept_keyframe_indexes_are_the_latest_written() {
     );
     assert!(!directory.join("0.json").exists());
     assert!(directory.join("1.json").exists());
-    assert!(
-        std::fs::read_to_string(latest)
-            .unwrap()
-            .starts_with(r#"{"index":[[0.0,6.0],0.0],"sha256":""#)
+    assert_eq!(
+        crate::vod::kept_index(&std::fs::read(latest).unwrap()),
+        Some((vec![0.0, 6.0], 0.0))
     );
+}
+
+#[test]
+fn kept_keyframe_indexes_read_back_exactly() {
+    // Times that differ from their shortest decimal reading in the last bit.
+    let index = (
+        vec![0.0, 3.402 - 1.4, 0.1 + 0.2, 7200.000000000001, 5e-324],
+        1.4,
+    );
+    let kept = crate::vod::kept_bytes(&index);
+    assert_eq!(crate::vod::kept_index(&kept), Some(index));
+    for changed in [&kept[..kept.len() - 1], &kept[..32], &[]] {
+        assert_eq!(crate::vod::kept_index(changed), None);
+    }
 }
