@@ -16,6 +16,10 @@ test.afterEach(async ({ request }) => {
   ).toEqual([]);
 });
 
+// Tall enough to hold every row. One that starts past the bottom of the screen
+// fades in instead of moving, and where that is depends on the system font.
+test.use({ viewport: { width: 1440, height: 1600 } });
+
 const tab = (page: Page, name: string) =>
   page.getByRole('tab', { name, exact: false });
 const episodes = (page: Page, season: number) =>
@@ -334,6 +338,7 @@ test('a filter chosen during a crossfade leaves it running', async ({
   await filter(page, /^Missing 1/).click();
   await expect(listed(page)).toHaveCount(1);
   await expect.poll(() => frames(list(page).root, 'height')).not.toBeNull();
+  await seekAnimations(page, 0.5);
   // It now follows the list's height, frame by frame.
   await expect.poll(() => heldStyle(root)).toEqual(['', '']);
   expect(await frames(root, 'height')).toBeNull();
