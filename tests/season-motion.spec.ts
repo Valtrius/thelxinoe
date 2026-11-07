@@ -268,7 +268,10 @@ for (const { owner, item, left } of [
     await finishAnimations(page);
     await expect(layer).toHaveCount(0);
     await expect(rows(page)).toHaveCount(left);
-    await expect(tab(page, 'Season 1')).toContainText(`${4 - left}/4`);
+    await expect(tab(page, 'Season 1')).toHaveAttribute(
+      'title',
+      new RegExp(`${4 - left} watched`),
+    );
     expect(errors).toEqual([]);
   });
 }
