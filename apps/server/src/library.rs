@@ -227,9 +227,11 @@ struct Shelved {
     facts: Facts,
     watch: &'static str,
     availability: Vec<&'static str>,
+    /// The whole metadata as stored, read into the card if it is returned.
+    metadata: Option<Box<str>>,
 }
 impl Shelved {
-    fn new(card: Value, facts: Facts, started: bool) -> Self {
+    fn new(card: Value, facts: Facts, started: bool, metadata: Option<Box<str>>) -> Self {
         let watch = if card["watched"] == true {
             "watched"
         } else if started {
@@ -255,6 +257,7 @@ impl Shelved {
             facts,
             watch,
             availability,
+            metadata,
         }
     }
     fn ended(&self) -> bool {
@@ -263,8 +266,16 @@ impl Shelved {
     /// The card with what its list can be sorted by, so it shows the value it is.
     fn into_card(self) -> Value {
         let Self {
-            mut card, facts, ..
+            mut card,
+            facts,
+            metadata,
+            ..
         } = self;
+        if let Some(stored) = metadata {
+            let metadata = storage::whole_metadata(&stored);
+            card["overview"] = metadata.get("overview").cloned().unwrap_or(Value::Null);
+            card["metadata"] = metadata;
+        }
         let sorted = [
             ("added", json!(facts.added)),
             ("rating", json!(facts.rating)),
@@ -345,6 +356,7 @@ async fn titles(
     let (mut cards, files): (Vec<_>, Vec<_>) = storage::titles(&state.db, kind.to_owned())
         .await?
         .into_iter()
+        .map(|(card, files, metadata)| (card, (files, metadata)))
         .unzip();
     let presentation =
         present_cards(state, p, &mut cards.iter_mut().collect::<Vec<_>>(), &grant).await?;
@@ -359,7 +371,7 @@ async fn titles(
         .into_iter()
         .zip(files)
         .filter(|(card, _)| visible_in_library(card))
-        .map(|(mut card, files)| {
+        .map(|(mut card, (files, stored))| {
             let metadata = &card["metadata"];
             let manager = card["id"]
                 .as_str()
@@ -394,14 +406,14 @@ async fn titles(
                 .as_str()
                 .and_then(|id| presentation.get(id))
                 .is_some_and(|presented| presented.started);
-            Shelved::new(card, facts, started)
+            Shelved::new(card, facts, started, Some(stored))
         })
         .collect::<Vec<_>>();
     shelf.extend(
         crate::managers::status::virtual_titles(state, p, kind, &grant)
             .await?
             .into_iter()
-            .map(|(card, facts)| Shelved::new(card, facts, false)),
+            .map(|(card, facts)| Shelved::new(card, facts, false, None)),
     );
     let mut genres = shelf
         .iter()
