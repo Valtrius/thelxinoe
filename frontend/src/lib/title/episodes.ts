@@ -69,6 +69,68 @@ export function summarize(season: Season, now = seconds()): SeasonSummary {
   return summary;
 }
 
+/** How much of a season is on disk, for its tab. */
+export type SeasonFiles =
+  | 'complete'
+  /** Everything aired is here; more is still to come. */
+  | 'ongoing'
+  | 'upcoming'
+  | 'downloading'
+  | 'partial'
+  | 'empty';
+
+export function seasonFiles({
+  total,
+  available,
+  downloading,
+  upcoming,
+}: SeasonSummary): SeasonFiles {
+  if (downloading) return 'downloading';
+  if (total && upcoming === total) return 'upcoming';
+  if (upcoming && available + upcoming === total) return 'ongoing';
+  if (!available) return 'empty';
+  return available === total ? 'complete' : 'partial';
+}
+
+/** Regular episodes in viewing order. Specials stand outside it. */
+const inOrder = (seasons: Season[]) =>
+  seasons
+    .filter((season) => season.number > 0)
+    .flatMap((season) => season.episodes);
+const afterLastWatched = (episodes: Episode[]) =>
+  episodes.slice(
+    episodes.map((episode) => episode.watched).lastIndexOf(true) + 1,
+  );
+const playable = (episode: Episode) => !!episode.id && episode.available;
+/** The one to go on with: in progress, else the first unwatched. */
+function continuing(episodes: Episode[]) {
+  const unwatched = episodes.filter(
+    (episode) => playable(episode) && !episode.watched,
+  );
+  return unwatched.find((episode) => episode.position) ?? unwatched[0];
+}
+
+/** The episode Play starts: like the server's Next up, it follows the last watched. */
+export function episodeToPlay(seasons: Season[]) {
+  const episodes = inOrder(seasons);
+  return (
+    continuing(afterLastWatched(episodes)) ??
+    continuing(episodes) ??
+    episodes.find(playable)
+  );
+}
+
+/** Where a series opens: where watching goes on, even when that file isn't here yet. */
+export function seasonToOpen(seasons: Season[]) {
+  const episodes = inOrder(seasons);
+  const later = afterLastWatched(episodes);
+  return (
+    (continuing(later) ?? later[0] ?? episodes.at(-1))?.season ??
+    seasons[0]?.number ??
+    null
+  );
+}
+
 export type EpisodeFilter = 'all' | 'unwatched' | 'missing';
 export const shown = (
   episode: Episode,

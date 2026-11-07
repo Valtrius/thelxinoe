@@ -191,6 +191,7 @@ for (const scope of ['season', 'series'] as const) {
     await expect(
       page.getByRole('heading', { level: 1, name: 'Fixture series' }),
     ).toBeVisible();
+    await page.getByRole('tab', { name: 'Season 1', exact: true }).click();
     await expect(page.getByText('Episode 1.1')).toBeVisible();
     await expect(playable(page, 1, 'Episode 1.1')).toHaveCount(0);
     await page.getByRole('tab', { name: 'Season 2', exact: true }).click();

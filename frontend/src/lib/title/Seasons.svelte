@@ -2,11 +2,12 @@
   import { tick, untrack } from 'svelte';
   import {
     CalendarClock,
-    Check,
     CheckCheck,
+    Circle,
     CircleAlert,
     CircleCheck,
     CircleSlash,
+    Contrast,
     Download,
     EyeOff,
     Zap,
@@ -27,9 +28,12 @@
   } from './catalog';
   import {
     phase,
+    seasonFiles,
+    seasonToOpen,
     shown,
     summarize,
     type EpisodeFilter,
+    type SeasonFiles,
     type SeasonSummary,
   } from './episodes';
   import { searchEpisodes } from './sonarr';
@@ -118,6 +122,24 @@
       .map((episode) => episode.air_date)
       .filter((date): date is number => date !== null)
       .sort((a, b) => a - b)[0];
+  const fileBadges: Record<SeasonFiles, { icon: typeof Circle; tone: string }> =
+    {
+      complete: { icon: CircleCheck, tone: 'text-success' },
+      ongoing: { icon: CalendarClock, tone: 'text-success' },
+      upcoming: { icon: CalendarClock, tone: 'text-muted' },
+      downloading: { icon: Download, tone: 'text-accent' },
+      partial: { icon: Contrast, tone: 'text-warning' },
+      empty: { icon: Circle, tone: 'text-muted' },
+    };
+  const tabTitle = (counts: SeasonSummary) =>
+    [
+      `${counts.available} of ${counts.total} ${counts.total === 1 ? 'episode' : 'episodes'} available`,
+      counts.downloading && `${counts.downloading} downloading`,
+      counts.upcoming && `${counts.upcoming} upcoming`,
+      `${counts.watched} watched`,
+    ]
+      .filter(Boolean)
+      .join(' · ');
 
   $effect(() => {
     const focus = focusSeason;
@@ -132,11 +154,19 @@
         selected = focus;
         applied = focus;
       } else if (!seasons.some((s: Season) => s.number === selected))
-        selected =
-          seasons.find((s: Season) => s.number > 0 && s.episodes.length)
-            ?.number ??
-          seasons[0]?.number ??
-          null;
+        selected = seasonToOpen(seasons);
+    });
+  });
+  // A season opened past the end of the strip scrolls into it without moving the page.
+  $effect(() => {
+    void selected;
+    void tick().then(() => {
+      const tab = tabs?.querySelector('[aria-selected="true"]');
+      if (!tabs || !tab) return;
+      const { left, right } = tab.getBoundingClientRect();
+      const strip = tabs.getBoundingClientRect();
+      tabs.scrollLeft +=
+        Math.min(0, left - strip.left) + Math.max(0, right - strip.right);
     });
   });
   $effect(() => {
@@ -250,7 +280,8 @@
     >
       {#each view as entry (entry.number)}
         {@const counts = summaries.get(entry.number)!}
-        {@const done = counts.total > 0 && counts.watched === counts.total}
+        {@const files = seasonFiles(counts)}
+        {@const Icon = fileBadges[files].icon}
         <button
           id={`${ids}-tab-${entry.number}`}
           role="tab"
@@ -258,25 +289,35 @@
           aria-controls={`${ids}-panel`}
           tabindex={entry.number === season?.number ? 0 : -1}
           class={[
-            'flex shrink-0 items-center gap-2 border-b-2 px-4 pt-2 pb-3 text-xs font-semibold transition-colors hover:text-foreground',
+            'grid shrink-0 gap-2 border-b-2 px-4 pt-2 pb-2.5 text-xs font-semibold transition-colors hover:text-foreground',
             entry.number === season?.number
               ? 'border-accent text-accent'
               : 'border-transparent text-muted',
           ]}
+          title={tabTitle(counts)}
+          data-season-files={files}
           onclick={() => (selected = entry.number)}
-          >{entry.title}<span
-            aria-hidden="true"
+          ><span
             class={[
-              'inline-flex items-center gap-0.5 text-[10.5px] font-medium tabular-nums',
-              done ? 'text-success' : 'opacity-75',
+              'flex items-center gap-2',
+              files === 'empty' &&
+                entry.number !== season?.number &&
+                'opacity-60',
             ]}
-            >{#if done}<Check
-                size={11}
-                strokeWidth={2.5}
-              />{/if}{counts.premiere
-              ? year(counts.premiere)
-              : `${counts.watched}/${counts.total}`}</span
-          ></button
+            >{entry.title}<span
+              aria-hidden="true"
+              class={[
+                'inline-flex items-center gap-1 text-[10.5px] font-medium tabular-nums',
+                fileBadges[files].tone,
+              ]}
+              ><Icon size={11} strokeWidth={2.5} />{counts.premiere
+                ? year(counts.premiere)
+                : `${counts.available}/${counts.total}`}</span
+            ></span
+          ><ProgressBar
+            class="h-0.5 w-full bg-line text-muted"
+            value={counts.total ? (counts.watched / counts.total) * 100 : 0}
+          /></button
         >
       {/each}
     </div>
