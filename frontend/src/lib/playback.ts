@@ -31,6 +31,8 @@ export type MediaChoice = {
   };
   /** The playlist this queue was started from and follows, as it holds it. */
   playlist?: FollowedPlaylist;
+  /** Reads what the queue adds while it plays: the rest of its list. */
+  more?: (signal: AbortSignal) => Promise<MediaChoice[]>;
 };
 /** Media that is playing, or still starting in a desktop MPV window. */
 export type PlayingMedia = { id: string; launching: boolean };

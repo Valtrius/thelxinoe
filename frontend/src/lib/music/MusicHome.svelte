@@ -27,6 +27,7 @@
     catalogQuery,
     listAll,
     plural,
+    restOfList,
     trackQueue,
     type MusicItem,
     type MusicPage,
@@ -169,11 +170,27 @@
     observer.observe(node);
     return { destroy: () => observer.disconnect() };
   }
-  // A track plays on through the whole list, not only the pages shown.
+  // A track starts with the pages shown and plays on through the whole list,
+  // which the queue reads as it plays.
   async function playTrack(track: MusicItem, fileId?: string) {
-    const rest =
-      items.length < total ? await listAll(listed).catch(() => items) : items;
-    const queue = trackQueue(rest.length ? rest : items, track);
+    const current = listed,
+      complete = items.length >= total,
+      shown = trackQueue(items, track);
+    if (shown && (complete || shown.id === track.id)) {
+      const known = shown.queue!;
+      play({
+        ...shown,
+        fileId,
+        more: complete
+          ? undefined
+          : (signal) => restOfList(current, known, signal),
+      });
+      return;
+    }
+    if (complete) return;
+    // A track outside the pages shown takes its place from the whole list.
+    const all = await listAll(current).catch(() => items);
+    const queue = trackQueue(all.length ? all : items, track);
     if (queue) play({ ...queue, fileId });
   }
   async function playAlbum(album: MusicItem) {

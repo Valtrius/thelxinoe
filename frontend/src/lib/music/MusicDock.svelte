@@ -93,6 +93,7 @@
             queue: undefined,
             shuffle: undefined,
             parked: undefined,
+            more: undefined,
           }
         : { ...entry, queue: undefined },
     );
@@ -118,6 +119,8 @@
       await owned.start();
       // Its playlist may have changed since the app last had it open.
       if (selected.parked) void follow();
+      // The track goes first; the rest of its list comes while it plays.
+      if (selected.more && generation === revision) owned.extend(selected.more);
     } catch (e) {
       await owned.close();
       if (disposed || generation !== revision) return;

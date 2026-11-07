@@ -993,6 +993,213 @@ test('the dock lists a queue of thousands by what is near the viewport', async (
   expect(await entries.count()).toBeLessThan(40);
 });
 
+// A list longer than the page the app shows, whose later pages are held back
+// until `release`, so a test sees what the dock does while it reads them. Tracks
+// around the end of the first page can play, as well as the first few.
+async function heldBackTracks(
+  page: Page,
+  request: Page['request'],
+  holdPages = true,
+) {
+  const real = (await (
+    await request.get('/api/v1/catalog?kind=track&limit=500')
+  ).json()) as { items: { id: string; title: string }[] };
+  const playable = [0, 1, 2, 3, 117, 118, 119, 120, 121];
+  const tracks = Array.from({ length: 300 }, (_, index) => {
+    const at = playable.indexOf(index);
+    return {
+      ...real.items[Math.max(at, 0)],
+      id: at < 0 ? `big-${index}` : real.items[at].id,
+      title: `Track number ${index}`,
+    };
+  });
+  const held = { reads: 0, abandoned: 0, release: () => {} };
+  const gate = new Promise<void>((resolve) => {
+    held.release = resolve;
+  });
+  const reading = (url: URL) =>
+    url.pathname === '/api/v1/catalog' &&
+    url.searchParams.get('kind') === 'track' &&
+    url.searchParams.get('limit') === '500';
+  page.on('requestfailed', (failed) => {
+    if (reading(new URL(failed.url()))) held.abandoned++;
+  });
+  await page.route(
+    (url) =>
+      url.pathname === '/api/v1/catalog' &&
+      url.searchParams.get('kind') === 'track' &&
+      url.searchParams.get('limit') !== '0',
+    async (route) => {
+      const url = new URL(route.request().url());
+      const limit = Number(url.searchParams.get('limit'));
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      if (reading(url)) held.reads++;
+      if (reading(url) || (holdPages && offset > 0)) await gate;
+      await route
+        .fulfill({
+          json: { items: tracks.slice(offset, offset + limit), total: 300 },
+        })
+        .catch(() => {});
+    },
+  );
+  await page.goto('/#library/music?view=tracks');
+  await expect(page.locator('[data-track]').first()).toBeVisible();
+  return { held, tracks };
+}
+const playRow = (page: Page, at: number) =>
+  button(
+    page.locator('[data-track]').nth(at),
+    `Play Track number ${at}`,
+  ).click();
+
+test('a track starts before the rest of its list is read, which then joins the queue', async ({
+  page,
+  request,
+}) => {
+  const { held } = await heldBackTracks(page, request);
+  await playRow(page, 1);
+  const dock = page.getByRole('region', { name: 'Music player' });
+  await expect(dock.getByText('2 of 120', { exact: true })).toBeVisible();
+  await expect.poll(() => held.reads).toBeGreaterThan(0);
+  await expect(button(dock, 'Pause')).toBeVisible();
+
+  held.release();
+  await expect(dock.getByText('2 of 300', { exact: true })).toBeVisible();
+  await button(dock, 'Queue').click();
+  const queue = page.locator('[data-popover-content]');
+  await queue.locator('[data-queue-scroller]').evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(button(queue, 'Play Track number 299')).toBeInViewport();
+});
+
+test('a queue cleared while the rest of its list is read stays cleared', async ({
+  page,
+  request,
+}) => {
+  const { held } = await heldBackTracks(page, request);
+  await playRow(page, 0);
+  const dock = page.getByRole('region', { name: 'Music player' });
+  await expect(dock.getByText('1 of 120', { exact: true })).toBeVisible();
+  await expect.poll(() => held.reads).toBe(1);
+  await button(dock, 'Queue').click();
+  const queue = page.locator('[data-popover-content]');
+  await button(queue, 'Clear').click();
+  await expect(dock.getByText('1 of 120', { exact: true })).toBeHidden();
+  await expect.poll(() => held.abandoned).toBe(1);
+
+  held.release();
+  await expect(button(queue, 'Play Track number 1')).toHaveCount(0);
+  await expect(dock.getByText('1 of 300', { exact: true })).toBeHidden();
+});
+
+test('a track removed while the rest of its list is read does not come back', async ({
+  page,
+  request,
+}) => {
+  const { held } = await heldBackTracks(page, request);
+  await playRow(page, 0);
+  const dock = page.getByRole('region', { name: 'Music player' });
+  await expect(dock.getByText('1 of 120', { exact: true })).toBeVisible();
+  await button(dock, 'Queue').click();
+  const queue = page.locator('[data-popover-content]');
+  await button(queue, 'Remove Track number 1 from the queue').click();
+  await expect(dock.getByText('1 of 119', { exact: true })).toBeVisible();
+
+  held.release();
+  await expect(dock.getByText('1 of 299', { exact: true })).toBeVisible();
+  await expect(button(queue, 'Play Track number 1')).toHaveCount(0);
+});
+
+test('choosing another track leaves the list read for the last one behind', async ({
+  page,
+  request,
+}) => {
+  const { held } = await heldBackTracks(page, request);
+  await playRow(page, 0);
+  const dock = page.getByRole('region', { name: 'Music player' });
+  await expect(dock.getByText('1 of 120', { exact: true })).toBeVisible();
+  await expect.poll(() => held.reads).toBe(1);
+  await playRow(page, 2);
+  await expect(dock.getByText('3 of 120', { exact: true })).toBeVisible();
+  await expect.poll(() => held.abandoned).toBe(1);
+  await expect.poll(() => held.reads).toBe(2);
+
+  held.release();
+  await expect(dock.getByText('3 of 300', { exact: true })).toBeVisible();
+});
+
+test('a repeating queue goes on to the rest of its list instead of starting over', async ({
+  page,
+  request,
+}) => {
+  const { held } = await heldBackTracks(page, request);
+  await playRow(page, 119);
+  const dock = page.getByRole('region', { name: 'Music player' });
+  await expect(dock.getByText('120 of 120', { exact: true })).toBeVisible();
+  await button(dock, 'Repeat off').click();
+
+  held.release();
+  await expect(dock.getByText('120 of 300', { exact: true })).toBeVisible();
+  await button(dock, 'Next track').click();
+  await expect(dock.getByText('121 of 300', { exact: true })).toBeVisible();
+});
+
+test('a repeating queue keeps the next track it loaded when the rest of its list arrives', async ({
+  page,
+  request,
+}) => {
+  const { held, tracks } = await heldBackTracks(page, request);
+  const reads = new Map<string, number>();
+  page.on('request', (sent) => {
+    const read = /^\/api\/v1\/catalog\/(.+)\/playback$/.exec(
+      new URL(sent.url()).pathname,
+    );
+    if (read) reads.set(read[1], (reads.get(read[1]) ?? 0) + 1);
+  });
+  await playRow(page, 118);
+  const dock = page.getByRole('region', { name: 'Music player' });
+  await expect(dock.getByText('119 of 120', { exact: true })).toBeVisible();
+  await button(dock, 'Repeat off').click();
+  const seek = dock.getByLabel('Music position');
+  // Close enough to the track's end that the track after it loads.
+  const nearEnd = async (left: number) => {
+    await expect(seek).toBeEnabled();
+    await expect(seek).not.toHaveAttribute('max', '0');
+    await seek.fill(String(Number(await seek.getAttribute('max')) - left));
+  };
+  await nearEnd(30);
+  await expect.poll(() => reads.get(tracks[119].id)).toBe(1);
+
+  held.release();
+  await expect(dock.getByText('119 of 300', { exact: true })).toBeVisible();
+  await nearEnd(0.5);
+  await expect(dock.getByText('120 of 300', { exact: true })).toBeVisible();
+  await nearEnd(30);
+  await expect.poll(() => reads.get(tracks[120].id)).toBe(1);
+  expect(reads.get(tracks[119].id)).toBe(1);
+});
+
+test('a track added by hand while the rest of its list is read stays where it was added', async ({
+  page,
+  request,
+}) => {
+  const { held } = await heldBackTracks(page, request, false);
+  await playRow(page, 0);
+  const dock = page.getByRole('region', { name: 'Music player' });
+  await expect(dock.getByText('1 of 120', { exact: true })).toBeVisible();
+  await expect.poll(() => held.reads).toBe(1);
+  const last = page.locator('[data-track]').nth(119);
+  await last.scrollIntoViewIfNeeded();
+  await expect(page.locator('[data-track]').nth(120)).toBeVisible();
+  await button(page, 'Actions for Track number 120').click();
+  await page.getByRole('menuitem', { name: 'Add to queue' }).click();
+  await expect(dock.getByText('1 of 121', { exact: true })).toBeVisible();
+
+  held.release();
+  await expect(dock.getByText('1 of 300', { exact: true })).toBeVisible();
+});
+
 test('phones open playlists in a drawer above the dock, kept open while playing', async ({
   browser,
 }, info) => {
