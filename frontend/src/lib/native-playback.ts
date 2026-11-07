@@ -2,11 +2,14 @@
 // Pages read which media is starting or playing from here.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { get } from 'svelte/store';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { api, ApiError } from './api';
+import { streamOrientation } from './appearance';
 import {
   playbackRequest,
   type MediaChoice,
+  type Orientation,
   type Preparation,
 } from './playback';
 import { toolsApi } from './providers/tools-api';
@@ -29,6 +32,8 @@ export type NativeView = {
   count: number;
   error: string | null;
   video_ready: boolean;
+  /** Present when the stream offers both orientations. */
+  orientation?: Orientation | null;
 };
 export const ended = (status: string) =>
   ['stopped', 'ended', 'error', 'failed', ''].includes(status);
@@ -46,6 +51,10 @@ let failed: (view: NativeView) => void = ignore;
 
 function accept(view: NativeView) {
   reported.add(view.run);
+  // Other runs keep reporting their own orientation, so only a change is a switch.
+  const previous = nativeRuns.get(view.run)?.orientation;
+  if (previous && view.orientation && previous !== view.orientation)
+    streamOrientation.set(view.orientation);
   if (ended(view.status)) {
     nativeRuns.delete(view.run);
     if (videoRuns.get(view.media_id)?.run === view.run)
@@ -142,7 +151,7 @@ export async function launchVideo(
       }),
     );
     const started = await invoke<NativeView>('mpv_play', {
-      choice,
+      choice: { ...choice, orientation: get(streamOrientation) },
       queue: null,
       music: false,
       run,

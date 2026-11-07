@@ -13,6 +13,14 @@ local function open_menu()
             value = {'script-message', 'thelxinoe-quality', current.session, quality.value},
         }
     end
+    if current.orientation then
+        local other = current.orientation == 'vertical' and 'horizontal' or 'vertical'
+        items[#items].separator = true
+        items[#items + 1] = {
+            title = 'Switch to ' .. other,
+            value = {'script-message', 'thelxinoe-orientation', current.session, other},
+        }
+    end
     mp.commandv('script-message-to', 'uosc', 'open-menu', utils.format_json({
         id = 'thelxinoe-quality', title = 'Quality', items = items,
     }))

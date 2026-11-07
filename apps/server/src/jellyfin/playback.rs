@@ -225,6 +225,7 @@ pub(super) async fn info_source(
             file_id: Some(source.id.clone()),
             position: Some(0.0),
             options,
+            orientation: None,
         },
         true,
     )

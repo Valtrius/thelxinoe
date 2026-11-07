@@ -2,7 +2,10 @@ import { expect, test, type Page } from '@playwright/test';
 import { current } from './helpers/versions';
 import { installUiFixture } from './helpers/ui-fixture';
 
-type Played = { run: string; choice: { id: string; title: string } };
+type Played = {
+  run: string;
+  choice: { id: string; title: string; orientation?: string };
+};
 type Bridge = {
   played: Played[];
   commands: { command: string; run?: string | null }[];
@@ -194,6 +197,34 @@ test('desktop videos start on their card and several play at once', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('desktop streams start in the orientation last switched to in MPV', async ({
+  page,
+}) => {
+  await desktopFixture(page);
+  await page.goto('/');
+  await play(page, 'Fixture movie 0');
+  await expect.poll(async () => (await played(page)).length).toBe(1);
+  await play(page, 'Fixture movie 1');
+  await expect.poll(async () => (await played(page)).length).toBe(2);
+  const [first, second] = await played(page);
+  expect(first.choice.orientation).toBe('horizontal');
+  expect(second.choice.orientation).toBe('horizontal');
+  const playing = { video_ready: true };
+  for (const run of [first, second])
+    await report(page, run, 'playing', {
+      ...playing,
+      orientation: 'horizontal',
+    });
+  await report(page, first, 'playing', { ...playing, orientation: 'vertical' });
+  // The other window has not switched; its next report changes nothing.
+  await report(page, second, 'playing', {
+    ...playing,
+    orientation: 'horizontal',
+  });
+  await play(page, 'Fixture movie 2');
+  await expect.poll(async () => (await played(page)).length).toBe(3);
+  expect((await played(page))[2].choice.orientation).toBe('vertical');
+});
 test('a desktop video that fails to start explains why without a player panel', async ({
   page,
 }) => {

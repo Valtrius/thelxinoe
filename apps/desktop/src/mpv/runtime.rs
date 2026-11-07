@@ -30,6 +30,8 @@ pub struct Choice {
     /// This choice's place in the queue it was taken from.
     #[serde(rename = "queueIndex")]
     pub queue_index: Option<usize>,
+    /// The orientation to play when a stream offers both.
+    pub orientation: Option<String>,
 }
 #[derive(Clone, Default, Serialize)]
 pub struct View {
@@ -48,11 +50,18 @@ pub struct View {
     pub count: usize,
     pub error: Option<String>,
     pub video_ready: bool,
+    /// Present when the stream offers both orientations.
+    pub orientation: Option<String>,
 }
 pub enum Control {
     Pause,
     Seek(f64),
-    Quality { session: String, quality: String },
+    /// Replaces the stream with another rendition; what is absent stays as it is.
+    Rendition {
+        session: String,
+        quality: Option<String>,
+        orientation: Option<String>,
+    },
     Volume(f64),
     Next,
     Stop,
@@ -307,9 +316,9 @@ fn capabilities() -> Value {
     json!({"containers":["mp4","m4v","m4a","mkv","avi","mov","webm","ts","m2ts","mpg","mpeg","flac","mp3","ogg","opus","wav","wma","aac","aiff","alac"],"video":["h264","hevc","vp8","vp9","av1","mpeg4","mpeg2video","mpeg1video","wmv3","vc1","prores","mjpeg"],"audio":["aac","mp3","flac","vorbis","opus","ac3","eac3","dts","truehd","alac","pcm_s16le","pcm_s24le","pcm_s32le","pcm_f32le","wmav2"],"hls":true,"hls_video":["h264","hevc","av1"],"native_tracks":true,"native_remote":true})
 }
 async fn prepare(backend: &Backend, choice: &Choice, first: bool) -> Result<Prepared> {
-    prepare_quality(backend, choice, first, None).await
+    prepare_rendition(backend, choice, first, None).await
 }
-async fn prepare_quality(
+async fn prepare_rendition(
     backend: &Backend,
     choice: &Choice,
     first: bool,
@@ -317,7 +326,7 @@ async fn prepare_quality(
 ) -> Result<Prepared> {
     let preferences = backend.call("/playback/preferences", "GET", None).await?;
     let quality = quality.unwrap_or(preferences["quality"].as_str().unwrap_or("auto"));
-    let data=backend.call("/playback","POST",Some(json!({"media_id":choice.id,"file_id":choice.file_id,"position":if first {json!(choice.position)}else{json!(0)},"options":{"quality":quality,"audio":null,"subtitle":null,"capabilities":capabilities()}}))).await?;
+    let data=backend.call("/playback","POST",Some(json!({"media_id":choice.id,"file_id":choice.file_id,"position":if first {json!(choice.position)}else{json!(0)},"orientation":choice.orientation,"options":{"quality":quality,"audio":null,"subtitle":null,"capabilities":capabilities()}}))).await?;
     Ok(Prepared {
         playlist_id: -1,
         id: data["id"]
@@ -568,14 +577,16 @@ async fn run(
                             }
                         }
                     }
-                    Some(Control::Quality { session, quality }) => {
-                        let Some(entry) = prepared.get_mut(&current).filter(|entry| entry.id == session && quality_allowed(&entry.data, &quality)) else { continue; };
+                    Some(Control::Rendition { session, quality, orientation }) => {
+                        let Some(entry) = prepared.get_mut(&current).filter(|entry| entry.id == session && quality.as_deref().is_none_or(|quality| quality_allowed(&entry.data, quality))) else { continue; };
+                        let quality = quality.or_else(|| entry.data["options"]["quality"].as_str().map(str::to_owned));
                         let resume = !paused;
                         ipc.call(json!(["set_property", "pause", true])).await?;
                         entry.activity.set_active(false);
                         let mut choice = choices[current].clone();
                         choice.position = Some(entry.position);
-                        match prepare_quality(&backend, &choice, true, Some(&quality)).await {
+                        choice.orientation = orientation.or_else(|| entry.data["orientation"].as_str().map(str::to_owned));
+                        match prepare_rendition(&backend, &choice, true, quality.as_deref()).await {
                             Ok(mut replacement) => {
                                 match load(&mut ipc, &mut replacement, &choice.title, "replace").await {
                                     Ok(()) => {
@@ -587,11 +598,11 @@ async fn run(
                                     Err(_) => {
                                         let _ = backend.call(&format!("/playback/{}", replacement.id), "DELETE", None).await;
                                         load(&mut ipc, entry, &choice.title, "replace").await?;
-                                        let _ = ipc.call(json!(["show-text", "Could not switch quality", 4000])).await;
+                                        let _ = ipc.call(json!(["show-text", "Could not switch the stream", 4000])).await;
                                     }
                                 }
                             }
-                            Err(_) => { let _ = ipc.call(json!(["show-text", "This quality is temporarily unavailable", 4000])).await; }
+                            Err(_) => { let _ = ipc.call(json!(["show-text", "This stream is temporarily unavailable", 4000])).await; }
                         }
                         ipc.call(json!(["set_property", "pause", !resume])).await?;
                     }
@@ -642,7 +653,12 @@ async fn run(
                         }
                         Some("client-message") if message["args"][0] == "thelxinoe-quality" => {
                             if let (Some(session), Some(quality)) = (message["args"][1].as_str(), message["args"][2].as_str()) {
-                                let _ = controls.try_send(Control::Quality { session: session.into(), quality: quality.into() });
+                                let _ = controls.try_send(Control::Rendition { session: session.into(), quality: Some(quality.into()), orientation: None });
+                            }
+                        }
+                        Some("client-message") if message["args"][0] == "thelxinoe-orientation" => {
+                            if let (Some(session), Some(orientation)) = (message["args"][1].as_str(), message["args"][2].as_str()) {
+                                let _ = controls.try_send(Control::Rendition { session: session.into(), quality: None, orientation: Some(orientation.into()) });
                             }
                         }
                         Some("file-loaded") => {
@@ -650,7 +666,9 @@ async fn run(
                             if let Some(entry) = prepared.get(&current) {
                                 let mut qualities = entry.data["qualities"].as_array().cloned().unwrap_or_default();
                                 if !qualities.is_empty() { qualities.insert(0, json!({"value":"auto","label":"Auto"})); }
-                                let payload = json!({"session":entry.id,"qualities":qualities,"selected":entry.data["options"]["quality"]});
+                                let requested = &entry.data["options"]["quality"];
+                                let selected = if qualities.iter().any(|quality| quality["value"] == *requested) { requested } else { &entry.data["quality"] };
+                                let payload = json!({"session":entry.id,"qualities":qualities,"selected":selected,"orientation":entry.data["orientation"]});
                                 let _ = ipc.call(json!(["script-message", "thelxinoe-qualities", payload.to_string()])).await;
                                 let _ = chapters(&mut ipc, &entry.data).await;
                             }
@@ -721,7 +739,7 @@ async fn run(
                     }
                     if let Some(entry) = prepared.get(&current) {
                         let mut state = view.lock().await;
-                        *state = View { run: state.run.clone(), file_id: entry.data["file_id"].as_str().unwrap_or_default().into(), generation: entry.data["generation"].as_str().unwrap_or_default().into(), media_id: choices[current].id.clone(), mode: entry.data["mode"].as_str().unwrap_or_default().into(), title: choices[current].title.clone(), position: entry.position, duration: entry.data["duration"].as_f64().unwrap_or(0.0), paused, status: if !loaded { "starting" } else if paused { "paused" } else { "playing" }.into(), music, index: current, count: choices.len(), error: None, video_ready: loaded && (video_ready || entry.data["video"] == false) };
+                        *state = View { run: state.run.clone(), file_id: entry.data["file_id"].as_str().unwrap_or_default().into(), generation: entry.data["generation"].as_str().unwrap_or_default().into(), media_id: choices[current].id.clone(), mode: entry.data["mode"].as_str().unwrap_or_default().into(), orientation: entry.data["orientation"].as_str().map(str::to_owned), title: choices[current].title.clone(), position: entry.position, duration: entry.data["duration"].as_f64().unwrap_or(0.0), paused, status: if !loaded { "starting" } else if paused { "paused" } else { "playing" }.into(), music, index: current, count: choices.len(), error: None, video_ready: loaded && (video_ready || entry.data["video"] == false) };
                         let _ = app.emit("mpv-state", state.clone());
                     }
                 }

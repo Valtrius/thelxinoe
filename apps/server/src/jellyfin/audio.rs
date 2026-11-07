@@ -111,6 +111,7 @@ pub async fn stream(
                         ..Default::default()
                     },
                 },
+                orientation: None,
             },
             true,
         )

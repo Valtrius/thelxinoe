@@ -150,6 +150,7 @@ export async function playbackApi(s, c) {
       // The player adds Auto itself, as with the server's renditions.
       qualities: [{ value: '360p', label: '360p' }],
       quality: body.options?.quality ?? 'auto',
+      orientation: live ? (body.orientation ?? 'horizontal') : null,
       position: Math.min(body.position ?? (item?.position ? 20 : 0), 80),
       duration: 90,
       timeline_start: 0,

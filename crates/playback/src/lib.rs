@@ -265,6 +265,14 @@ pub struct Options {
 fn auto() -> String {
     "auto".into()
 }
+/// The shape of a picture, for a live stream that broadcasts both.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Orientation {
+    #[default]
+    Horizontal,
+    Vertical,
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Preferences {
     pub quality: String,

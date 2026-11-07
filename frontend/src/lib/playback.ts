@@ -34,6 +34,7 @@ export type MediaChoice = {
 };
 /** Media that is playing, or still starting in a desktop MPV window. */
 export type PlayingMedia = { id: string; launching: boolean };
+export type Orientation = 'horizontal' | 'vertical';
 export type Preferences = {
   quality: string;
   audio_language: string;
@@ -69,6 +70,8 @@ export type Playback = {
   conversion_reason?: string | null;
   qualities?: { value: string; label: string }[];
   quality?: string;
+  /** Present when the stream offers both orientations. */
+  orientation?: Orientation | null;
   position: number;
   duration: number;
   timeline_start: number;
@@ -335,12 +338,14 @@ export function prepare(
   options: Options,
   position?: number,
   preparation?: Preparation,
+  orientation?: Orientation,
 ) {
   const body = {
     media_id: choice.id,
     file_id: choice.fileId,
     options,
     position: position ?? choice.position,
+    orientation,
   };
   const request = () => api<Playback>('/playback', 'POST', body);
   return preparation ? playbackRequest(request, preparation) : request();

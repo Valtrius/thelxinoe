@@ -386,6 +386,16 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
         evidence.push(json!({"live":true,"resolution":height,"copied_frames":copied.len()}));
         delete(&session).await;
     }
+    // A rendition this orientation lacks, as after switching from the other one, plays the
+    // best within its resolution instead of failing or converting.
+    let input = json!({"media_id":"youtube:abcdefghijk","position":0,"options":{"quality":"720p60","capabilities":browser(json!(["h264"]),json!(["aac"]))}});
+    let response = call(&state, "/api/v1/playback", "POST", input, &cookie).await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+    let session = response.2;
+    assert_eq!(session["mode"], "remux");
+    assert_eq!(session["encoding"], json!({"video":false,"audio":false}));
+    assert_eq!(session["quality"], "180p");
+    delete(&session).await;
 
     // Recorded videos: browsers receive the original files as byte-range HLS.
     let recorded = json!({"duration":8.0,"formats":[
@@ -470,6 +480,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
         options(json!(["h264"])),
         Some(0.0),
         true,
+        None,
     )
     .await
     .unwrap();
@@ -505,6 +516,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
         options(json!([])),
         Some(0.0),
         true,
+        None,
     )
     .await;
     assert_eq!(refused.unwrap_err().0, StatusCode::FORBIDDEN);

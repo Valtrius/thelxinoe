@@ -118,6 +118,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
             file_id: None,
             position: None,
             options: options.clone(),
+            orientation: None,
         },
     )
     .await
@@ -179,6 +180,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
             file_id: Some(file_id),
             position: None,
             options,
+            orientation: None,
         },
     )
     .await
