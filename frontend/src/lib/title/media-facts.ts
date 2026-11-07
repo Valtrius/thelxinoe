@@ -51,7 +51,9 @@ const language = (stream: Stream) => {
 function resolution({ width = 0, height = 0 }: Stream) {
   const long = Math.max(width, height);
   const short = width && height ? Math.min(width, height) : height;
+  if (long >= 7600 || short >= 4000) return '4320p';
   if (long >= 3800 || short >= 2000) return '2160p';
+  if (long >= 2500 || short >= 1300) return '1440p';
   if (long >= 1900 || short >= 1000) return '1080p';
   if (long >= 1260 || short >= 700) return '720p';
   return short ? `${short}p` : '';
