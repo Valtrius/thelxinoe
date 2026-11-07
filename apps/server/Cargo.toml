@@ -42,6 +42,8 @@ process-wrap = { version = "10", default-features = false, features = ["tokio1",
 tempfile = "3"
 base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+jpeg-decoder = { version = "0.3.2", default-features = false }
+zune-jpeg = "0.5.15"
 webauthn-rs = { version = "0.5.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 openidconnect = { version = "4.0.1", default-features = false }
 totp-rs = { version = "6.0.0", features = ["otpauth", "gen_secret"] }
