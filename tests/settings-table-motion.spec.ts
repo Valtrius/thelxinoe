@@ -204,6 +204,9 @@ const watchLayers = (page: Page) =>
 const layerSeen = (page: Page) =>
   page.evaluate(() => document.documentElement.dataset.layerSeen);
 
+// The app uses the system font, and these are about as wide as they come.
+const wideFont = '*{font-family:Verdana,"DejaVu Sans",sans-serif !important}';
+
 const motionRoot = (table: ReturnType<Page['getByRole']>) =>
   table.locator('xpath=ancestor::*[@aria-busy][1]');
 
@@ -469,32 +472,35 @@ for (const scenario of scenarios) {
   }) => {
     const { fixture, table } = await open(page, scenario);
     await expect(table.locator('thead')).toBeVisible();
-    for (const width of [1000, 900, 800, 721, 720, 390, 320]) {
-      await page.setViewportSize({ width, height: 900 });
-      await expect(table.locator('thead')).toBeHidden();
-      // Every table on the page, since Episode analysis has a second one.
-      expect(
-        await page.evaluate(
-          () =>
+    for (const font of [null, wideFont]) {
+      if (font) await page.addStyleTag({ content: font });
+      for (const width of [1000, 900, 840, 800, 721, 720, 390, 320]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect(table.locator('thead')).toBeHidden();
+        // Every table on the page, since Episode analysis has a second one.
+        expect(
+          await page.evaluate(() =>
             [
               ...document.querySelectorAll(
                 '.settings-card td, .settings-card th',
               ),
-            ].filter(
-              (cell) =>
-                cell.getBoundingClientRect().right >
-                cell.closest('.settings-card')!.getBoundingClientRect().right +
-                  1,
-            ).length,
-        ),
-      ).toBe(0);
-      expect(
-        await page.evaluate(
-          () =>
-            document.documentElement.scrollWidth <=
-            document.documentElement.clientWidth,
-        ),
-      ).toBe(true);
+            ].flatMap((cell) => {
+              const past =
+                cell.getBoundingClientRect().right -
+                cell.closest('.settings-card')!.getBoundingClientRect().right;
+              return past > 1 ? [cell.textContent] : [];
+            }),
+          ),
+          `${font ?? 'default font'} at ${width} px`,
+        ).toEqual([]);
+        expect(
+          await page.evaluate(
+            () =>
+              document.documentElement.scrollWidth <=
+              document.documentElement.clientWidth,
+          ),
+        ).toBe(true);
+      }
     }
     expect(fixture.errors).toEqual([]);
   });
@@ -646,6 +652,83 @@ test('a show that arrives during a refresh moves the page gradually', async ({
     .poll(async () => (await recordedMotion(page)).tinted)
     .toBeGreaterThan(0);
   expect((await recordedMotion(page)).resized).toBeGreaterThan(0);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('a selected row keeps its colour while it moves', async ({ page }) => {
+  const scenario = scenarios[1];
+  const show = (id: string, title: string) => ({ id, title, ...coverage });
+  const { fixture } = await open(page, scenario);
+  const shows = page.getByRole('table', { name: 'Coverage by show' });
+  await page.route(scenario.path, (route) =>
+    route.fulfill({
+      json: {
+        ...scenario.answer(lists.all),
+        shows: [show('other', 'Other show'), show('show', 'Fixture show')],
+      },
+    }),
+  );
+  await scenario.refresh(page);
+  const selected = shows.getByRole('button', { name: 'Fixture show' });
+  await selected.click();
+  await expect(selected).toHaveAttribute('aria-pressed', 'true');
+  // Its own colour transition has to finish for the colour to be its final one.
+  await expect
+    .poll(() =>
+      page
+        .locator('[data-motion-row="show:show"]')
+        .evaluate((row) => row.getAnimations().length),
+    )
+    .toBe(0);
+  await page.route(scenario.path, (route) =>
+    route.fulfill({
+      json: {
+        ...scenario.answer(lists.all),
+        shows: [
+          show('new-show', 'New show'),
+          show('other', 'Other show'),
+          show('show', 'Fixture show'),
+        ],
+      },
+    }),
+  );
+  await pauseAnimations(page);
+  await scenario.refresh(page);
+  const paint = (key: string) =>
+    page.locator(`[data-motion-row="show:${key}"]`).evaluate((element) => {
+      for (const animation of element.getAnimations()) {
+        const [first] = (animation.effect as KeyframeEffect).getKeyframes();
+        if ('transform' in first) return String(first.backgroundColor);
+      }
+      return null;
+    });
+  await expect.poll(() => paint('other')).not.toBeNull();
+  await expect.poll(() => paint('show')).not.toBeNull();
+  expect(await paint('show')).not.toBe(await paint('other'));
+  expect(fixture.errors).toEqual([]);
+});
+
+test('coverage keeps its columns until they stop fitting', async ({ page }) => {
+  const { fixture } = await open(page, scenarios[1]);
+  const shows = page.getByRole('table', { name: 'Coverage by show' });
+  for (const font of [null, wideFont]) {
+    if (font) await page.addStyleTag({ content: font });
+    await page.setViewportSize({ width: 1000, height: 900 });
+    await expect(shows.locator('thead')).toBeVisible();
+    await page.setViewportSize({ width: 721, height: 900 });
+    await expect(shows.locator('thead')).toBeHidden();
+    // Stacked, every cell needs its own label, and they line up with the title.
+    for (const label of ['Episodes', 'Intro', 'Credits', 'Nothing found'])
+      await expect(
+        shows.locator('tbody').getByText(label, { exact: true }),
+      ).toBeVisible();
+    const edges = await page
+      .locator('[data-motion-row="show:show"] td')
+      .evaluateAll((cells) =>
+        cells.map((cell) => cell.getBoundingClientRect().left),
+      );
+    expect(edges[1]).toBeCloseTo(edges[0], 0);
+  }
   expect(fixture.errors).toEqual([]);
 });
 

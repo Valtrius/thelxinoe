@@ -78,6 +78,9 @@ img[data-arrived] {
     @slot;
   }
 }
+/* The coverage table's short columns fit far below table-stack. Declared after
+   `compact`, whose cell padding it replaces. */
+@custom-variant coverage-stack (@container settings (max-width: 24rem));
 @custom-variant touch (@media (pointer: coarse) and (hover: none));
 /* Phones zoom card grids far below their desktop size. Card parts marked
    `phone-card:card-pixels` lay out in real pixels again, so the sizes given

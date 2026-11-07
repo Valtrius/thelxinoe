@@ -179,6 +179,14 @@
   });
 </script>
 
+{#snippet count(label: string, value: number)}
+  <td
+    class="text-right tabular-nums coverage-stack:text-left coverage-stack:text-muted"
+  >
+    <span class="mr-1 hidden coverage-stack:inline">{label}</span>{value}
+  </td>
+{/snippet}
+
 {#snippet times(label: string, ranges: string[])}
   <td
     class="px-3 py-2 tabular-nums table-stack:order-3 table-stack:max-w-full table-stack:border-0 table-stack:p-0 table-stack:text-muted"
@@ -218,7 +226,7 @@
       <table
         class={twMerge(
           cardTableClass,
-          'border-separate border-spacing-0 text-left table-stack:[&_th]:tracking-normal table-stack:[&_tbody_td]:px-1.5 table-stack:[&_tbody_td:first-child]:pl-5.5 table-stack:[&_thead_th]:px-1.5 table-stack:[&_thead_th:first-child]:pl-5.5 compact:[&_tbody_td:first-child]:pl-4 compact:[&_thead_th]:px-1.5 compact:[&_thead_th:first-child]:pl-4',
+          'border-separate border-spacing-0 text-left table-stack:[&_th]:tracking-normal table-stack:[&_tbody_td]:px-1.5 table-stack:[&_tbody_td:first-child]:pl-5.5 table-stack:[&_thead_th]:px-1.5 table-stack:[&_thead_th:first-child]:pl-5.5 compact:[&_tbody_td:first-child]:pl-4 compact:[&_thead_th]:px-1.5 compact:[&_thead_th:first-child]:pl-4 coverage-stack:block coverage-stack:[&_tbody]:block coverage-stack:[&_thead]:hidden coverage-stack:[&_tbody_td]:border-0 coverage-stack:[&_tbody_td]:p-0 coverage-stack:[&_tbody_td:first-child]:p-0',
         )}
       >
         <caption class="sr-only">Coverage by show</caption>
@@ -236,11 +244,11 @@
             <tr
               data-motion-row={`show:${item.id}`}
               class={[
-                'transition-colors motion-reduce:transition-none',
+                'transition-colors motion-reduce:transition-none coverage-stack:flex coverage-stack:flex-wrap coverage-stack:gap-x-3 coverage-stack:gap-y-0.5 coverage-stack:border-b coverage-stack:border-line coverage-stack:px-5.5 coverage-stack:py-2 coverage-stack:last:border-b-0 compact:coverage-stack:px-4',
                 show === item.id && 'bg-accent-soft',
               ]}
             >
-              <td class="wrap-anywhere">
+              <td class="wrap-anywhere coverage-stack:basis-full">
                 <button
                   type="button"
                   class="text-left font-medium hover:text-accent"
@@ -250,10 +258,10 @@
                   {item.title}
                 </button>
               </td>
-              <td class="text-right tabular-nums">{item.episodes}</td>
-              <td class="text-right tabular-nums">{item.intro}</td>
-              <td class="text-right tabular-nums">{item.credits}</td>
-              <td class="text-right tabular-nums">{item.nothing}</td>
+              {@render count('Episodes', item.episodes)}
+              {@render count('Intro', item.intro)}
+              {@render count('Credits', item.credits)}
+              {@render count('Nothing found', item.nothing)}
             </tr>
           {/each}
         </tbody>

@@ -294,14 +294,16 @@ export class RowMotion {
       if (change === 'move') {
         const x = was!.rect.left - rect.left;
         const y = was!.rect.top - rect.top;
+        // Over the page's colour, so that a highlighted row stays highlighted.
+        const backgroundColor = flattenColors([
+          getComputedStyle(element).backgroundColor,
+          surface,
+        ]);
         plans.push({
           element,
           keyframes: [
-            {
-              transform: `translate(${x}px, ${y}px)`,
-              backgroundColor: surface,
-            },
-            { transform: 'none', backgroundColor: surface },
+            { transform: `translate(${x}px, ${y}px)`, backgroundColor },
+            { transform: 'none', backgroundColor },
           ],
         });
       }
