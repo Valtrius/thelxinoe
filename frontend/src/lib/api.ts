@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { version as clientVersion } from '../../package.json';
 import { captureSession, invalidateSession } from './session';
-import { trackPageWork } from './page-readiness';
+import { trackPageWork, untilAborted } from './page-readiness';
 import { invalidatePageWrite } from './navigation-cache';
 export const desktop = typeof window !== 'undefined' && isTauri();
 // The API this build speaks; servers report the range of client APIs they accept.
@@ -67,10 +67,11 @@ export function api<T>(
   path: string,
   method = 'GET',
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const ownsSession = captureSession();
   return trackPageWork(() =>
-    request<T>(path, method, body).then((value) => {
+    request<T>(path, method, body, signal).then((value) => {
       if (method !== 'GET' && ownsSession()) invalidatePageWrite(path);
       return value;
     }),
@@ -80,6 +81,7 @@ async function request<T>(
   path: string,
   method = 'GET',
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const ownsSession = captureSession();
   // Only the server's session_expired ends the session; its other 401s are ordinary
@@ -93,10 +95,12 @@ async function request<T>(
       window.dispatchEvent(new Event('thelxinoe-session-expired'));
   };
   if (desktop) {
-    const response = await invoke<{
+    const sent = invoke<{
       status: number;
       body: { error?: { code: string; message: string } };
     }>('backend_request', { path, method, body: body ?? null });
+    // The desktop bridge cannot cancel a request, only stop waiting for it.
+    const response = await (signal ? untilAborted(sent, signal) : sent);
     if (response.status >= 400) {
       invalidateExpired(response.status, response.body.error?.code);
       throw new ApiError(
@@ -116,6 +120,7 @@ async function request<T>(
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   if (!response.ok) {
     // Proxies answer errors such as 413 or 502 with HTML, not the server's JSON.

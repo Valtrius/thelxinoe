@@ -29,12 +29,21 @@ export function inBackground<T>(start: () => T): T {
   }
 }
 
+// Whether a page is still out of sight, waiting for its work and for its layout
+// to settle. Animating it now would go unseen and hold it back.
+export function pagePreparing() {
+  return active !== undefined;
+}
+
 // Resolves once no page is waiting to appear.
 export async function pageSettled() {
   while (active) await active.closed;
 }
 
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+export function untilAborted<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const abort = () => reject(signal.reason);

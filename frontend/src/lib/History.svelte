@@ -23,16 +23,27 @@
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import FormField from './ui/FormField.svelte';
-  import { badgeClass, cardBlockClass, formControlClass } from './ui/styles';
+  import { RowMotion } from './ui/row-motion.svelte';
+  import RowMotionBody from './ui/RowMotionBody.svelte';
+  import {
+    badgeClass,
+    cardBlockClass,
+    formControlClass,
+    quietDisabledClass,
+  } from './ui/styles';
+  // `active` is false while a page keeps this mounted out of sight. It reads
+  // again on coming back, in case something changed in the meantime.
   let {
     user,
     audit = false,
+    active = true,
     scope = 'mine',
     range = '30d',
     platform = 'all',
   } = $props<{
     user: User;
     audit?: boolean;
+    active?: boolean;
     scope?: string;
     range?: StatisticsRange;
     platform?: StatisticsPlatform;
@@ -61,6 +72,7 @@
     actors?: { id: string; username: string }[];
     actions?: string[];
   };
+  const motion = new RowMotion();
   let auditUser = $state('');
   let auditAction = $state('');
   let auditGroup = $state<AuditCategory | ''>('');
@@ -69,91 +81,101 @@
   let result = $state<Result | null>(null),
     error = $state(''),
     busy = $state(false);
+  // The scope `result` was read for, which `scope` is ahead of during a read.
+  let appliedScope = $state('mine');
+  // The list `result` answers. A read of any other replaces the rows.
+  let shownList: string | undefined;
   const groups = $derived(auditActionGroups(actions));
   const days = $derived(
     audit ? auditDays(result?.items ?? [], display.timezone) : [],
   );
+  const hasRows = $derived((result?.items.length ?? 0) > 0);
   const requests = new LatestRequest();
-  onDestroy(() => requests.invalidate());
+  let reading: AbortController | undefined;
+  onDestroy(() => {
+    requests.invalidate();
+    reading?.abort();
+  });
   $effect(() => {
-    const mode = audit;
-    const selectedScope = scope;
-    const selectedRange = range;
-    const selectedPlatform = platform;
-    const selectedUser = auditUser;
-    const selectedAction = auditAction;
-    const selectedGroup = auditGroup;
-    untrack(() => {
-      void load(
-        mode,
-        false,
-        selectedScope,
-        selectedRange,
-        selectedPlatform,
-        selectedUser,
-        selectedAction,
-        selectedGroup,
-      );
-    });
+    void [audit, scope, range, platform, auditUser, auditAction, auditGroup];
+    if (active) untrack(() => void load());
   });
   function selectGroup(group: AuditCategory | '') {
     auditGroup = group;
     if (group && auditAction && auditCategory(auditAction) !== group)
       auditAction = '';
   }
-  async function load(
-    mode = audit,
-    more = false,
-    selectedScope = scope,
-    selectedRange = range,
-    selectedPlatform = platform,
-    selectedUser = auditUser,
-    selectedAction = auditAction,
-    selectedGroup = auditGroup,
-  ) {
+  async function load({ more = false } = {}) {
+    reading?.abort();
+    const { signal } = (reading = new AbortController());
     const current = requests.begin();
+    const selectedScope: string = scope;
     busy = true;
-    error = '';
-    if (!more) result = null;
+    if (!more) motion.hold();
+    const query = new SvelteURLSearchParams();
+    if (!audit) {
+      query.set('range', range);
+      query.set('platform', platform);
+    }
+    if (audit) {
+      if (auditUser) query.set('user', auditUser);
+      // A category filters by every action key it currently contains.
+      const filter =
+        auditAction ||
+        (auditGroup
+          ? auditActionGroups(actions, auditGroup)
+              .flatMap((group) => group.options.map((option) => option.value))
+              .join(',')
+          : '');
+      if (filter) query.set('action', filter);
+    }
+    const administrative =
+      !audit && user.role === 'admin' && selectedScope !== 'mine';
+    if (administrative && selectedScope !== 'all')
+      query.set('user', selectedScope);
+    const path = audit
+      ? '/admin/audit'
+      : administrative
+        ? '/admin/history'
+        : '/me/history';
+    const list = `${path}?${query}`;
+    const replacing = list !== shownList;
+    if (more && result?.next_before)
+      query.set('before', String(result.next_before));
     try {
-      const query = new SvelteURLSearchParams();
-      if (!mode) {
-        query.set('range', selectedRange);
-        query.set('platform', selectedPlatform);
-      }
-      if (mode) {
-        if (selectedUser) query.set('user', selectedUser);
-        // A category filters by every action key it currently contains.
-        const filter =
-          selectedAction ||
-          (selectedGroup
-            ? auditActionGroups(actions, selectedGroup)
-                .flatMap((group) => group.options.map((option) => option.value))
-                .join(',')
-            : '');
-        if (filter) query.set('action', filter);
-      }
-      if (more && result?.next_before)
-        query.set('before', String(result.next_before));
-      const administrative =
-        !mode && user.role === 'admin' && selectedScope !== 'mine';
-      if (administrative && selectedScope !== 'all')
-        query.set('user', selectedScope);
       const response = await api<Result>(
-        `${mode ? '/admin/audit' : administrative ? '/admin/history' : '/me/history'}?${query}`,
+        `${path}?${query}`,
+        'GET',
+        undefined,
+        signal,
       );
-      if (current()) {
-        actors = response.actors ?? actors;
-        actions = response.actions ?? actions;
-        result = more
-          ? {
-              ...response,
-              items: [...(result?.items ?? []), ...response.items],
-            }
-          : response;
-      }
+      if (current())
+        await motion.commit(
+          () => {
+            actors = response.actors ?? actors;
+            actions = response.actions ?? actions;
+            appliedScope = selectedScope;
+            shownList = list;
+            error = '';
+            result = more
+              ? {
+                  ...response,
+                  items: [...(result?.items ?? []), ...response.items],
+                }
+              : response;
+          },
+          { live: !replacing && !more },
+        );
     } catch (e) {
-      if (current()) error = String(e);
+      if (current())
+        await motion.commit(() => {
+          // Rows that do not match the filters cannot stay on show.
+          if (replacing) {
+            result = null;
+            shownList = undefined;
+          }
+          error = String(e);
+        });
     } finally {
       if (current()) busy = false;
     }
@@ -205,27 +227,36 @@
 </script>
 
 {#snippet auditTable()}
-  <!-- Below the compact breakpoint each entry stacks into two lines. -->
-  <table class="w-full border-collapse text-left text-xs compact:block">
+  <!-- Pinned columns stay put between filters. When they stop fitting, each entry stacks into two lines. -->
+  <table
+    class="w-full table-fixed border-separate border-spacing-0 text-left text-xs table-stack:block"
+  >
     <caption class="sr-only">Administrative activity</caption>
+    <colgroup class="table-stack:hidden">
+      <col class="w-23" />
+      <col class="w-38" />
+      <col class="w-84" />
+      <col />
+    </colgroup>
     <thead
-      class="border-b border-line bg-surface-soft text-[0.62rem] text-muted compact:hidden"
+      class="border-b border-line bg-surface-soft text-[0.62rem] text-muted table-stack:hidden"
+      data-motion-row="head"
     >
       <tr>
-        <th scope="col" class="w-0 px-5.5 py-2 font-medium">Time</th>
-        <th scope="col" class="w-0 px-3 py-2 font-medium">User</th>
-        <th scope="col" class="w-0 px-3 py-2 font-medium">Event</th>
+        <th scope="col" class="px-5.5 py-2 font-medium">Time</th>
+        <th scope="col" class="px-3 py-2 font-medium">User</th>
+        <th scope="col" class="px-3 py-2 font-medium">Event</th>
         <th scope="col" class="px-3 py-2 font-medium">Target</th>
       </tr>
     </thead>
     {#each days as day, index (day.key)}
       {@const partial = index === days.length - 1 && !!result?.next_before}
-      <tbody class="compact:block">
-        <tr class="compact:block">
+      <tbody class="table-stack:block">
+        <tr class="table-stack:block" data-motion-row={`day:${day.key}`}>
           <th
             scope="colgroup"
             colspan="4"
-            class="bg-surface-strong px-5.5 py-1.5 text-[0.7rem] font-semibold tracking-normal text-foreground normal-case compact:block compact:px-4"
+            class="bg-surface-strong px-5.5 py-1.5 text-[0.7rem] font-semibold tracking-normal text-foreground normal-case compact:px-4 table-stack:block"
           >
             {day.label}<span class="ml-2 font-normal text-muted"
               >{day.rows.length}{partial ? '+' : ''}
@@ -235,18 +266,19 @@
         </tr>
         {#each day.rows as row (`audit:${row.id}`)}
           <tr
-            class="border-b border-line compact:grid compact:grid-cols-[auto_minmax(0,1fr)_auto] compact:items-center compact:gap-x-2 compact:gap-y-1 compact:px-4 compact:py-2"
+            data-motion-row={`audit:${row.id}`}
+            class="border-b border-line compact:px-4 table-stack:grid table-stack:grid-cols-[auto_minmax(0,1fr)_auto] table-stack:items-center table-stack:gap-x-2 table-stack:gap-y-1 table-stack:px-5.5 table-stack:py-2"
           >
             <td
-              class="px-5.5 py-1.5 whitespace-nowrap tabular-nums compact:order-2 compact:border-0 compact:p-0 compact:text-muted"
+              class="px-5.5 py-1.5 whitespace-nowrap tabular-nums table-stack:order-2 table-stack:border-0 table-stack:p-0 table-stack:text-muted"
               title={stampFormat.format((row.created_at ?? 0) * 1000)}
             >
               {clockFormat.format((row.created_at ?? 0) * 1000)}
             </td>
             <td
-              class="px-3 py-1.5 whitespace-nowrap compact:order-3 compact:border-0 compact:p-0"
+              class="px-3 py-1.5 table-stack:order-3 table-stack:border-0 table-stack:p-0"
             >
-              <span class="inline-flex items-center gap-2 align-middle">
+              <span class="flex min-w-0 items-center gap-2">
                 <span
                   aria-hidden="true"
                   class={[
@@ -261,14 +293,16 @@
                   {:else}<Cog size={12} />{/if}
                 </span>
                 <!-- No actor_id is a system event; an unmatched one was deleted. -->
-                <span class={row.actor ? undefined : 'text-muted italic'}
+                <span
+                  class={['truncate', !row.actor && 'text-muted italic']}
+                  title={row.actor ?? undefined}
                   >{row.actor ??
                     (row.actor_id ? 'Deleted user' : 'System')}</span
                 >
               </span>
             </td>
             <td
-              class="px-3 py-1.5 whitespace-nowrap compact:order-1 compact:col-span-2 compact:border-0 compact:p-0 compact:font-medium compact:whitespace-normal"
+              class="px-3 py-1.5 table-stack:order-1 table-stack:col-span-2 table-stack:border-0 table-stack:p-0 table-stack:font-medium"
               title={row.action}
             >
               {auditLabel(row.action ?? '')}<span
@@ -277,7 +311,7 @@
               >
             </td>
             <td
-              class="px-3 py-1.5 font-mono text-[0.6875rem] text-muted wrap-anywhere compact:order-4 compact:col-span-2 compact:border-0 compact:p-0"
+              class="px-3 py-1.5 font-mono text-[0.6875rem] text-muted wrap-anywhere table-stack:order-4 table-stack:col-span-2 table-stack:border-0 table-stack:p-0"
             >
               {row.target}
             </td>
@@ -343,8 +377,8 @@
 {/snippet}
 
 {#snippet state()}
-  {#if (result?.items.length ?? 0) === 0}
-    {#if busy}
+  {#if !result}
+    {#if motion.stale}
       <div class={audit ? cardBlockClass : ''}>
         <ContentSkeleton
           label={audit
@@ -352,16 +386,17 @@
             : 'Loading playback history'}
         />
       </div>
-    {:else if !error}
-      <p
-        class={['text-muted', audit && `m-0 ${cardBlockClass} text-xs`]}
-        role="status"
-      >
-        {audit && (auditUser || auditAction || auditGroup)
-          ? 'No activity matches these filters.'
-          : 'No activity in this view yet.'}
-      </p>
     {/if}
+  {:else if !hasRows && !error}
+    <p
+      class={['text-muted', audit && `m-0 ${cardBlockClass} text-xs`]}
+      role="status"
+      data-motion-row="empty"
+    >
+      {audit && (auditUser || auditAction || auditGroup)
+        ? 'No activity matches these filters.'
+        : 'No activity in this view yet.'}
+    </p>
   {/if}
 {/snippet}
 
@@ -377,25 +412,29 @@
       <Button
         variant="secondary"
         size="form"
-        disabled={busy}
+        disabled={motion.stale}
         onclick={() => void load()}>Refresh</Button
       >
     {/snippet}
     {@render auditFilters()}
-    {#if (result?.items.length ?? 0) > 0}
-      {@render auditTable()}
-    {/if}
-    {@render state()}
-    {#if result?.next_before}
-      <div class={cardBlockClass}>
-        <Button
-          variant="secondary"
-          size="form"
-          disabled={busy}
-          onclick={() => void load(audit, true)}>Load older activity</Button
-        >
-      </div>
-    {/if}
+    <RowMotionBody {motion} loaded={!!result} class="divide-y divide-line">
+      {#if hasRows}
+        {@render auditTable()}
+      {/if}
+      {@render state()}
+      {#if result?.next_before}
+        <div class={cardBlockClass} data-motion-row="older">
+          <Button
+            variant="secondary"
+            size="form"
+            class={quietDisabledClass}
+            disabled={busy}
+            onclick={() => void load({ more: true })}
+            >Load older activity</Button
+          >
+        </div>
+      {/if}
+    </RowMotionBody>
   </SettingsCard>
 {:else}
   <Panel>
@@ -404,71 +443,106 @@
       <Button
         variant="secondary"
         size="form"
-        disabled={busy}
+        disabled={motion.stale}
         onclick={() => void load()}>Refresh</Button
       >
     </SectionHeading>
-    {#if (result?.items.length ?? 0) > 0}
-      <div class="min-w-0 overflow-x-auto">
-        <table class="w-full min-w-[56rem] border-collapse text-left text-xs">
-          <caption class="sr-only">Playback history</caption>
-          <thead
-            class="border-b border-line bg-surface-soft text-[0.62rem] text-muted"
+    <RowMotionBody {motion} loaded={!!result}>
+      {#if hasRows}
+        <!-- Clips vertically so that rows moving past its edge cannot add a scrollbar. -->
+        <div class="min-w-0 overflow-x-auto overflow-y-hidden">
+          <table
+            class="w-full min-w-[60rem] table-fixed border-separate border-spacing-0 text-left text-xs"
           >
-            <tr>
-              <th scope="col" class="px-3 py-2 font-medium">Title</th>
-              {#if scope !== 'mine'}
-                <th scope="col" class="px-3 py-2 font-medium">User</th>
-              {/if}
-              <th scope="col" class="px-3 py-2 font-medium">Started</th>
-              <th scope="col" class="px-3 py-2 font-medium">Type</th>
-              <th scope="col" class="px-3 py-2 font-medium">Device</th>
-              <th scope="col" class="px-3 py-2 font-medium">Edition</th>
-              <th scope="col" class="px-3 py-2 font-medium">Progress</th>
-              <th scope="col" class="px-3 py-2 font-medium">Played</th>
-              <th scope="col" class="px-3 py-2 font-medium">State</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each result?.items ?? [] as row (`${row.kind ?? 'media'}:${row.id}`)}
-              <tr class="border-b border-line last:border-b-0">
-                <td class="max-w-72 px-3 py-3 font-medium wrap-anywhere">
-                  {row.title}
-                </td>
-                {#if scope !== 'mine'}
-                  <td class="px-3 py-3 whitespace-nowrap">{row.username}</td>
+            <caption class="sr-only">Playback history</caption>
+            <colgroup>
+              <col />
+              {#if appliedScope !== 'mine'}<col class="w-28" />{/if}
+              <col class="w-40" />
+              <col class="w-20" />
+              <col class="w-32" />
+              <col class="w-32" />
+              <col class="w-32" />
+              <col class="w-18" />
+              <col class="w-20" />
+            </colgroup>
+            <thead
+              class="border-b border-line bg-surface-soft text-[0.62rem] text-muted"
+              data-motion-row="head"
+            >
+              <tr>
+                <th scope="col" class="px-3 py-2 font-medium">Title</th>
+                {#if appliedScope !== 'mine'}
+                  <th scope="col" class="px-3 py-2 font-medium">User</th>
                 {/if}
-                <td class="px-3 py-3 whitespace-nowrap">
-                  {date(row.started_at)}
-                </td>
-                <td class="px-3 py-3 whitespace-nowrap">{kind(row.kind)}</td>
-                <td class="px-3 py-3 whitespace-nowrap">{row.device}</td>
-                <td class="px-3 py-3 whitespace-nowrap">
-                  {row.edition || 'Original edition'}
-                </td>
-                <td class="px-3 py-3 whitespace-nowrap tabular-nums">
-                  {#if (row.duration ?? 0) > 0}
-                    {time(row.position ?? 0)} / {time(row.duration ?? 0)}
-                  {:else}
-                    {time(row.played_seconds ?? 0)}
-                  {/if}
-                </td>
-                <td class="px-3 py-3 whitespace-nowrap tabular-nums">
-                  {time(row.played_seconds ?? 0)}
-                </td>
-                <td class="px-3 py-3 whitespace-nowrap">{row.state}</td>
+                <th scope="col" class="px-3 py-2 font-medium">Started</th>
+                <th scope="col" class="px-3 py-2 font-medium">Type</th>
+                <th scope="col" class="px-3 py-2 font-medium">Device</th>
+                <th scope="col" class="px-3 py-2 font-medium">Edition</th>
+                <th scope="col" class="px-3 py-2 font-medium">Progress</th>
+                <th scope="col" class="px-3 py-2 font-medium">Played</th>
+                <th scope="col" class="px-3 py-2 font-medium">State</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-    {@render state()}
-    {#if result?.next_before}<Button
-        variant="secondary"
-        size="form"
-        disabled={busy}
-        onclick={() => void load(audit, true)}>Load older activity</Button
-      >{/if}
+            </thead>
+            <tbody>
+              {#each result?.items ?? [] as row (`${row.kind ?? 'media'}:${row.id}`)}
+                <tr
+                  class="border-b border-line last:border-b-0"
+                  data-motion-row={`${row.kind ?? 'media'}:${row.id}`}
+                >
+                  <td class="px-3 py-3 font-medium wrap-anywhere">
+                    {row.title}
+                  </td>
+                  {#if appliedScope !== 'mine'}
+                    <td class="truncate px-3 py-3" title={row.username}>
+                      {row.username}
+                    </td>
+                  {/if}
+                  <td class="px-3 py-3 whitespace-nowrap">
+                    {date(row.started_at)}
+                  </td>
+                  <td class="px-3 py-3 whitespace-nowrap">{kind(row.kind)}</td>
+                  <td class="truncate px-3 py-3" title={row.device}>
+                    {row.device}
+                  </td>
+                  <td
+                    class="truncate px-3 py-3"
+                    title={row.edition || 'Original edition'}
+                  >
+                    {row.edition || 'Original edition'}
+                  </td>
+                  <td class="px-3 py-3 whitespace-nowrap tabular-nums">
+                    {#if (row.duration ?? 0) > 0}
+                      {time(row.position ?? 0)} / {time(row.duration ?? 0)}
+                    {:else}
+                      {time(row.played_seconds ?? 0)}
+                    {/if}
+                  </td>
+                  <td class="px-3 py-3 whitespace-nowrap tabular-nums">
+                    {time(row.played_seconds ?? 0)}
+                  </td>
+                  <td class="truncate px-3 py-3" title={row.state}>
+                    {row.state}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+      {@render state()}
+      {#if result?.next_before}
+        <div data-motion-row="older">
+          <Button
+            variant="secondary"
+            size="form"
+            class={quietDisabledClass}
+            disabled={busy}
+            onclick={() => void load({ more: true })}
+            >Load older activity</Button
+          >
+        </div>
+      {/if}
+    </RowMotionBody>
   </Panel>
 {/if}

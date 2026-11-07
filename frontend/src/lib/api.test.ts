@@ -33,6 +33,21 @@ it('invalidates navigation data after successful writes but preserves it after r
   expect(load).toHaveBeenCalledTimes(2);
 });
 
+it('a signal cancels the request it was given to', async () => {
+  const fetch = vi.fn(
+    (_url: string, { signal }: RequestInit) =>
+      new Promise((_, reject) =>
+        signal?.addEventListener('abort', () => reject(signal.reason)),
+      ),
+  );
+  vi.stubGlobal('fetch', fetch);
+  const controller = new AbortController();
+  const read = api('/admin/jobs', 'GET', undefined, controller.signal);
+  controller.abort();
+  await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+  expect(fetch.mock.calls[0][1].signal).toBe(controller.signal);
+});
+
 it('a late write acknowledgement cannot invalidate a new session snapshot', async () => {
   let finish!: (value: unknown) => void;
   vi.stubGlobal(

@@ -47,6 +47,12 @@ export const statTileClass =
 export const cardTableClass =
   'w-full text-xs [&_thead_th]:bg-surface-soft [&_thead_th]:px-5.5 [&_thead_th]:py-2.5 [&_tbody_th]:px-5.5 [&_tbody_th]:py-2.75 [&_tbody_th]:align-middle [&_td]:px-5.5 [&_td]:py-2.75 [&_td]:align-middle [&_tbody_tr:last-child>*]:border-b-0 compact:[&_thead_th]:px-4 compact:[&_tbody_th]:px-4 compact:[&_td]:px-4';
 
+// For a control disabled only during a read. It dims when RowMotion's rows do,
+// so a fast response does not make it flash. Important, since turning animations
+// off cancels delays, and this one is not motion.
+export const quietDisabledClass =
+  'transition-[color,background-color,border-color,opacity] disabled:delay-200!';
+
 // Padded block inside a card body for notices, prose or custom content.
 export const cardBlockClass = 'px-5.5 py-4 compact:px-4';
 

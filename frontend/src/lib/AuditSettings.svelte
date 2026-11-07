@@ -6,10 +6,16 @@
   import { LatestRequest } from './latest-request';
   import { RefreshTask } from './refresh-task';
   import Button from './ui/Button.svelte';
+  import { RowMotion } from './ui/row-motion.svelte';
+  import RowMotionBody from './ui/RowMotionBody.svelte';
   import SettingsCard from './ui/SettingsCard.svelte';
   import SettingRow from './ui/SettingRow.svelte';
   import StatusChip from './ui/StatusChip.svelte';
-  import { cardBlockClass, formControlClass } from './ui/styles';
+  import {
+    cardBlockClass,
+    formControlClass,
+    quietDisabledClass,
+  } from './ui/styles';
   import { twMerge } from 'tailwind-merge';
 
   let { user }: { user: User } = $props();
@@ -25,6 +31,10 @@
   };
   type Totals = { pending: number; history: number };
   const ids = $props.id();
+  const viewMotion = new RowMotion();
+  const listMotion = new RowMotion();
+  // What the select shows moves at once; what the page shows waits for its data.
+  let selected = $state('activity');
   let view = $state('activity');
   let items = $state<Item[]>([]);
   let totals = $state<Totals>({ pending: 0, history: 0 });
@@ -70,20 +80,36 @@
           ? 'info'
           : 'neutral';
 
-  async function refresh() {
+  async function refresh(signal: AbortSignal) {
     const current = requests.begin();
+    const next = selected;
     try {
       const result = await api<{ items: Item[]; totals: Totals }>(
         '/admin/retention/deletions',
+        'GET',
+        undefined,
+        signal,
       );
-      if (current()) {
+      if (!current()) return;
+      const apply = () => {
         items = result.items;
         totals = result.totals;
         loaded = true;
         error = '';
+        view = next;
+      };
+      if (view === next) {
+        viewMotion.release();
+        await listMotion.commit(apply, { live: true });
+      } else {
+        listMotion.settle();
+        await viewMotion.commit(apply, { dissolve: true });
       }
     } catch (failure) {
-      if (current()) error = String(failure);
+      if (!current()) return;
+      viewMotion.release();
+      error = String(failure);
+      view = next;
     }
   }
   async function act(item: Item, action: 'keep' | 'delete') {
@@ -106,8 +132,18 @@
       busy = false;
     }
   }
+  function select(next: string) {
+    selected = next;
+    if (next !== 'activity') {
+      viewMotion.hold();
+      return;
+    }
+    requests.invalidate();
+    if (view === next) viewMotion.release();
+    else void viewMotion.commit(() => (view = next), { dissolve: true });
+  }
   $effect(() => {
-    if (view === 'activity') return;
+    if (selected === 'activity') return;
     const task = new RefreshTask(refresh, 30_000, () => !busy);
     reads = task;
     untrack(() => task.start());
@@ -123,8 +159,13 @@
   <select
     id={`${ids}-view`}
     aria-label="Audit view"
-    class={twMerge(formControlClass, 'h-8.5 w-64 py-1.5 text-xs')}
-    bind:value={view}
+    class={twMerge(
+      formControlClass,
+      quietDisabledClass,
+      'h-8.5 w-64 py-1.5 text-xs',
+    )}
+    value={selected}
+    onchange={(event) => select(event.currentTarget.value)}
     disabled={busy}
   >
     <option value="activity">Administrative activity</option>
@@ -132,59 +173,75 @@
     <option value="deletions">Deletion history</option>
   </select>
 </div>
-{#if view === 'activity'}
-  <History {user} audit />
-{:else}
-  {#if error}<p class="col-span-full m-0 text-xs text-danger" role="alert">
-      {error}
-    </p>{/if}
-  <SettingsCard
-    aria-label={scheduled ? 'Scheduled deletions' : 'Deletion history'}
-    title={scheduled ? 'Scheduled deletions' : 'Deletion history'}
-    description={scheduled
-      ? 'Media waiting for its grace period to end. Keep cancels a deletion; Delete now skips the wait.'
-      : 'Outcomes of past automatic deletions.'}
-  >
-    {#snippet actions()}
-      <span class="text-xs text-muted"
-        >{total > visible.length ? `${n(visible.length)} of ` : ''}{n(total)}
-        {total === 1 ? 'item' : 'items'}</span
-      >
-    {/snippet}
-    {#if !loaded}
-      <p class="m-0 {cardBlockClass} text-xs text-muted" role="status">
-        {error ? 'Deletions could not be loaded.' : 'Loading deletions…'}
-      </p>
-    {:else}
-      {#each visible as item (item.id)}
-        <SettingRow
-          label={item.title}
-          description={`${reason(item)} · ${due(item)}${item.error ? ` · ${item.error}` : ''}`}
+<RowMotionBody motion={viewMotion} class="grid gap-5">
+  <!-- Stays mounted, so that coming back shows its rows and filters at once. -->
+  <div class="grid min-w-0 gap-5" hidden={view !== 'activity'}>
+    <History {user} audit active={view === 'activity'} />
+  </div>
+  {#if view !== 'activity'}
+    {#if error}<p class="m-0 text-xs text-danger" role="alert">
+        {error}
+      </p>{/if}
+    <SettingsCard
+      aria-label={scheduled ? 'Scheduled deletions' : 'Deletion history'}
+      title={scheduled ? 'Scheduled deletions' : 'Deletion history'}
+      description={scheduled
+        ? 'Media waiting for its grace period to end. Keep cancels a deletion; Delete now skips the wait.'
+        : 'Outcomes of past automatic deletions.'}
+    >
+      {#snippet actions()}
+        <span class="text-xs text-muted"
+          >{total > visible.length ? `${n(visible.length)} of ` : ''}{n(total)}
+          {total === 1 ? 'item' : 'items'}</span
         >
-          {#if scheduled}
-            <Button
-              variant="secondary"
-              size="form"
-              disabled={busy}
-              onclick={() => act(item, 'keep')}>Keep</Button
+      {/snippet}
+      <RowMotionBody motion={listMotion} class="divide-y divide-line">
+        {#if !loaded}
+          <p
+            class="m-0 {cardBlockClass} text-xs text-muted"
+            role="status"
+            data-motion-row="unavailable"
+          >
+            Deletions could not be loaded.
+          </p>
+        {:else}
+          {#each visible as item (item.id)}
+            <SettingRow
+              data-motion-row={item.id}
+              label={item.title}
+              description={`${reason(item)} · ${due(item)}${item.error ? ` · ${item.error}` : ''}`}
             >
-            <Button
-              variant="danger"
-              size="form"
-              disabled={busy}
-              onclick={() => act(item, 'delete')}>Delete now</Button
-            >
+              {#if scheduled}
+                <Button
+                  variant="secondary"
+                  size="form"
+                  class={quietDisabledClass}
+                  disabled={busy}
+                  onclick={() => act(item, 'keep')}>Keep</Button
+                >
+                <Button
+                  variant="danger"
+                  size="form"
+                  class={quietDisabledClass}
+                  disabled={busy}
+                  onclick={() => act(item, 'delete')}>Delete now</Button
+                >
+              {:else}
+                <StatusChip tone={stateTone(item.state)}
+                  >{stateLabel(item.state)}</StatusChip
+                >
+              {/if}
+            </SettingRow>
           {:else}
-            <StatusChip tone={stateTone(item.state)}
-              >{stateLabel(item.state)}</StatusChip
+            <p
+              class="m-0 {cardBlockClass} text-xs text-muted"
+              data-motion-row="empty"
             >
-          {/if}
-        </SettingRow>
-      {:else}
-        <p class="m-0 {cardBlockClass} text-xs text-muted">
-          {scheduled ? 'No scheduled deletions.' : 'No deletion history.'}
-        </p>
-      {/each}
-    {/if}
-  </SettingsCard>
-{/if}
+              {scheduled ? 'No scheduled deletions.' : 'No deletion history.'}
+            </p>
+          {/each}
+        {/if}
+      </RowMotionBody>
+    </SettingsCard>
+  {/if}
+</RowMotionBody>

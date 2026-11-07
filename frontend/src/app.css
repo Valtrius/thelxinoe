@@ -68,6 +68,9 @@ img[data-arrived] {
 /* Preserve the existing application breakpoints without changing provider sm/md/lg. */
 @custom-variant service-narrow (@media (max-width: 1050px));
 @custom-variant narrow (@media (max-width: 1000px));
+/* Settings tables pin their columns, which stop fitting beside the sidebars well
+   above the compact breakpoint. Declared first so that `compact:` overrides it. */
+@custom-variant table-stack (@container settings (max-width: 46rem));
 /* Keep compact and touch identical to the queries in lib/responsive.ts. */
 @custom-variant compact {
   @media (max-width: 720px),
