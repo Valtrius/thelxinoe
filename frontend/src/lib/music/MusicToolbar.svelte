@@ -1,19 +1,11 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import { fade } from 'svelte/transition';
-  import { DropdownMenu, Popover } from 'bits-ui';
-  import {
-    ArrowDown,
-    ArrowUp,
-    ArrowUpDown,
-    Ellipsis,
-    RefreshCw,
-    Search,
-  } from '@lucide/svelte';
+  import { Popover } from 'bits-ui';
+  import { ArrowDown, ArrowUp, ArrowUpDown, Search } from '@lucide/svelte';
   import { appearance, updateAppearance } from '../appearance';
   import { getAnimationDuration } from '../motion';
-  import { showToast } from '../providers/toasts';
-  import { loadRoots, scanRoot } from '../title/catalog';
+  import LibraryScanButton from '../LibraryScanButton.svelte';
   import Button from '../ui/Button.svelte';
   import ExclusiveChoiceGroup from '../ui/ExclusiveChoiceGroup.svelte';
   import Skeleton from '../ui/Skeleton.svelte';
@@ -78,31 +70,7 @@
   }
   onDestroy(() => clearTimeout(searchTimer));
 
-  let sortOpen = $state(false),
-    actionsOpen = $state(false);
-  const menuItemClass =
-    'flex h-8 w-full cursor-default items-center gap-[0.55rem] whitespace-nowrap px-[0.55rem] text-left text-[0.7rem] text-muted outline-none data-[highlighted]:bg-accent-soft data-[highlighted]:text-foreground [&_svg]:size-[0.85rem] compact:h-11 compact:text-[13px]';
-  async function scanLibrary() {
-    try {
-      const roots = (await loadRoots()).filter((root) => root.kind === 'music');
-      await Promise.all(roots.map((root) => scanRoot(root.id)));
-      showToast({
-        key: 'scan:Music',
-        tone: roots.length ? 'success' : 'warning',
-        title: 'Music',
-        message: roots.length
-          ? `Scanning ${roots.length} library ${roots.length === 1 ? 'folder' : 'folders'}.`
-          : 'No accessible media folders have been detected yet.',
-      });
-    } catch (e) {
-      showToast({
-        key: 'scan:Music',
-        tone: 'error',
-        title: 'Music',
-        message: String(e),
-      });
-    }
-  }
+  let sortOpen = $state(false);
   // The buttons answer the click, before the route reaches the next list.
   let selected = $derived<View>(view);
   const viewChoices = $derived(
@@ -196,34 +164,6 @@
       class="ml-1.5 w-16 narrow:hidden compact:hidden"
     />{/if}
   {#if admin}<div class="ml-auto">
-      <DropdownMenu.Root bind:open={actionsOpen}>
-        <DropdownMenu.Trigger>
-          {#snippet child({ props })}<Button
-              {...props}
-              variant="secondary"
-              size="icon"
-              aria-label="Music library actions"
-              title="Library actions"><Ellipsis size={16} /></Button
-            >{/snippet}
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
-          {#if actionsOpen}<MenuBackdrop
-              close={() => (actionsOpen = false)}
-            />{/if}
-          <DropdownMenu.Content
-            align="end"
-            sideOffset={4}
-            preventScroll={false}
-            onInteractOutside={ignoreBackdrop}
-            class="z-50 grid min-w-48 border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
-          >
-            <DropdownMenu.Item
-              class={menuItemClass}
-              onSelect={() => void scanLibrary()}
-              ><RefreshCw />Scan library</DropdownMenu.Item
-            >
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
-      </DropdownMenu.Root>
+      <LibraryScanButton domain="Music" />
     </div>{/if}
 </div>

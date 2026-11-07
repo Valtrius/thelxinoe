@@ -1,8 +1,7 @@
 <script lang="ts">
   import { revisions } from './server-events.svelte';
   import Notice from './ui/Notice.svelte';
-  import { Folder, RefreshCw, Ellipsis } from '@lucide/svelte';
-  import { DropdownMenu } from 'bits-ui';
+  import { Folder } from '@lucide/svelte';
   import { api } from './api';
   import { display } from './display.svelte';
   import { navigationCache } from './navigation-cache';
@@ -18,13 +17,11 @@
   import MediaSkeleton from './ui/MediaSkeleton.svelte';
   import Skeleton from './ui/Skeleton.svelte';
   import TitleMenu from './title/TitleMenu.svelte';
-  import { showToast } from './providers/toasts';
-  import { loadRoots, scanRoot } from './title/catalog';
   import type { TitleStatus } from './title/status';
   import { untrack, onDestroy } from 'svelte';
   import Button from './ui/Button.svelte';
-  import MenuBackdrop, { ignoreBackdrop } from './ui/MenuBackdrop.svelte';
   import { emptyClass } from './ui/styles';
+  import LibraryScanButton from './LibraryScanButton.svelte';
   import LibraryToolbar from './LibraryToolbar.svelte';
   import { appearance, updateAppearance } from './appearance';
   import {
@@ -217,32 +214,6 @@
       observedRevision = next;
     });
   });
-  let actionsOpen = $state(false);
-  const menuItemClass =
-    'flex h-8 w-full cursor-default items-center gap-[0.55rem] whitespace-nowrap px-[0.55rem] text-left text-[0.7rem] text-muted outline-none data-[highlighted]:bg-accent-soft data-[highlighted]:text-foreground [&_svg]:size-[0.85rem] compact:h-11 compact:text-[13px]';
-  async function scanLibrary() {
-    try {
-      const roots = (await loadRoots()).filter(
-        (root) => root.kind === domain.toLowerCase(),
-      );
-      await Promise.all(roots.map((root) => scanRoot(root.id)));
-      showToast({
-        key: `scan:${domain}`,
-        tone: roots.length ? 'success' : 'warning',
-        title: domain,
-        message: roots.length
-          ? `Scanning ${roots.length} library ${roots.length === 1 ? 'folder' : 'folders'}.`
-          : 'No accessible media folders have been detected yet.',
-      });
-    } catch (e) {
-      showToast({
-        key: `scan:${domain}`,
-        tone: 'error',
-        title: domain,
-        message: String(e),
-      });
-    }
-  }
 </script>
 
 <div class="mb-5 flex flex-wrap items-center gap-1.5">
@@ -260,37 +231,7 @@
   />{#if busy && !items.length}<Skeleton class="ml-1.5 w-16" />{:else}<span
       class="ml-1.5 text-muted">{total} items</span
     >{/if}
-  {#if admin}<div class="ml-auto">
-      <DropdownMenu.Root bind:open={actionsOpen}>
-        <DropdownMenu.Trigger>
-          {#snippet child({ props })}<Button
-              {...props}
-              variant="secondary"
-              size="icon"
-              aria-label={`${domain} library actions`}
-              title="Library actions"><Ellipsis size={16} /></Button
-            >{/snippet}
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
-          {#if actionsOpen}<MenuBackdrop
-              close={() => (actionsOpen = false)}
-            />{/if}
-          <DropdownMenu.Content
-            align="end"
-            sideOffset={4}
-            preventScroll={false}
-            onInteractOutside={ignoreBackdrop}
-            class="z-50 grid min-w-48 border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
-          >
-            <DropdownMenu.Item
-              class={menuItemClass}
-              onSelect={() => void scanLibrary()}
-              ><RefreshCw />Scan library</DropdownMenu.Item
-            >
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
-      </DropdownMenu.Root>
-    </div>{/if}
+  {#if admin}<div class="ml-auto"><LibraryScanButton {domain} /></div>{/if}
 </div>
 {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
 {#if items.length}<MediaGrid

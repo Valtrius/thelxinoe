@@ -133,13 +133,13 @@ for (const width of [721, 800, 1000]) {
     await page.goto('/#library/music');
     await button(page, 'Open playlists').click();
     await expect(rowsOf(frame(page)).first()).toBeVisible();
-    await expect(button(page, 'Music library actions')).toBeInViewport();
+    await expect(button(page, 'Scan music library')).toBeInViewport();
     const placed = await frame(page).boundingBox();
     await page.locator('[data-card-grid] .card-primary').first().click();
     await expect(button(page, /^Back to/)).toBeVisible();
     expect(await frame(page).boundingBox()).toEqual(placed);
     await button(page, /^Back to/).click();
-    await expect(button(page, 'Music library actions')).toBeVisible();
+    await expect(button(page, 'Scan music library')).toBeVisible();
     expect(await frame(page).boundingBox()).toEqual(placed);
   });
 }
@@ -175,7 +175,7 @@ test('the toolbar stays small on a phone, with its menu under it', async ({
   const placed = (await toolbar.boundingBox())!;
   // Two rows: its lists and its toggle, then its search and buttons.
   expect(placed.height).toBeLessThan(90);
-  await expect(button(page, 'Music library actions')).toBeInViewport();
+  await expect(button(page, 'Scan music library')).toBeInViewport();
 
   await scroller.evaluate((element) => (element.scrollTop = 300));
   await expect

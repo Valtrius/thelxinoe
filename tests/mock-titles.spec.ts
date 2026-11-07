@@ -412,14 +412,19 @@ test('requests open their title and keep secondary actions in a menu', async ({
 
 test('libraries scan without manual folder settings', async ({ page }) => {
   const errors = track(page);
-  await page.goto('/#library/shows');
-  await expect(card(page, 'show-0')).toBeVisible();
-  await page.getByRole('button', { name: 'Shows library actions' }).click();
-  await expect(
-    page.getByRole('menuitem', { name: 'Library folders' }),
-  ).toHaveCount(0);
-  await page.getByRole('menuitem', { name: 'Scan library' }).click();
-  await expect(page.getByText('Scanning 1 library folder.')).toBeVisible();
+  for (const [library, title] of [
+    ['movies', 'Movies'],
+    ['shows', 'Shows'],
+    ['music', 'Music'],
+  ]) {
+    await page.goto(`/#library/${library}`);
+    await page.getByRole('button', { name: `Scan ${library} library` }).click();
+    await expect(
+      page
+        .getByRole('status')
+        .filter({ has: page.getByRole('heading', { name: title }) }),
+    ).toContainText('Scanning 1 library folder.');
+  }
   await page.goto('/#settings/server');
   await expect(
     page.getByRole('heading', { name: 'Display defaults', exact: true }),
@@ -429,9 +434,30 @@ test('libraries scan without manual folder settings', async ({ page }) => {
 
   await view(page, 'user');
   await page.goto('/#library/shows');
+  await expect(card(page, 'show-0')).toBeVisible();
   await expect(
-    page.getByRole('button', { name: 'Shows library actions' }),
+    page.getByRole('button', { name: 'Scan shows library' }),
   ).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('the scan button cannot send a second scan until the first is sent', async ({
+  page,
+}) => {
+  const errors = track(page);
+  let release = () => {};
+  const released = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/api/v1/catalog/roots/*/scan', async (route) => {
+    await released;
+    await route.continue();
+  });
+  await page.goto('/#library/shows');
+  const scan = page.getByRole('button', { name: 'Scan shows library' });
+  await scan.click();
+  await expect(scan).toBeDisabled();
+  release();
+  await expect(page.getByText('Scanning 1 library folder.')).toBeVisible();
+  await expect(scan).toBeEnabled();
   expect(errors).toEqual([]);
 });
 
@@ -538,21 +564,9 @@ for (const touch of [false, true])
       await expect(menu).toHaveCount(0);
       expect(page.url()).toBe(url);
 
-      // A tap opens this menu on its pointerup; the tap's click must not close it.
       await press(
-        page.getByRole('button', {
-          name: 'Movies library actions',
-          exact: true,
-        }),
+        page.getByRole('button', { name: 'Filter movies', exact: true }),
       );
-      await expect(menu).toBeVisible();
-      await pressBelow();
-      await expect(menu).toHaveCount(0);
-      expect(page.url()).toBe(url);
-
-      await page
-        .getByRole('button', { name: 'Filter movies', exact: true })
-        .click();
       const filters = page.getByRole('dialog', { name: 'Filter movies' });
       await expect(filters).toBeVisible();
       await pressBelow();
