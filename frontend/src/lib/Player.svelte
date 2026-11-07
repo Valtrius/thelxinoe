@@ -16,6 +16,8 @@
     Minimize,
     Pause,
     Play,
+    RectangleHorizontal,
+    RectangleVertical,
     Volume2,
     VolumeX,
     X,
@@ -27,7 +29,12 @@
   import { playerHandleReveal, playerReveal } from './player-reveal';
   import { api } from './api';
   import { inBackground } from './page-readiness';
-  import { appearance, updateAppearance, videoMuted } from './appearance';
+  import {
+    appearance,
+    streamOrientation,
+    updateAppearance,
+    videoMuted,
+  } from './appearance';
   import { compactViewport, touchDevice } from './responsive';
   import {
     capabilities,
@@ -124,6 +131,15 @@
     nativeFullscreen = $state(false),
     viewportFullscreen = $state(false),
     speed = $state(1);
+  // An orientation can fall short of the quality asked for. The request stays
+  // as it was, so switching back restores it, and the menu marks what plays.
+  const menuQuality = $derived(
+    quality === 'auto' ||
+      !active?.qualities?.length ||
+      active.qualities.some((item) => item.value === quality)
+      ? quality
+      : (active.quality ?? 'auto'),
+  );
   // Phones and tablets play video at the device volume. Streamed music keeps
   // its own mute instead of changing the remembered video mute.
   const deviceVolume = $derived(touchDevice.current && !music);
@@ -721,6 +737,7 @@
           if (revision === generation) waitingTools = value;
         },
       },
+      $streamOrientation,
     );
     if (revision === generation && active) await stop();
     if (revision !== generation) {
@@ -732,14 +749,7 @@
       return;
     }
     active = result;
-    if (result.qualities?.length) {
-      if (quality.endsWith('mbps')) quality = 'auto';
-      else if (
-        quality !== 'auto' &&
-        !result.qualities.some((item) => item.value === quality)
-      )
-        quality = result.quality ?? 'auto';
-    }
+    if (result.qualities?.length && quality.endsWith('mbps')) quality = 'auto';
     activity = new PlaybackActivity();
     sequence = 0;
     position = result.position;
@@ -1368,6 +1378,24 @@
         role="group"
         aria-label="Playback settings"
       >
+        {#if active?.orientation}{@const next =
+            active.orientation === 'vertical'
+              ? 'horizontal'
+              : 'vertical'}<Button
+            size="icon"
+            variant="player"
+            aria-label={`Switch to ${next}`}
+            title={`Switch to ${next}`}
+            disabled={busy}
+            onclick={() => {
+              streamOrientation.set(next);
+              void changeOptions();
+            }}
+          >
+            {#if next === 'vertical'}<RectangleVertical
+                size={20}
+              />{:else}<RectangleHorizontal size={20} />{/if}
+          </Button>{/if}
         {#if chapters.length}<PlayerOption
             label="Chapters"
             value={String(chapter)}
@@ -1384,8 +1412,8 @@
           </PlayerOption>{/if}
         <PlayerOption
           label="Quality"
-          value={quality}
-          options={qualityOptions(active, info, quality, deliveredQuality)}
+          value={menuQuality}
+          options={qualityOptions(active, info, menuQuality, deliveredQuality)}
           disabled={busy || !active}
           open={optionMenu === 'quality'}
           setOpen={(open) => (optionMenu = open ? 'quality' : null)}

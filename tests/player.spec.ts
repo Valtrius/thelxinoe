@@ -290,6 +290,10 @@ async function fixture(
     styled?: boolean;
     qualities?: { value: string; label: string }[];
     autoQuality?: string;
+    /** The stream offers both orientations and starts in this one. */
+    orientation?: 'horizontal' | 'vertical';
+    /** The vertical renditions, which fall back to their first when one is missing. */
+    verticalQualities?: { value: string; label: string }[];
     local?: boolean;
     stalled?: boolean;
     // The conversion's playlist is gone: until a seek restarts it, or for good.
@@ -321,6 +325,7 @@ async function fixture(
     starts: [] as {
       media_id: string;
       position: number;
+      orientation?: string;
       options: {
         quality: string;
         subtitle: string | null;
@@ -592,6 +597,10 @@ async function fixture(
       const input = route.request().postDataJSON();
       state.starts.push(input);
       const burned = input.options.subtitle === 'embedded-3';
+      const vertical =
+        input.orientation === 'vertical'
+          ? options.verticalQualities
+          : undefined;
       await preparation.promise;
       if (state.fail)
         return route.fulfill({
@@ -606,12 +615,18 @@ async function fixture(
       return route.fulfill({
         json: {
           id: input.media_id === 'second' ? 'second' : 'fixture',
-          qualities: options.qualities,
+          qualities: vertical ?? options.qualities,
           quality: options.local
             ? undefined
             : input.options.quality === 'auto'
               ? state.autoQuality
-              : input.options.quality,
+              : vertical &&
+                  !vertical.some(({ value }) => value === input.options.quality)
+                ? vertical[0].value
+                : input.options.quality,
+          orientation: options.orientation
+            ? (input.orientation ?? options.orientation)
+            : null,
           mode: burned ? 'transcode' : (options.mode ?? 'direct'),
           ...(burned && {
             encoding: { video: true, audio: false, subtitle: 3 },
@@ -3172,6 +3187,194 @@ test('Original playback shows its decoded resolution', async ({
   });
 });
 
+test('a stream offering both orientations switches between them in the player', async ({
+  page,
+}) => {
+  const state = await fixture(page, {
+    live: true,
+    mode: 'remux',
+    orientation: 'horizontal',
+    qualities: [
+      { value: '1080p60', label: '1080p60' },
+      { value: '720p60', label: '720p60' },
+    ],
+  });
+  await decoded(page);
+  const quality = page.getByRole('button', { name: 'Quality', exact: true });
+  const toVertical = page.getByRole('button', {
+    name: 'Switch to vertical',
+    exact: true,
+  });
+  const toHorizontal = page.getByRole('button', {
+    name: 'Switch to horizontal',
+    exact: true,
+  });
+  expect(state.starts[0].orientation).toBe('horizontal');
+  await quality.click();
+  await page
+    .getByRole('menuitemradio', { name: '720p60', exact: true })
+    .click();
+  await expect.poll(() => state.starts.length).toBe(2);
+  expect(state.starts[1].orientation).toBe('horizontal');
+  await expect(toVertical).toBeEnabled();
+  await toVertical.click();
+  await expect.poll(() => state.starts.length).toBe(3);
+  expect(state.starts[2]).toMatchObject({
+    orientation: 'vertical',
+    options: { quality: '720p60' },
+  });
+  await expect(toHorizontal).toBeEnabled();
+  await expect(toVertical).toHaveCount(0);
+  // Another quality stays in the chosen orientation.
+  await quality.click();
+  await page
+    .getByRole('menuitemradio', { name: '1080p60', exact: true })
+    .click();
+  await expect.poll(() => state.starts.length).toBe(4);
+  expect(state.starts[3]).toMatchObject({
+    orientation: 'vertical',
+    options: { quality: '1080p60' },
+  });
+  await expect(toHorizontal).toBeEnabled();
+  await toHorizontal.click();
+  await expect.poll(() => state.starts.length).toBe(5);
+  expect(state.starts[4].orientation).toBe('horizontal');
+  await expect(toVertical).toBeEnabled();
+  expect(state.errors).toEqual([]);
+});
+test('an orientation falling short of the chosen quality does not lose it', async ({
+  page,
+}) => {
+  const state = await fixture(page, {
+    live: true,
+    mode: 'remux',
+    orientation: 'horizontal',
+    qualities: [
+      { value: '1080p60', label: '1080p60' },
+      { value: '720p60', label: '720p60' },
+    ],
+    verticalQualities: [{ value: '720p60', label: '720p60' }],
+  });
+  await decoded(page);
+  const quality = page.getByRole('button', { name: 'Quality', exact: true });
+  const option = (name: string) =>
+    page.getByRole('menuitemradio', { name, exact: true });
+  const toVertical = page.getByRole('button', {
+    name: 'Switch to vertical',
+    exact: true,
+  });
+  const toHorizontal = page.getByRole('button', {
+    name: 'Switch to horizontal',
+    exact: true,
+  });
+  await quality.click();
+  await option('1080p60').click();
+  await expect.poll(() => state.starts.length).toBe(2);
+  await expect(toVertical).toBeEnabled();
+  await toVertical.click();
+  await expect.poll(() => state.starts.length).toBe(3);
+  await expect(toHorizontal).toBeEnabled();
+  await quality.click();
+  await expect(option('720p60')).toBeChecked();
+  await expect(option('1080p60')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await toHorizontal.click();
+  await expect.poll(() => state.starts.length).toBe(4);
+  expect(state.starts[3]).toMatchObject({
+    orientation: 'horizontal',
+    options: { quality: '1080p60' },
+  });
+  await expect(toVertical).toBeEnabled();
+  await quality.click();
+  await expect(option('1080p60')).toBeChecked();
+  expect(state.errors).toEqual([]);
+});
+test('a switched orientation is remembered on this device', async ({
+  page,
+}) => {
+  const state = await fixture(page, {
+    live: true,
+    mode: 'remux',
+    orientation: 'horizontal',
+    qualities: [{ value: '1080p60', label: '1080p60' }],
+  });
+  await decoded(page);
+  const toHorizontal = page.getByRole('button', {
+    name: 'Switch to horizontal',
+    exact: true,
+  });
+  await page
+    .getByRole('button', { name: 'Switch to vertical', exact: true })
+    .click();
+  await expect.poll(() => state.starts.length).toBe(2);
+  await expect(toHorizontal).toBeEnabled();
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem('thelxinoe-stream-orientation:fixture'),
+    ),
+  ).toBe('vertical');
+  await page.reload();
+  await expect.poll(() => state.starts.length).toBe(3);
+  expect(state.starts[2].orientation).toBe('vertical');
+  await expect(toHorizontal).toBeEnabled();
+  await toHorizontal.click();
+  await expect.poll(() => state.starts.length).toBe(4);
+  expect(state.starts[3].orientation).toBe('horizontal');
+  await expect(
+    page.getByRole('button', { name: 'Switch to vertical', exact: true }),
+  ).toBeEnabled();
+  await page.reload();
+  await expect.poll(() => state.starts.length).toBe(5);
+  expect(state.starts[4].orientation).toBe('horizontal');
+  expect(state.errors).toEqual([]);
+});
+test('a stream with one orientation has no switch', async ({ page }) => {
+  const state = await fixture(page, {
+    live: true,
+    mode: 'remux',
+    qualities: [{ value: '1080p60', label: '1080p60' }],
+  });
+  await decoded(page);
+  await expect(page.getByRole('button', { name: /^Switch to / })).toHaveCount(
+    0,
+  );
+  expect(state.errors).toEqual([]);
+});
+test('the orientation switch fits the player controls on a phone', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 360, height: 740 });
+  await fixture(page, {
+    live: true,
+    mode: 'remux',
+    orientation: 'horizontal',
+    qualities: [{ value: '1080p60', label: '1080p60' }],
+  });
+  await decoded(page);
+  await page.locator('video').hover();
+  const fullscreen = page.getByRole('button', {
+    name: 'Fullscreen',
+    exact: true,
+  });
+  const toVertical = page.getByRole('button', {
+    name: 'Switch to vertical',
+    exact: true,
+  });
+  await expect(toVertical).toBeVisible();
+  await expect(fullscreen).toBeVisible();
+  const [box, end] = await Promise.all([
+    toVertical.boundingBox(),
+    fullscreen.boundingBox(),
+  ]);
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(end!.x + end!.width).toBeLessThanOrEqual(360);
+  await testInfo.attach('orientation-switch-phone', {
+    body: await page.screenshot({
+      path: '.local/player-ui/orientation-switch-phone.png',
+    }),
+    contentType: 'image/png',
+  });
+});
 test('Auto shows the delivered resolution only when selected', async ({
   page,
 }, testInfo) => {

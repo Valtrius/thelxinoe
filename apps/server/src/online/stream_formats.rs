@@ -1,6 +1,6 @@
 use crate::error::{ApiError, Result};
 use serde_json::{Value, json};
-use thelxinoe_playback::{Capabilities, RemoteSource};
+use thelxinoe_playback::{Capabilities, Orientation, RemoteSource};
 
 #[derive(Clone)]
 pub(super) struct Format {
@@ -31,13 +31,25 @@ impl Format {
     pub fn quality(&self) -> String {
         format!(
             "{}p{}",
-            self.height,
+            self.short_side(),
             if self.fps > 30 {
                 self.fps.to_string()
             } else {
                 String::new()
             }
         )
+    }
+    /// The side a resolution names: 1920×1080 and 1080×1920 are both 1080p.
+    pub fn short_side(&self) -> u64 {
+        self.width
+            .map_or(self.height, |width| width.min(self.height))
+    }
+    pub fn orientation(&self) -> Orientation {
+        if self.width.is_some_and(|width| width < self.height) {
+            Orientation::Vertical
+        } else {
+            Orientation::Horizontal
+        }
     }
     pub fn supported(&self, caps: &Capabilities) -> bool {
         caps.video.contains(&self.video)
@@ -266,7 +278,17 @@ pub(super) fn extract(
         "h264" => 1,
         _ => 0,
     };
-    output.sort_by_key(|f| (f.height, f.fps, efficiency(f), f.indexed, f.native));
+    output.sort_by_key(|f| {
+        (
+            f.short_side(),
+            f.fps,
+            // The default orientation stays the best rendition, which is probed first.
+            f.orientation() == Orientation::default(),
+            efficiency(f),
+            f.indexed,
+            f.native,
+        )
+    });
     let allowed = |f: &Format| !excluded.contains(&f.video.as_str());
     if output
         .iter()
@@ -290,6 +312,14 @@ pub(super) fn choices<'a>(formats: impl IntoIterator<Item = &'a Format>) -> Vec<
         }
     }
     choices
+}
+/// The resolution a quality names, with or without a frame rate. A rendition chosen in one
+/// orientation can be missing from the other, where `1080p60` means the best within 1080p.
+pub(super) fn named_resolution(quality: &str) -> Option<u64> {
+    let (height, rate) = quality.split_once('p')?;
+    rate.bytes()
+        .all(|byte| byte.is_ascii_digit())
+        .then(|| height.parse().ok())?
 }
 /// The original rendition for a requested quality among ascending `formats`:
 /// the best for Auto, the best within a bitrate or resolution, else the lowest.
@@ -319,9 +349,9 @@ pub(super) fn pick<'a>(formats: &[&'a Format], quality: &str) -> Result<&'a Form
     if let Some(format) = formats.iter().rev().find(|f| f.quality() == quality) {
         return Ok(format);
     }
-    let height = thelxinoe_playback::resolution(quality)
+    let height = named_resolution(quality)
         .ok_or_else(|| ApiError::conflict("This resolution is not available for this player"))?;
-    Ok(within(&|f| f.height <= u64::from(height)).unwrap())
+    Ok(within(&|f| f.short_side() <= height).unwrap())
 }
 pub(super) fn choose<'a>(
     formats: &'a [Format],
@@ -428,6 +458,133 @@ mod tests {
         assert!(best.indexed_for(&caps));
         caps.hls_container = Some("ts".into());
         assert!(!best.indexed_for(&caps));
+    }
+    /// Twitch's playlist for a channel broadcasting both shapes, whose top vertical
+    /// rendition is its only HEVC one.
+    fn dual_format() -> Vec<Format> {
+        let formats: Vec<_> = [
+            (284, 160, 30, "avc1.4D401F"),
+            (640, 360, 30, "avc1.4D401F"),
+            (852, 480, 30, "avc1.4D401F"),
+            (1280, 720, 60, "avc1.4D401F"),
+            (1920, 1080, 60, "avc1.4D401F"),
+            (160, 284, 30, "avc1.4D401F"),
+            (360, 640, 30, "avc1.4D401F"),
+            (480, 852, 30, "avc1.4D401F"),
+            (720, 1280, 60, "avc1.4D401F"),
+            (1080, 1920, 60, "hev1.1.6.L123.90"),
+        ]
+        .into_iter()
+        .map(|(width, height, fps, codec)| {
+            json!({"vcodec":codec,"acodec":"mp4a.40.2","protocol":"m3u8_native","url":format!("https://video.ttvnw.net/{width}x{height}.m3u8"),"ext":"mp4","width":width,"height":height,"fps":fps})
+        })
+        .collect();
+        extract(&json!({"is_live":true,"formats":formats}), None, &[]).unwrap()
+    }
+    fn captions(formats: &[Format]) -> Vec<String> {
+        choices(formats)
+            .iter()
+            .map(|v| v["value"].as_str().unwrap().to_owned())
+            .collect()
+    }
+    fn picture(format: &Format) -> (u64, u64) {
+        (format.width.unwrap(), format.height)
+    }
+    #[test]
+    fn dual_format_streams_rank_by_their_short_side_and_favor_horizontal() {
+        let h264 = Capabilities {
+            video: vec!["h264".into()],
+            audio: vec!["aac".into()],
+            hls: true,
+            ..Default::default()
+        };
+        let hevc = Capabilities {
+            video: vec!["h264".into(), "hevc".into()],
+            ..h264.clone()
+        };
+        let formats = dual_format();
+        for (quality, caps, expected) in [
+            ("auto", &h264, (1920, 1080)),
+            ("auto", &hevc, (1920, 1080)),
+            ("original", &hevc, (1920, 1080)),
+            ("1440p", &hevc, (1920, 1080)),
+            ("1080p", &h264, (1920, 1080)),
+            ("720p", &h264, (1280, 720)),
+        ] {
+            assert_eq!(
+                picture(choose(&formats, quality, caps).unwrap()),
+                expected,
+                "{quality}"
+            );
+        }
+        let oriented = |orientation| {
+            dual_format()
+                .into_iter()
+                .filter(|f| f.orientation() == orientation)
+                .collect::<Vec<_>>()
+        };
+        let horizontal = oriented(Orientation::Horizontal);
+        let vertical = oriented(Orientation::Vertical);
+        // Both orientations read the same in the quality menu.
+        assert_eq!(
+            captions(&horizontal),
+            ["1080p60", "720p60", "480p", "360p", "160p"]
+        );
+        assert_eq!(captions(&vertical), captions(&horizontal));
+        assert_eq!(
+            picture(choose(&vertical, "auto", &hevc).unwrap()),
+            (1080, 1920)
+        );
+        assert_eq!(
+            picture(choose(&vertical, "720p60", &hevc).unwrap()),
+            (720, 1280)
+        );
+        // A client without HEVC plays the top vertical rendition it can decode, also after
+        // switching from a horizontal rendition that has no equal for it.
+        assert_eq!(
+            picture(choose(&vertical, "auto", &h264).unwrap()),
+            (720, 1280)
+        );
+        assert_eq!(
+            picture(choose(&vertical, "1080p60", &h264).unwrap()),
+            (720, 1280)
+        );
+    }
+    #[test]
+    fn portrait_only_videos_match_resolutions_by_their_short_side() {
+        let formats: Vec<_> = [(360, 640), (608, 1080), (1080, 1920)]
+            .into_iter()
+            .map(|(width, height)| {
+                json!({"vcodec":"avc1.640028","acodec":"mp4a.40.2","protocol":"m3u8_native","url":format!("https://video.ttvnw.net/{height}.m3u8"),"ext":"mp4","width":width,"height":height})
+            })
+            .collect();
+        let formats = extract(&json!({"is_live":true,"formats":formats}), None, &[]).unwrap();
+        let caps = Capabilities {
+            video: vec!["h264".into()],
+            audio: vec!["aac".into()],
+            hls: true,
+            ..Default::default()
+        };
+        assert_eq!(captions(&formats), ["1080p", "608p", "360p"]);
+        assert_eq!(
+            picture(choose(&formats, "1080p", &caps).unwrap()),
+            (1080, 1920)
+        );
+    }
+    #[test]
+    fn named_resolutions_accept_only_a_height_and_frame_rate() {
+        for (quality, expected) in [
+            ("720p", Some(720)),
+            ("720p60", Some(720)),
+            ("160p", Some(160)),
+            ("auto", None),
+            ("original", None),
+            ("2mbps", None),
+            ("p60", None),
+            ("https://elsewhere/video", None),
+        ] {
+            assert_eq!(named_resolution(quality), expected, "{quality}");
+        }
     }
     #[test]
     fn excluded_codecs_leave_renditions_unless_every_delivery_needs_them() {

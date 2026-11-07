@@ -1,4 +1,5 @@
 import type { YoutubeCardShortcut } from './providers/types';
+import type { Orientation } from './playback';
 import { get, writable } from 'svelte/store';
 import { api } from './api';
 import { isServerUpdateInterruption } from './server-updates';
@@ -39,6 +40,7 @@ export const appearance = writable<Appearance>({
 });
 export const appearanceError = writable('');
 export const videoMuted = writable(false);
+export const streamOrientation = writable<Orientation>('horizontal');
 let owner = '';
 let motionLoaded = false;
 let generation = 0;
@@ -60,6 +62,10 @@ let changeId = 0;
 videoMuted.subscribe((muted) => {
   if (owner)
     localStorage.setItem(`thelxinoe-video-muted:${owner}`, String(muted));
+});
+streamOrientation.subscribe((orientation) => {
+  if (owner)
+    localStorage.setItem(`thelxinoe-stream-orientation:${owner}`, orientation);
 });
 function merge<T extends Partial<Appearance>>(
   value: T,
@@ -148,6 +154,12 @@ export async function loadAppearance(userId: string) {
   videoMuted.set(
     localStorage.getItem(`thelxinoe-video-muted:${userId}`) === 'true',
   );
+  streamOrientation.set(
+    localStorage.getItem(`thelxinoe-stream-orientation:${userId}`) ===
+      'vertical'
+      ? 'vertical'
+      : 'horizontal',
+  );
   const current = ++generation;
   const before = received;
   try {
@@ -196,6 +208,7 @@ export function resetAppearance() {
   motionLoaded = false;
   owner = '';
   videoMuted.set(false);
+  streamOrientation.set('horizontal');
   generation++;
   localChanges.clear();
   failedChanges.clear();

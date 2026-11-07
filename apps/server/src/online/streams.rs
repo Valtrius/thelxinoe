@@ -21,7 +21,7 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{collections::HashMap, fmt::Write, sync::Arc, time::Duration};
 use thelxinoe_core::{Principal, now};
-use thelxinoe_playback::{Chapter, Options, RemoteSource, Source};
+use thelxinoe_playback::{Chapter, Options, Orientation, RemoteSource, Source};
 use tokio::sync::Mutex;
 
 /// The revision of byte-range HLS playlists, which the server writes on request.
@@ -51,10 +51,19 @@ struct Prepared {
     quality: Option<String>,
     probe: Value,
     chapters: Vec<Chapter>,
+    /// The orientation delivered, for a live stream that offers both.
+    orientation: Option<Orientation>,
 }
 impl Prepared {
     fn media(&self) -> Source {
         media(&self.probe, self.duration, self.source.live)
+    }
+    /// Leaves one orientation's renditions of a stream that offers both.
+    fn orient(&mut self, orientation: Orientation) {
+        if self.orientation.is_some() {
+            self.formats.retain(|f| f.orientation() == orientation);
+            self.orientation = Some(orientation);
+        }
     }
     fn rendition(&self) -> &formats::Format {
         self.formats
@@ -143,7 +152,7 @@ pub(crate) async fn negotiate_source(
     selected: Option<&Value>,
     negotiate: impl Fn(&Source) -> thelxinoe_playback::Capabilities,
 ) -> Result<(Source, thelxinoe_playback::Capabilities, Option<String>)> {
-    let prepared = prepare(state, video).await?;
+    let prepared = prepare_for(state, video, Orientation::default()).await?;
     let mut base = prepared.clone();
     let playable = |format: &&formats::Format| format.source.live || format.indexed;
     let selected = selected
@@ -166,7 +175,7 @@ pub(crate) async fn negotiate_source(
         base.source = format.source.clone();
         base.quality = Some(format.quality());
     }
-    let picture = |format: &formats::Format| (format.height, format.fps);
+    let picture = |format: &formats::Format| (format.short_side(), format.fps);
     let largest = selected.map(picture);
     let others = prepared
         .formats
@@ -249,7 +258,9 @@ async fn authorize(state: &AppState, p: &Principal, video: &str) -> Result<()> {
 }
 pub(crate) async fn variants(state: &AppState, p: &Principal, video: &str) -> Result<Vec<Value>> {
     authorize(state, p, video).await?;
-    Ok(descriptors(&prepare(state, video).await?))
+    Ok(descriptors(
+        &prepare_for(state, video, Orientation::default()).await?,
+    ))
 }
 /// A video's renditions once extracted. Until then, extraction runs in the background,
 /// so the playback that usually follows finds them.
@@ -259,7 +270,8 @@ pub(crate) async fn extracted_variants(
     video: &str,
 ) -> Result<Option<Vec<Value>>> {
     authorize(state, p, video).await?;
-    if let Some(prepared) = cached(state, video).await {
+    if let Some(mut prepared) = cached(state, video).await {
+        prepared.orient(Orientation::default());
         return Ok(Some(descriptors(&prepared)));
     }
     let (state, video) = (state.clone(), video.to_owned());
@@ -344,6 +356,20 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
         pending.remove(video);
     }
     result
+}
+/// A video as one viewer receives it, in the orientation they watch. Viewers share a
+/// prepared stream, so this narrows each one's copy and makes its best rendition the source.
+async fn prepare_for(state: &AppState, video: &str, orientation: Orientation) -> Result<Prepared> {
+    let mut prepared = prepare(state, video).await?;
+    prepared.orient(orientation);
+    if let Some(best) = prepared.orientation.and(prepared.formats.last())
+        && best.source.video != prepared.source.video
+    {
+        let probe = inspect_codecs(state, best).await?;
+        prepared.source = best.source.clone();
+        prepared.probe = probe;
+    }
+    Ok(prepared)
 }
 /// Drops prepared renditions, so the next playback applies changed settings.
 pub(crate) async fn forget(state: &AppState) {
@@ -441,6 +467,14 @@ fn select(metadata: &Value, proxy: Option<String>, excluded: &[&str]) -> Result<
         } else {
             best.probe(duration)
         },
+        orientation: (live
+            && formats
+                .iter()
+                .any(|f| f.orientation() == Orientation::Horizontal)
+            && formats
+                .iter()
+                .any(|f| f.orientation() == Orientation::Vertical))
+        .then(|| best.orientation()),
         formats,
         quality: None,
         chapters: metadata["chapters"]
@@ -464,7 +498,7 @@ fn select(metadata: &Value, proxy: Option<String>, excluded: &[&str]) -> Result<
 
 pub(crate) async fn info(state: &AppState, p: &Principal, video: &str) -> Result<Value> {
     authorize(state, p, video).await?;
-    let prepared = prepare(state, video).await?;
+    let prepared = prepare_for(state, video, Orientation::default()).await?;
     let owner = p.user.id.clone();
     let id = video.to_owned();
     let position = storage::info(owner, id, &state.db).await?;
@@ -537,6 +571,7 @@ pub(crate) async fn create_with_delivery(
     options: Options,
     position: Option<f64>,
     vod: bool,
+    orientation: Option<Orientation>,
 ) -> Result<Value> {
     let live_title = if live::domain(video) {
         Some(live::authorize(state, p, video).await?.1)
@@ -552,7 +587,7 @@ pub(crate) async fn create_with_delivery(
     if position.is_some_and(|v| !v.is_finite() || v < 0.0) {
         return Err(ApiError::bad("Invalid stream position"));
     }
-    let prepared = prepare(state, video).await?;
+    let prepared = prepare_for(state, video, orientation.unwrap_or_default()).await?;
     if prepared.source.live {
         create_live(state, p, video, live_title, prepared, options).await
     } else {
@@ -695,7 +730,7 @@ async fn create_recorded(
     let mut input = options.clone();
     // Provider resolution choices select an existing rendition; only a bitrate
     // ceiling that the selected rendition exceeds needs local conversion.
-    if input.quality.ends_with('p') || format.quality() == input.quality {
+    if formats::named_resolution(&input.quality).is_some() || format.quality() == input.quality {
         input.quality = "auto".into();
     }
     input.capabilities.containers.clear();
@@ -823,7 +858,9 @@ async fn create_live(
             .filter(|f| f.supported(&options.capabilities)),
     );
     let mut input = options.clone();
-    if input.quality.ends_with('p') || prepared.quality.as_deref() == Some(input.quality.as_str()) {
+    if formats::named_resolution(&input.quality).is_some()
+        || prepared.quality.as_deref() == Some(input.quality.as_str())
+    {
         input.quality = "auto".into();
     }
     input.capabilities.containers.clear();
@@ -894,7 +931,7 @@ async fn create_live(
     }
     let grant = grants::issue(state, p, &format!("playback:{sid}"), 120).await?;
     Ok(
-        json!({"id":sid,"url":format!("{}?grant={grant}",session.path),"external_audio":null,"grant":grant,"mode":decision.mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":0.0,"duration":0.0,"timeline_start":0.0,"video":true,"live":true,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"chapters":[],"probe":prepared.probe,"replay_gain":"off"}),
+        json!({"id":sid,"url":format!("{}?grant={grant}",session.path),"external_audio":null,"grant":grant,"mode":decision.mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":0.0,"duration":0.0,"timeline_start":0.0,"video":true,"live":true,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"orientation":prepared.orientation,"chapters":[],"probe":prepared.probe,"replay_gain":"off"}),
     )
 }
 pub(crate) async fn validate(state: &AppState, id: &str) -> Result<()> {
@@ -1057,6 +1094,108 @@ mod tests {
         let mut malformed = metadata(false);
         malformed["formats"][0]["url"] = json!("https://localhost/private");
         assert!(select(&malformed, None, &[]).is_err());
+    }
+    fn dual_format() -> Value {
+        let rendition = |width: u64, height: u64| json!({"vcodec":"avc1.640028","acodec":"mp4a.40.2","protocol":"m3u8_native","ext":"mp4","width":width,"height":height,"url":format!("https://video.ttvnw.net/{width}x{height}.m3u8")});
+        json!({"is_live":true,"formats":[rendition(1280,720),rendition(720,1280),rendition(1920,1080),rendition(1080,1920)]})
+    }
+    #[test]
+    fn only_live_streams_with_both_shapes_offer_an_orientation() {
+        let live = select(&dual_format(), None, &[]).unwrap();
+        assert_eq!(live.orientation, Some(Orientation::Horizontal));
+        assert!(live.source.video.ends_with("1920x1080.m3u8"));
+        let mut portrait = dual_format();
+        portrait["formats"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|f| f["width"].as_u64() < f["height"].as_u64());
+        let portrait = select(&portrait, None, &[]).unwrap();
+        assert_eq!(portrait.orientation, None);
+        assert_eq!(portrait.formats.len(), 2);
+        assert_eq!(
+            select(&metadata(true), None, &[]).unwrap().orientation,
+            None
+        );
+        assert_eq!(
+            select(&metadata(false), None, &[]).unwrap().orientation,
+            None
+        );
+    }
+    #[tokio::test]
+    async fn a_request_chooses_the_orientation_and_horizontal_is_the_default() {
+        let (_temp, state, cookie) = fixture().await;
+        let video = "twitch:42";
+        state
+            .online
+            .streams
+            .prepared
+            .lock()
+            .await
+            .insert(video.into(), select(&dual_format(), None, &[]).unwrap());
+        let address = ("https://video.ttvnw.net/1080x1920.m3u8".to_owned(), None);
+        state
+            .online
+            .streams
+            .probes
+            .lock()
+            .await
+            .insert(address, (now() + 300, json!({"shape":"vertical"})));
+        let delivered = |prepared: &Prepared| {
+            assert!(
+                prepared
+                    .formats
+                    .iter()
+                    .all(|f| Some(f.orientation()) == prepared.orientation)
+            );
+            (
+                prepared.orientation.unwrap(),
+                prepared.source.video.rsplit('/').next().unwrap().to_owned(),
+            )
+        };
+
+        let horizontal = prepare_for(&state, video, Orientation::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            delivered(&horizontal),
+            (Orientation::Horizontal, "1920x1080.m3u8".to_owned())
+        );
+        assert_eq!(
+            horizontal
+                .formats
+                .iter()
+                .map(|f| f.quality())
+                .collect::<Vec<_>>(),
+            ["720p", "1080p"]
+        );
+        // Clients without a switch, such as Jellyfin's, are offered horizontal renditions.
+        assert!(
+            descriptors(&horizontal)
+                .iter()
+                .all(|v| v["width"].as_u64() > v["height"].as_u64())
+        );
+        let vertical = prepare_for(&state, video, Orientation::Vertical)
+            .await
+            .unwrap();
+        assert_eq!(
+            delivered(&vertical),
+            (Orientation::Vertical, "1080x1920.m3u8".to_owned())
+        );
+        assert_eq!(vertical.probe["shape"], "vertical");
+        assert_eq!(vertical.rendition().height, 1920);
+        // Viewers keep sharing the stream's full extraction.
+        assert_eq!(cached(&state, video).await.unwrap().formats.len(), 4);
+
+        // A client that remembers no orientation sends null. This viewer may not watch the
+        // stream, so a request that reads as valid ends there.
+        for (orientation, status) in [
+            (json!("sideways"), StatusCode::UNPROCESSABLE_ENTITY),
+            (Value::Null, StatusCode::NOT_FOUND),
+        ] {
+            let body = json!({"media_id":video,"options":{},"orientation":orientation});
+            let response = call(&state, "/api/v1/playback", "POST", body, &cookie).await;
+            assert_eq!(response.0, status);
+        }
     }
     #[test]
     fn signed_addresses_are_reused_until_shortly_before_they_expire() {

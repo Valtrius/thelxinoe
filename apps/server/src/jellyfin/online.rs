@@ -760,6 +760,7 @@ pub async fn playback_info(
             file_id: None,
             position: Some(0.0),
             options,
+            orientation: None,
         },
         true,
     )

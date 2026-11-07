@@ -31,6 +31,7 @@ class Streamlink:
             '2160p60': Stream('2160p60', 3840, 2160, 60, ['av01.0.13M.08', 'mp4a.40.2']),
             '4320p': Stream('4320p', 7680, 4320, 24, ['av01.0.16M.08', 'mp4a.40.2']),
             '720p': Stream('720p', 1280, 720, None, None),
+            '1920p60_portrait': Stream('1920p60_portrait', 1080, 1920, 60, ['hev1.1.6.L123.90', 'mp4a.40.2']),
         }
         return {**variants, 'best': variants['4320p'], 'worst': variants['1080p'],
                 'audio_only': Stream('audio', 0, 0, 0, ['mp4a.40.2'])}
@@ -62,9 +63,11 @@ class ProviderVariants(unittest.TestCase):
         frames = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(frames[2], frames[1])
         formats = frames[1]["formats"]
-        self.assertEqual(len(formats), 6)
-        self.assertEqual({f["height"] for f in formats}, {720, 1080, 1440, 2160, 4320})
+        self.assertEqual(len(formats), 7)
+        self.assertEqual({f["height"] for f in formats}, {720, 1080, 1440, 1920, 2160, 4320})
         self.assertEqual(next(f for f in formats if f["format_id"] == "1080p")["fps"], 29.97)
         self.assertEqual(next(f for f in formats if f["format_id"] == "1080p60")["fps"], 59.94)
         self.assertEqual(next(f for f in formats if f["height"] == 4320)["vcodec"], "av01.0.16M.08")
         self.assertIsNone(next(f for f in formats if f["height"] == 720)["fps"])
+        # The server tells a vertical rendition by its picture, on every provider.
+        self.assertEqual(next(f for f in formats if f["height"] == 1920)["width"], 1080)

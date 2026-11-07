@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Stdio, time::Duration};
 use thelxinoe_core::{Principal, id, now};
-use thelxinoe_playback::{CleanupReason, Options, Preferences, Source, Track};
+use thelxinoe_playback::{CleanupReason, Options, Orientation, Preferences, Source, Track};
 use tower::ServiceExt;
 
 pub async fn source(state: &AppState, media: &str, file: Option<&str>) -> Result<Source> {
@@ -112,6 +112,9 @@ pub struct Create {
     pub file_id: Option<String>,
     pub position: Option<f64>,
     pub options: Options,
+    /// The orientation to play when a stream offers both, else horizontal.
+    #[serde(default)]
+    pub orientation: Option<Orientation>,
 }
 pub async fn create(
     State(state): State<AppState>,
@@ -139,6 +142,7 @@ pub(crate) async fn create_with_delivery(
             input.options,
             input.position,
             vod,
+            input.orientation,
         )
         .await;
     }
@@ -156,6 +160,7 @@ pub(crate) async fn create_with_delivery(
                     input.options,
                     input.position,
                     vod,
+                    input.orientation,
                 )
                 .await;
             }
