@@ -114,6 +114,7 @@ export type Probe = {
     profile?: string;
     level?: number;
     pix_fmt?: string;
+    width?: number;
     height?: number;
     avg_frame_rate?: string;
     r_frame_rate?: string;
@@ -387,6 +388,12 @@ export function time(value: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+/** The side a picture's resolution is named after, whichever way it is turned. */
+export function shortSide(stream?: { width?: number; height?: number }) {
+  return stream?.width && stream.height
+    ? Math.min(stream.width, stream.height)
+    : stream?.height;
+}
 export function qualityOptions(
   playback: Playback | null,
   info: MediaInfo | null,
@@ -401,17 +408,17 @@ export function qualityOptions(
   if (playback?.qualities?.length) return [automatic, ...playback.qualities];
   if (playback && !playback.video)
     return [automatic, { value: 'original', label: 'Original' }];
-  const height = (
+  const side = shortSide(
     info?.sources
       .flatMap((source) => source.probe.streams ?? [])
       .find((stream) => stream.codec_type === 'video') ??
-    playback?.probe.streams?.find((stream) => stream.codec_type === 'video')
-  )?.height;
+      playback?.probe.streams?.find((stream) => stream.codec_type === 'video'),
+  );
   return [
     automatic,
-    { value: 'original', label: `Original${height ? ` (${height}p)` : ''}` },
+    { value: 'original', label: `Original${side ? ` (${side}p)` : ''}` },
     ...[4320, 2160, 1440, 1080, 720, 480, 360]
-      .filter((value) => !height || value <= height)
+      .filter((value) => !side || value <= side)
       .map((value) => ({ value: `${value}p`, label: `${value}p` })),
   ];
 }

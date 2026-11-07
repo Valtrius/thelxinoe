@@ -222,9 +222,14 @@ pub fn decision(source: &Source, options: &Options) -> Result<Decision> {
         _ => &extension,
     };
     let resolution_limit = resolution(&options.quality);
-    // A resolution is a ceiling, rather than a request to re-encode the same pixels.
+    // A resolution is a ceiling on the short side, rather than a request to re-encode the same
+    // pixels.
     let resize = video.is_some_and(|v| {
-        resolution_limit.is_some_and(|h| number(&v["height"]).is_none_or(|n| n > f64::from(h)))
+        resolution_limit.is_some_and(|limit| {
+            number(&v["height"]).is_none_or(|height| {
+                number(&v["width"]).map_or(height, |width| width.min(height)) > f64::from(limit)
+            })
+        })
     });
     let source_rate = number(&source.probe["format"]["bit_rate"]).or_else(|| {
         (source.size > 0 && source.duration() > 0.0)
