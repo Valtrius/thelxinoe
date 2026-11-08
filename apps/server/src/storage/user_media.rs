@@ -305,13 +305,13 @@ mod tests {
                         params![id, file],
                     )?;
                     // A file that also holds the previous episode.
-                    if next(6) == 0 {
-                        if let Some((previous, _)) = episodes.last() {
-                            db.execute(
-                                "INSERT OR IGNORE INTO media_sources VALUES (?1,?2)",
-                                params![previous, file],
-                            )?;
-                        }
+                    if next(6) == 0
+                        && let Some((previous, _)) = episodes.last()
+                    {
+                        db.execute(
+                            "INSERT OR IGNORE INTO media_sources VALUES (?1,?2)",
+                            params![previous, file],
+                        )?;
                     }
                     episodes.push((id, file));
                 }
