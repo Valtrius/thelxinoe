@@ -375,9 +375,11 @@ test('requests open their title and keep secondary actions in a menu', async ({
   await expect(
     page.getByRole('heading', { name: 'Media requests', exact: true }),
   ).toBeVisible();
+  // A Seerr request; music requests below it may load first.
   const pending = page
     .locator('article')
     .filter({ hasText: 'Pending approval' })
+    .filter({ has: page.getByRole('button', { name: /^More actions for / }) })
     .first();
   await expect(pending.getByRole('button', { name: 'Approve' })).toBeVisible();
   await pending.getByRole('button', { name: /^More actions for / }).click();
@@ -397,15 +399,15 @@ test('requests open their title and keep secondary actions in a menu', async ({
   await expect(own.first()).toBeVisible();
   await expect(own.getByRole('button', { name: 'Approve' })).toHaveCount(0);
   await own
-    .first()
     .getByRole('button', { name: /^More actions for / })
+    .first()
     .click();
   await expect(
     page.getByRole('menuitem', { name: 'Cancel request' }),
   ).toBeVisible();
   // Music requests follow, without approval for a regular user.
   const music = page.getByRole('region', { name: 'Music requests' });
-  await expect(music).toContainText('Night Ferry');
+  await expect(music).toContainText('Harbor Lights');
   await expect(music.getByRole('button', { name: 'Approve' })).toHaveCount(0);
   expect(errors).toEqual([]);
 });

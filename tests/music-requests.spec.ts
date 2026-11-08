@@ -8,6 +8,7 @@ const album = (index: number, title: string, artist: string) => ({
   year: 2026,
   cover: `/api/v1/acquisition/music/covers/${index}`,
   in_library: false,
+  requestable: true,
   request: null,
 });
 
@@ -40,15 +41,16 @@ test('music requests work without Seerr, from the Music tab to Requests', async 
   );
   await page.route(
     (url) =>
-      /^\/api\/v1\/acquisition\/music\/(artists|trending|fresh)$/.test(
+      /^\/api\/v1\/acquisition\/music\/feeds\/(missing|similar|trending)$/.test(
         url.pathname,
       ),
     (route) => {
       const feed = new URL(route.request().url()).pathname.split('/').pop();
       return route.fulfill({
         json: {
+          artist: null,
           items:
-            feed === 'artists'
+            feed === 'missing'
               ? [album(1, 'Long Exposure', 'Harbor Lights')]
               : feed === 'trending'
                 ? [
@@ -69,6 +71,11 @@ test('music requests work without Seerr, from the Music tab to Requests', async 
       requests.unshift({
         id: 'request-1',
         title: 'Night Ferry',
+        target: 'item',
+        external_id: '00000000-0000-4000-8000-000000000003',
+        artist: 'Copper Sky',
+        artist_id: null,
+        kind: 'lidarr',
         state: 'pending',
         created_at: 1,
         error: null,
@@ -87,12 +94,18 @@ test('music requests work without Seerr, from the Music tab to Requests', async 
     'aria-current',
     'page',
   );
-  const trending = page.getByRole('region', { name: 'Trending albums' });
+  await expect(
+    page
+      .getByRole('region', { name: 'More from your artists' })
+      .getByRole('article', { name: 'Long Exposure' }),
+  ).toBeVisible();
+  const trending = page.getByRole('region', { name: 'Trending this week' });
   await expect(
     trending.getByRole('article', { name: 'Slow Weather' }),
   ).toContainText('In library');
+  // A row with nothing to show is left out.
   await expect(
-    page.getByRole('region', { name: 'Fresh releases' }),
+    page.getByRole('region', { name: 'Similar artists' }),
   ).toHaveCount(0);
   await trending.getByRole('button', { name: 'Request Night Ferry' }).click();
   await expect(
@@ -102,6 +115,7 @@ test('music requests work without Seerr, from the Music tab to Requests', async 
     {
       service_id: 'manager-lidarr',
       external_id: '00000000-0000-4000-8000-000000000003',
+      target: 'item',
     },
   ]);
   await page.screenshot({ path: testInfo.outputPath('music-tab.png') });

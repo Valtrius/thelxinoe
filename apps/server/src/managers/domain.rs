@@ -135,6 +135,22 @@ impl RequestState {
         }
     }
 }
+/// What a request asks its manager for: the title itself, or an artist's new releases.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum RequestTarget {
+    #[default]
+    Item,
+    Artist,
+}
+impl RequestTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Item => "item",
+            Self::Artist => "artist",
+        }
+    }
+}
 pub(super) struct CreateAcquisition {
     pub user_id: String,
     pub administrator: bool,
@@ -142,6 +158,9 @@ pub(super) struct CreateAcquisition {
     pub service_generation: String,
     pub external_id: String,
     pub title: String,
+    pub target: RequestTarget,
+    /// A music request's artist name and MusicBrainz ID.
+    pub artist: Option<(String, String)>,
 }
 pub(super) struct DecideAcquisition {
     pub id: String,
@@ -158,4 +177,5 @@ pub(super) struct AcquisitionRequest {
     pub service_generation: String,
     pub external_id: String,
     pub state: RequestState,
+    pub target: RequestTarget,
 }

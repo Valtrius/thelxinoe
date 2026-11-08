@@ -133,6 +133,8 @@
         {admin}
         {play}
         openAlbum={(id) => openAlbum(id, item?.id)}
+        openDiscography={(artist) =>
+          go({ section: 'Discover', settings: route.settings, artist })}
       />{/key}{:else}{#key item.id}<AlbumPage
         album={item}
         {artistName}

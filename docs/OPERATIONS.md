@@ -40,7 +40,7 @@ Install **Seerr** in Media services. Home provides discovery, search, movie/show
 
 The server manages Seerr API credentials and maps each signed-in Thelxinoe user to a local Seerr account. Regular users request media and see their own queue; administrators approve, decline, or retry requests. The existing per-user automatic approval setting also applies. Seerr's local and media-server sign-in are disabled for managed installations.
 
-The **Music** tab requests albums through Lidarr and works without Seerr. The server fetches its charts from `api.listenbrainz.org` and album covers from `coverartarchive.org`, which redirects to `archive.org`.
+The **Music** tab requests albums and artists' new releases through Lidarr and works without Seerr. The server fetches discographies and tracklists from `musicbrainz.org`, charts and similar artists from `api.listenbrainz.org` and `labs.api.listenbrainz.org`, album covers from `coverartarchive.org`, which redirects to `archive.org`, and artist pictures from `images.lidarr.audio`. It keeps the pictures in its cache directory for 30 days.
 
 Upstream Seerr requires an initial media-server administrator before it exposes local-user creation. Managed setup performs that handshake against a temporary empty endpoint, authenticated with a random token that expires after two minutes and is revoked as soon as setup finishes. It exposes no catalog or Thelxinoe login. Setup then clears the media-server type; subsequent availability scans come from Arr. The update preflight verifies the Seerr API and existing owner against copied state; first-run initialization also needs checking when qualifying new upstream releases. [Adapter](../apps/server/src/managers/seerr.rs).
 

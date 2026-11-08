@@ -588,7 +588,12 @@ CREATE TABLE acquisition_requests (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     manager_id INTEGER,
-    error TEXT
+    error TEXT,
+    -- 'artist' asks the manager to monitor an artist's new releases.
+    target TEXT NOT NULL DEFAULT 'item' CHECK(target IN ('item','artist')),
+    -- The music request's artist and its MusicBrainz ID.
+    artist TEXT,
+    artist_id TEXT
 ) STRICT;
 
 CREATE TABLE manager_bindings (
@@ -1064,7 +1069,7 @@ CREATE INDEX playback_youtube ON playback_sessions(youtube_video_id,state,update
 
 CREATE INDEX kick_ready ON kick_channels(next_run,last_turn);
 
-CREATE UNIQUE INDEX acquisition_own_active ON acquisition_requests(user_id,service_id,external_id) WHERE state NOT IN ('denied','cancelled','failed');
+CREATE UNIQUE INDEX acquisition_own_active ON acquisition_requests(user_id,service_id,external_id) WHERE state NOT IN ('denied','cancelled','failed') AND NOT (target='artist' AND state IN ('requested','available'));
 
 CREATE UNIQUE INDEX retention_pending_media ON retention_candidates(media_id) WHERE state IN ('pending','executing');
 

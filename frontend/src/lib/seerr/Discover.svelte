@@ -28,6 +28,7 @@
   import { rowCardSizes } from './MediaRow.svelte';
   import MusicDiscover from '../music-requests/MusicDiscover.svelte';
   import MusicRequests from '../music-requests/MusicRequests.svelte';
+  import MusicArtist from '../music-requests/MusicArtist.svelte';
   import type { MusicService } from '../music-requests/types';
   import TitlePage from '../title/TitlePage.svelte';
   import type { MediaChoice } from '../playback';
@@ -47,8 +48,11 @@
     user,
     settings,
     detail,
+    artist,
     showRequests = false,
     openMedia,
+    openArtist,
+    openLibrary,
     back,
     searchQuery,
     searchChanged,
@@ -59,8 +63,12 @@
     play: (choice: MediaChoice) => void;
     settings: () => void;
     detail?: { kind: MediaKind; id: number };
+    /** A music artist's MusicBrainz ID. */
+    artist?: string;
     showRequests?: boolean;
     openMedia: (detail: { kind: MediaKind; id: number }) => void;
+    openArtist: (artist: string) => void;
+    openLibrary: (item: string) => void;
     back: () => void;
     searchQuery?: string;
     searchChanged: (query: string) => void;
@@ -188,11 +196,15 @@
     document.querySelector('[data-workspace-scroll]') ??
     document.querySelector('.workspace-scroll');
   $effect(() => {
-    if (!selected)
+    if (!selected && !artist)
       void tick().then(() => {
-        if (active && !selected)
+        if (active && !selected && !artist)
           scrollWorkspace()?.scrollTo({ top: browseScroll });
       });
+  });
+  // An artist page belongs to the music tab, which it returns to.
+  $effect(() => {
+    if (artist) untrack(() => (tab = 'music'));
   });
   $effect(() => {
     if (showRequests) tab = 'requests';
@@ -216,6 +228,11 @@
   function openTarget(target: { kind: MediaKind; id: number }) {
     if (!selected) browseScroll = scrollWorkspace()?.scrollTop ?? 0;
     openMedia(target);
+    scrollWorkspace()?.scrollTo({ top: 0 });
+  }
+  function showArtist(id: string) {
+    if (!artist) browseScroll = scrollWorkspace()?.scrollTop ?? 0;
+    openArtist(id);
     scrollWorkspace()?.scrollTo({ top: 0 });
   }
   const menuItemClass =
@@ -484,6 +501,8 @@
       {play}
       openTitle={openTarget}
     />{/key}
+{:else if artist}
+  {#key artist}<MusicArtist {user} id={artist} {back} {openLibrary} />{/key}
 {:else}
   <div class="w-full min-w-0">
     <form
@@ -559,6 +578,7 @@
         {user}
         {query}
         {settings}
+        openArtist={showArtist}
         bind:searching={musicSearching}
       />{:else if !configured && tab !== 'requests'}<section
         class="grid min-h-85 place-content-center justify-items-center gap-4 text-center"

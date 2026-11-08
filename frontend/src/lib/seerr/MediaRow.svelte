@@ -9,7 +9,12 @@
   import { ChevronLeft, ChevronRight } from '@lucide/svelte';
   import Button from '../ui/Button.svelte';
   import { scrollWithMotion } from '../motion';
-  let { label, children } = $props<{ label: string; children: Snippet }>();
+  let { label, children, action } = $props<{
+    label: string;
+    children: Snippet;
+    /** A link beside the row's scroll buttons. */
+    action?: Snippet;
+  }>();
   let rail: HTMLDivElement;
   function scroll(direction: number) {
     scrollWithMotion(rail, {
@@ -25,7 +30,8 @@
 >
   <div class="mb-4 flex items-center justify-between gap-3">
     <h2 class="text-base font-semibold tracking-tight">{label}</h2>
-    <div class="flex gap-1">
+    <div class="flex items-center gap-1">
+      {#if action}{@render action()}{/if}
       <Button
         variant="ghost"
         size="sm"

@@ -40,7 +40,7 @@
     <ContentSkeleton label="Loading settings" variant="settings" />
   {:else if route.section === 'Statistics'}
     <ContentSkeleton label="Loading statistics" variant="statistics" />
-  {:else if (route.section === 'Discover' && route.detail) || (['Movies', 'Shows', 'Music'].includes(route.section) && route.item)}
+  {:else if (route.section === 'Discover' && (route.detail || route.artist)) || (['Movies', 'Shows', 'Music'].includes(route.section) && route.item)}
     <ContentSkeleton label="Loading details" variant="detail" />
   {:else}
     <MediaSkeleton
@@ -106,14 +106,32 @@
         {play}
         settings={() => openSettings('services')}
         detail={route.detail}
+        artist={route.artist}
         showRequests={route.requests}
         searchQuery={route.query}
         searchChanged={(query) =>
           updateFilters({ ...route, query, requests: false })}
         requestsChanged={(requests) =>
-          go({ ...route, detail: undefined, requests, query: undefined })}
-        openMedia={(detail) => go({ ...route, detail, requests: false })}
-        back={() => go({ ...route, detail: undefined, requests: false })}
+          go({
+            ...route,
+            detail: undefined,
+            artist: undefined,
+            requests,
+            query: undefined,
+          })}
+        openMedia={(detail) =>
+          go({ ...route, detail, artist: undefined, requests: false })}
+        openArtist={(artist) =>
+          go({ ...route, artist, detail: undefined, requests: false })}
+        openLibrary={(item) =>
+          go({ section: 'Music', settings: route.settings, item })}
+        back={() =>
+          go({
+            ...route,
+            detail: undefined,
+            artist: undefined,
+            requests: false,
+          })}
       />
     {:catch error}{@render failed(error)}{/await}
   {:else if ['Movies', 'Shows'].includes(route.section) && route.item}

@@ -137,9 +137,12 @@ export function librarySeed() {
   return items;
 }
 
-// Lidarr albums: new ones from the library's artists, then ListenBrainz
-// charts. Some albums sit in several rows.
+// Lidarr and MusicBrainz as the music pages see them. The library's first
+// artists are in Lidarr with albums still to get; the rest are artists like
+// them that Lidarr does not have yet.
 export function musicSeed(library) {
+  const id = (group, index) =>
+    `${group}-0000-4000-8000-${String(index).padStart(12, '0')}`;
   const names = [
     'Long Exposure',
     'Salt and Signal',
@@ -153,43 +156,137 @@ export function musicSeed(library) {
     'Common Ground',
     'Second Light',
     'Open Season',
+    'Paper Moons',
+    'Glass Harbor',
+    'Quiet Machines',
+    'Lowlands',
+    'Northern Line',
+    'Undertow',
   ];
   const strangers = [
-    'Harbor Lights',
-    'The Quiet Hours',
-    'Northern Choir',
-    'Velvet Static',
-    'Low Tide',
-    'Copper Sky',
-    'Paper Satellites',
-    'Mira Sol',
+    ['Harbor Lights', 'Group', ['Indie Rock', 'Dream Pop']],
+    ['The Quiet Hours', 'Group', ['Post-Rock', 'Ambient']],
+    ['Northern Choir', 'Group', ['Folk', 'Chamber Pop']],
+    ['Velvet Static', 'Group', ['Shoegaze', 'Noise Pop']],
+    ['Mira Sol', 'Person', ['Singer-Songwriter', 'Folk']],
+    ['Low Tide', 'Group', ['Slowcore', 'Indie Rock']],
+    ['Copper Sky', 'Group', ['Alternative Rock']],
+    ['Paper Satellites', 'Person', ['Electronic', 'Downtempo']],
   ];
-  const artists = library
-    .filter((item) => item.kind === 'artist')
-    .map((item) => item.title);
+  const artists = [];
   const albums = [];
-  const album = (index, artist, feeds, extra = {}) =>
-    albums.push({
-      external_id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
-      title: names[index % names.length] + (index >= names.length ? ' II' : ''),
-      artist,
-      year: 2026 - (index % 3),
-      cover: art('album', index + 3),
-      in_library: false,
-      feeds,
+  const artist = (name, extra) => {
+    const index = artists.length + 1;
+    const item = {
+      id: id('0a000000', index),
+      name,
+      type: 'Group',
+      disambiguation: null,
+      overview: `${name} write long, patient records built around field recordings and close harmonies.`,
+      genres: ['Indie Rock'],
+      image: `/api/v1/acquisition/music/artists/${id('0a000000', index)}/image`,
+      art: index,
+      in_lidarr: false,
+      monitored: false,
+      library_id: null,
       ...extra,
+    };
+    artists.push(item);
+    return item;
+  };
+  const album = (by, extra = {}) => {
+    const index = albums.length + 1;
+    const year = extra.year ?? 2024 - (index % 9);
+    const item = {
+      external_id: id('0b000000', index),
+      title: names[index % names.length],
+      artist: by.name,
+      artist_id: by.id,
+      year,
+      date: `${year}-${String((index % 12) + 1).padStart(2, '0')}-14`,
+      type: 'Album',
+      track_count: 8 + (index % 6),
+      cover: `/api/v1/acquisition/music/covers/${id('0b000000', index)}`,
+      art: index + 3,
+      in_library: false,
+      missing: false,
+      requestable: true,
+      feeds: [],
+      ...extra,
+    };
+    albums.push(item);
+    return item;
+  };
+  const libraryArtists = library
+    .filter((item) => item.kind === 'artist')
+    .slice(0, 4);
+  for (const [k, item] of libraryArtists.entries()) {
+    const held = artist(item.title, {
+      type: k % 2 ? 'Person' : 'Group',
+      genres: ['Alternative Rock', 'Art Rock', 'Indie'],
+      overview: item.overview,
+      in_lidarr: true,
+      // The first artist's new releases are monitored already.
+      monitored: k === 0,
+      library_id: item.id,
     });
-  for (let i = 0; i < 6; i++)
-    album(i, artists[i % artists.length], ['artists', i < 2 ? 'fresh' : null]);
-  for (let i = 6; i < 20; i++)
-    album(i, strangers[i % strangers.length], [
-      i < 16 ? 'trending' : null,
-      i >= 12 ? 'fresh' : null,
-    ]);
-  // Charts list albums the library already has.
-  albums[7].in_library = true;
-  albums[10].in_library = true;
-  return albums;
+    item.metadata.musicbrainz_artist_id = held.id;
+    for (const own of library.filter(
+      (entry) => entry.kind === 'album' && entry.parent_id === item.id,
+    )) {
+      const owned = album(held, {
+        title: own.title,
+        year: own.year,
+        in_library: true,
+        track_count: 5,
+        feeds: k === 0 ? ['trending'] : [],
+      });
+      own.metadata.musicbrainz_release_group_id = owned.external_id;
+    }
+    for (let i = 0; i < 4; i++)
+      album(held, {
+        year: 2023 - i * 3 - k,
+        // Lidarr monitors one but has no files for it yet.
+        missing: i === 1,
+        feeds: ['missing'],
+      });
+    album(held, {
+      type: 'Single',
+      requestable: false,
+      year: 2025 - k,
+      title: `${names[(k + 3) % names.length]} (Radio Edit)`,
+    });
+    album(held, { type: 'EP', requestable: false, year: 2015 - k });
+    album(held, {
+      type: 'Live',
+      requestable: false,
+      year: 2018 - k,
+      title: `Live at the Observatory ${2018 - k}`,
+    });
+  }
+  for (const [k, [name, type, genres]] of strangers.entries()) {
+    // Lidarr has no picture of one artist, and no covers of their albums.
+    const bare = k === 4;
+    const stranger = artist(name, {
+      type,
+      genres,
+      ...(bare ? { image: null } : {}),
+    });
+    for (let i = 0; i < 3 + (k % 3); i++)
+      album(stranger, {
+        year: 2025 - i * 2 - (k % 4),
+        ...(bare ? { cover: null } : {}),
+        feeds: i ? [] : ['similar', k < 6 ? 'trending' : null].filter(Boolean),
+      });
+    album(stranger, { type: 'Single', requestable: false, year: 2026 });
+    album(stranger, {
+      type: 'Compilation',
+      requestable: false,
+      year: 2021,
+      title: 'Collected Works',
+    });
+  }
+  return { artists, albums, profile: 'Standard' };
 }
 
 // `extra` adds the Radarr and Sonarr titles that only exist upstream so far.

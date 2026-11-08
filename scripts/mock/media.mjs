@@ -8,6 +8,7 @@ import {
   viewer,
 } from './data.mjs';
 import { airings, inLibrary, statusOf, virtualCards } from './titles.mjs';
+import { artwork } from '../density-fixtures.mjs';
 
 // Downloads report their progress over a few seconds, like the server's worker.
 function simulateDownload(video, emit) {
@@ -962,55 +963,191 @@ export async function mediaApi(s, c) {
           ready: true,
         })),
     });
-  // The viewer's latest request for each album.
-  const albumView = (album) => {
+  // The viewer's latest request for an album or an artist's new releases.
+  const latest = (externalId) => {
     const request = s.musicRequests.find(
-      (r) => r.external_id === album.external_id && r.user_id === viewer(s).id,
+      (r) => r.external_id === externalId && r.user_id === viewer(s).id,
     );
+    return request ? { id: request.id, state: request.state } : null;
+  };
+  const albumView = (album) => {
     const rest = { ...album };
     delete rest.feeds;
+    delete rest.art;
+    return { ...rest, request: latest(album.external_id) };
+  };
+  const artistView = (artist) => {
+    const rest = { ...artist };
+    delete rest.art;
     return {
       ...rest,
-      request: request && { id: request.id, state: request.state },
+      request: latest(artist.id),
+      album_count: s.music.albums.filter(
+        (album) => album.artist_id === artist.id && album.requestable,
+      ).length,
     };
   };
+  const newest = (a, b) => b.date.localeCompare(a.date);
+  const lidarrArtists = () => s.music.artists.filter((a) => a.in_lidarr);
   const musicFeed = path.match(
-    /^\/acquisition\/music\/(artists|trending|fresh)$/,
+    /^\/acquisition\/music\/feeds\/(missing|similar|trending)$/,
   );
-  if (musicFeed)
+  if (musicFeed) {
+    const feed = musicFeed[1];
+    const held = new Set(lidarrArtists().map((artist) => artist.id));
+    const items =
+      feed === 'missing'
+        ? s.music.albums
+            .filter(
+              (album) =>
+                held.has(album.artist_id) &&
+                album.requestable &&
+                !album.in_library,
+            )
+            .sort(newest)
+        : s.music.albums.filter((album) => album.feeds.includes(feed));
     return json({
-      items: s.music
-        .filter((album) => album.feeds.includes(musicFeed[1]))
-        .map(albumView),
+      items: items.map(albumView),
+      artist:
+        feed === 'similar'
+          ? { id: lidarrArtists()[0].id, name: lidarrArtists()[0].name }
+          : null,
     });
-  if (path === '/acquisition/search') {
-    const term = (query.get('term') ?? '').toLowerCase();
+  }
+  const musicCover = path.match(/^\/acquisition\/music\/covers\/([^/]+)$/);
+  if (musicCover) {
+    const album = s.music.albums.find((a) => a.external_id === musicCover[1]);
+    if (!album?.cover) return fail(404, 'No cover');
+    return c.image(artwork('album', album.art));
+  }
+  const artistImage = path.match(
+    /^\/acquisition\/music\/artists\/([^/]+)\/image$/,
+  );
+  if (artistImage) {
+    const artist = s.music.artists.find((a) => a.id === artistImage[1]);
+    if (!artist?.image) return fail(404, 'No picture');
+    return c.image(artwork('artist', artist.art));
+  }
+  const monitor = path.match(
+    /^\/acquisition\/music\/artists\/([^/]+)\/monitor$/,
+  );
+  if (monitor && method === 'DELETE') {
+    const artist = s.music.artists.find((a) => a.id === monitor[1]);
+    if (!artist?.in_lidarr) return fail(404, 'Artist not found');
+    artist.monitored = false;
+    return json({ saved: true });
+  }
+  const musicArtist = path.match(/^\/acquisition\/music\/artists\/([^/]+)$/);
+  if (musicArtist) {
+    const artist = s.music.artists.find((a) => a.id === musicArtist[1]);
+    if (!artist) return fail(404, 'Artist not found');
+    const own = s.music.albums
+      .filter((album) => album.artist_id === artist.id)
+      .sort(newest);
     return json({
-      service: 'Lidarr',
-      local: [],
-      items: s.music
-        .filter((album) =>
-          `${album.title} ${album.artist}`.toLowerCase().includes(term),
-        )
-        .map(albumView),
+      artist: artistView(artist),
+      albums: own.filter((album) => album.requestable).map(albumView),
+      other: own.filter((album) => !album.requestable).map(albumView),
+      profile: s.music.profile,
+    });
+  }
+  const musicAlbum = path.match(/^\/acquisition\/music\/albums\/([^/]+)$/);
+  if (musicAlbum) {
+    const album = s.music.albums.find((a) => a.external_id === musicAlbum[1]);
+    if (!album) return fail(404, 'Album not found');
+    const words = [
+      'Daybreak',
+      'Open Roads',
+      'The Long Way',
+      'Still Waters',
+      'Afterglow',
+      'Harbor Song',
+      'Paper Lanterns',
+      'Low Light',
+      'Signal Fire',
+      'Crossing',
+      'Night Swim',
+      'Homeward',
+      'Weathervane',
+      'Undertow',
+    ];
+    const tracks = Array.from({ length: album.track_count }, (_, i) => ({
+      disc: 1,
+      number: i + 1,
+      title: words[(i + album.art) % words.length],
+      length: 150 + ((i * 37 + album.art * 11) % 190),
+    }));
+    return json({
+      ...albumView(album),
+      label: 'Northstar Records',
+      format: album.type === 'Single' ? 'Digital Media' : 'CD',
+      edition: album.in_library ? 'Standard edition' : null,
+      duration: tracks.reduce((sum, track) => sum + track.length, 0),
+      tracks,
+    });
+  }
+  if (path === '/acquisition/music/search') {
+    const term = (query.get('term') ?? '').trim().toLowerCase();
+    const fold = (text) => text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    const artists = s.music.artists
+      .filter((artist) => artist.name.toLowerCase().includes(term))
+      .map(artistView);
+    const top =
+      artists[0] && fold(artists[0].name) === fold(term) ? artists[0] : null;
+    const titled = s.music.albums
+      .filter(
+        (album) =>
+          album.title.toLowerCase().includes(term) &&
+          album.artist_id !== top?.id,
+      )
+      .sort(newest);
+    return json({
+      artist: top,
+      artists: top ? artists.slice(1) : artists,
+      albums: top
+        ? s.music.albums
+            .filter((album) => album.artist_id === top.id && album.requestable)
+            .sort(newest)
+            .map(albumView)
+        : [],
+      matches: titled.filter((album) => album.requestable).map(albumView),
+      excluded: titled.filter((album) => !album.requestable).map(albumView),
     });
   }
   if (path === '/acquisition/requests') {
     if (method === 'POST') {
-      const album = s.music.find((a) => a.external_id === body.external_id);
-      if (!album) return fail(404, 'Album not found');
+      const target = body.target ?? 'item';
+      const item =
+        target === 'artist'
+          ? s.music.artists.find((a) => a.id === body.external_id)
+          : s.music.albums.find((a) => a.external_id === body.external_id);
+      if (!item)
+        return fail(
+          404,
+          target === 'artist' ? 'Artist not found' : 'Album not found',
+        );
+      if (target === 'item' && !item.requestable)
+        return fail(
+          409,
+          `Lidarr's ${s.music.profile} metadata profile leaves out ${item.type.toLowerCase()} releases`,
+        );
       const existing = s.musicRequests.find(
         (r) =>
-          r.external_id === album.external_id &&
+          r.external_id === body.external_id &&
           r.user_id === viewer(s).id &&
-          !['denied', 'cancelled', 'failed'].includes(r.state),
+          !['denied', 'cancelled', 'failed'].includes(r.state) &&
+          !(target === 'artist' && r.state === 'requested'),
       );
       if (existing) return json({ id: existing.id, state: existing.state });
+      const approved = viewer(s).role === 'admin';
       const request = {
         id: `music-request-${++s.sequence}`,
-        external_id: album.external_id,
-        title: album.title,
-        state: viewer(s).role === 'admin' ? 'requested' : 'pending',
+        external_id: body.external_id,
+        title: target === 'artist' ? item.name : item.title,
+        target,
+        artist: target === 'artist' ? item.name : item.artist,
+        artist_id: target === 'artist' ? item.id : item.artist_id,
+        state: approved ? 'requested' : 'pending',
         created_at: now(),
         error: null,
         username: viewer(s).username,
@@ -1019,6 +1156,8 @@ export async function mediaApi(s, c) {
         kind: 'lidarr',
         attention: null,
       };
+      if (approved && target === 'artist')
+        Object.assign(item, { in_lidarr: true, monitored: true });
       s.musicRequests.unshift(request);
       return json({ id: request.id, state: request.state });
     }
@@ -1039,6 +1178,11 @@ export async function mediaApi(s, c) {
       body.action
     ];
     item.error = null;
+    if (item.target === 'artist' && item.state === 'requested')
+      Object.assign(
+        s.music.artists.find((artist) => artist.id === item.artist_id) ?? {},
+        { in_lidarr: true, monitored: true },
+      );
     return json({ saved: true });
   }
   if (path === '/metadata/search')

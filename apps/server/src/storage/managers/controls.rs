@@ -6,7 +6,7 @@ pub(super) async fn target(
     db: &Database,
     key: String,
 ) -> anyhow::Result<Option<(String, Option<i64>, String, String)>> {
-    db.read("managers.controls.target", move|db|Ok(db.query_row("SELECT service_id,manager_id,external_id,user_id FROM acquisition_requests WHERE id=?1",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).optional()?)).await
+    db.read("managers.controls.target", move|db|Ok(db.query_row("SELECT service_id,manager_id,external_id,user_id FROM acquisition_requests WHERE id=?1 AND target='item'",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).optional()?)).await
 }
 
 pub(super) async fn status(

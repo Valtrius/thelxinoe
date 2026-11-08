@@ -21,6 +21,7 @@
   import FavoriteToggle from './FavoriteToggle.svelte';
   import ManageButton from './ManageButton.svelte';
   import AddToPlaylist from './AddToPlaylist.svelte';
+  import LibraryGaps from '../music-requests/LibraryGaps.svelte';
   import {
     albumTracks,
     artistTracks,
@@ -33,12 +34,19 @@
     type MusicItem,
   } from './library';
 
-  let { artist, admin, play, openAlbum } = $props<{
+  let { artist, admin, play, openAlbum, openDiscography } = $props<{
     artist: CatalogItem;
     admin: boolean;
     play: (choice: MediaChoice) => void;
     openAlbum: (id: string) => void;
+    /** Opens the artist's MusicBrainz discography in Discover. */
+    openDiscography: (id: string) => void;
   }>();
+  const musicbrainz = $derived(
+    typeof artist.metadata?.musicbrainz_artist_id === 'string'
+      ? artist.metadata.musicbrainz_artist_id
+      : '',
+  );
   let albums = $state<MusicItem[] | null>(null),
     error = $state(''),
     newest = $state(true),
@@ -263,4 +271,8 @@
           >{/each}
       </MediaGrid>{/if}
   </section>
+  {#if musicbrainz}{#key musicbrainz}<LibraryGaps
+        id={musicbrainz}
+        discography={() => openDiscography(musicbrainz)}
+      />{/key}{/if}
 </article>

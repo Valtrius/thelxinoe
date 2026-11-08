@@ -16,6 +16,7 @@ export default defineConfig({
     'mobile-media.spec.ts',
     'mobile-player.spec.ts',
     'music-playlists.spec.ts',
+    'mock-music.spec.ts',
   ],
   timeout: 120000,
   expect: { timeout: 15000 },

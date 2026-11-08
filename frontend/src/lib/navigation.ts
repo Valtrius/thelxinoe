@@ -42,6 +42,8 @@ export type AppRoute = {
   section: Section;
   settings: SettingsSection;
   detail?: { kind: 'movie' | 'tv'; id: number };
+  /** A music artist's MusicBrainz ID, for its discovery page. */
+  artist?: string;
   requests?: boolean;
   item?: string;
   ancestors?: string[];
@@ -100,10 +102,16 @@ export function readRoute(url: URL, fallback: AppRoute = homeRoute): AppRoute {
       ['movie', 'tv'].includes(parts[1]) && /^\d+$/.test(parts[2])
         ? { kind: parts[1] as 'movie' | 'tv', id: Number(parts[2]) }
         : undefined;
+    const artist =
+      parts[1] === 'artist' &&
+      /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(parts[2])
+        ? parts[2].toLowerCase()
+        : undefined;
     return {
       ...base,
       section: 'Discover',
       detail,
+      artist,
       query: query.get('q') ?? undefined,
     };
   }
@@ -212,9 +220,11 @@ export function routeHref(route: AppRoute): string {
     case 'Discover':
       path = route.detail
         ? `discover/${route.detail.kind}/${route.detail.id}`
-        : route.requests
-          ? 'requests'
-          : 'discover';
+        : route.artist
+          ? `discover/artist/${route.artist}`
+          : route.requests
+            ? 'requests'
+            : 'discover';
       if (route.query) query.set('q', route.query);
       break;
     case 'Movies':

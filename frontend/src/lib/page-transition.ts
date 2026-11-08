@@ -15,6 +15,7 @@ export function pageIdentity(route: AppRoute): string {
     route.service,
     route.workflow,
     route.detail,
+    route.artist,
     route.requests,
     route.item,
     route.ancestors,

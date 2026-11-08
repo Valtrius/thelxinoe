@@ -23,14 +23,28 @@ export function createMockState() {
   const discover = discoverSeed(titleDiscover(titles));
   const videos = videoSeed();
   const music = musicSeed(library);
+  const artistNamed = (name) =>
+    music.artists.find((artist) => artist.name === name);
+  // The artist's nth album still to request.
+  const wanted = (artist, n) =>
+    music.albums.filter(
+      (album) =>
+        album.artist_id === artist.id && album.requestable && !album.in_library,
+    )[n];
+  const harbor = artistNamed('Harbor Lights');
   const musicRequests = [
-    [music[0], 'requested', admin],
-    [music[8], 'pending', member],
-    [music[12], 'failed', member],
-  ].map(([album, state, user], i) => ({
+    [wanted(music.artists[0], 0), 'requested', admin],
+    [harbor, 'pending', member, 'artist'],
+    [wanted(harbor, 1), 'pending', member],
+    [wanted(harbor, 2), 'pending', member],
+    [wanted(artistNamed('Low Tide'), 0), 'failed', member],
+  ].map(([item, state, user, target = 'item'], i) => ({
     id: `music-request-${i + 1}`,
-    external_id: album.external_id,
-    title: album.title,
+    external_id: target === 'artist' ? item.id : item.external_id,
+    title: target === 'artist' ? item.name : item.title,
+    target,
+    artist: target === 'artist' ? item.name : item.artist,
+    artist_id: target === 'artist' ? item.id : item.artist_id,
     state,
     created_at: now() - (i + 1) * 3600,
     error:
@@ -294,6 +308,10 @@ export async function installMockApi(page, currentState, events) {
             });
         }
         await route.fulfill({ json: value });
+        return true;
+      },
+      async image(body) {
+        await route.fulfill({ contentType: 'image/svg+xml', body });
         return true;
       },
       async fail(status, message) {

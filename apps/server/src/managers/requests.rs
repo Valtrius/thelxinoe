@@ -4,7 +4,9 @@ mod storage;
 #[path = "requests_tests.rs"]
 mod tests;
 
-use super::domain::{CreateAcquisition, DecideAcquisition, RequestAction, RequestState};
+use super::domain::{
+    CreateAcquisition, DecideAcquisition, RequestAction, RequestState, RequestTarget,
+};
 use super::*;
 use axum::extract::Query;
 use thelxinoe_core::Role;
@@ -39,7 +41,7 @@ pub(super) fn external(kind: &str, row: &Value) -> Option<String> {
         _ => row["foreignAlbumId"].as_str().map(str::to_owned),
     }
 }
-fn identifier(kind: &str, value: &str) -> bool {
+pub(super) fn identifier(kind: &str, value: &str) -> bool {
     if kind == "lidarr" {
         uuid::Uuid::parse_str(value).is_ok()
     } else {
@@ -148,6 +150,14 @@ pub(super) async fn decorate(
     }
     Ok(())
 }
+/// The names and MusicBrainz IDs of the library's artists, by name.
+pub(super) async fn library_artists(state: &AppState) -> Result<Vec<(String, String)>> {
+    Ok(storage::library_artists(&state.db).await?)
+}
+/// The library artist with this MusicBrainz ID.
+pub(super) async fn library_artist(state: &AppState, id: &str) -> Result<Option<String>> {
+    Ok(storage::library_artist(&state.db, id.to_owned()).await?)
+}
 #[derive(Default, Deserialize)]
 struct HistoryPage {
     #[serde(default)]
@@ -166,6 +176,8 @@ async fn list(
 struct Request {
     service_id: String,
     external_id: String,
+    #[serde(default)]
+    target: RequestTarget,
 }
 
 async fn request(
@@ -178,13 +190,31 @@ async fn request(
     let _: Defaults = serde_json::from_value(s.defaults.clone())
         .map_err(|_| ApiError::bad("Administrator must choose acquisition defaults first"))?;
     let c = Connection::open(&state, &s).await?;
-    let row = lookup(&c, &input.external_id).await?;
-    let title = row["title"]
-        .as_str()
-        .ok_or_else(unavailable)?
-        .chars()
-        .take(500)
-        .collect::<String>();
+    let (title, artist) = if input.target == RequestTarget::Artist {
+        if s.kind != "lidarr" {
+            return Err(ApiError::bad("Only Lidarr monitors artists"));
+        }
+        if !identifier(&s.kind, &input.external_id) {
+            return Err(ApiError::bad("Invalid provider identifier"));
+        }
+        let row = super::music::artist_lookup(&c, &input.external_id)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
+        let name = text(&row["artistName"])?;
+        (name.clone(), Some((name, input.external_id.clone())))
+    } else {
+        let row = lookup(&c, &input.external_id).await?;
+        let artist = if s.kind == "lidarr" {
+            super::music::check_profile(&c, &s, &row).await?;
+            Some((
+                text(&row["artist"]["artistName"])?,
+                text(&row["artist"]["foreignArtistId"])?,
+            ))
+        } else {
+            None
+        };
+        (text(&row["title"])?, artist)
+    };
     let result = storage::request(
         &state.db,
         CreateAcquisition {
@@ -194,11 +224,21 @@ async fn request(
             service_generation: s.generation,
             external_id: input.external_id,
             title,
+            target: input.target,
+            artist,
         },
     )
     .await?;
     state.notify_attention();
     Ok(Json(json!({"id":result.id,"state":result.state})))
+}
+fn text(value: &Value) -> Result<String> {
+    Ok(value
+        .as_str()
+        .ok_or_else(unavailable)?
+        .chars()
+        .take(500)
+        .collect())
 }
 #[derive(Deserialize)]
 struct Decision {
@@ -323,6 +363,55 @@ async fn monitor_artist(c: &Connection<'_>, mut artist: Value) -> Result<Value> 
     )
     .await
 }
+/// Monitors an artist's future albums, adding the artist to Lidarr when it lacks it.
+async fn monitor_releases(
+    state: &AppState,
+    key: &str,
+    c: &Connection<'_>,
+    defaults: &Defaults,
+    artist_id: &str,
+) -> Result<bool> {
+    let existing = super::music::lidarr_artist(c, artist_id).await?;
+    update(state, key, RequestState::Adding, None).await?;
+    let artist = match existing {
+        Some(artist) if artist["monitored"] == true && artist["monitorNewItems"] == "all" => artist,
+        Some(mut artist) => {
+            let id = artist["id"]
+                .as_i64()
+                .filter(|v| *v > 0)
+                .ok_or_else(unavailable)?;
+            artist["monitored"] = json!(true);
+            artist["monitorNewItems"] = json!("all");
+            c.call(
+                reqwest::Method::PUT,
+                &format!("artist/{id}"),
+                &[],
+                Some(artist),
+            )
+            .await?
+        }
+        None => {
+            let mut artist = super::music::artist_lookup(c, artist_id)
+                .await?
+                .ok_or_else(ApiError::not_found)?;
+            artist["rootFolderPath"] = json!(defaults.root_folder);
+            artist["qualityProfileId"] = json!(defaults.quality_profile);
+            artist["metadataProfileId"] = json!(defaults.metadata_profile);
+            artist["monitored"] = json!(true);
+            artist["monitorNewItems"] = json!("all");
+            // Albums already out stay unmonitored; each later one is searched for on release.
+            artist["addOptions"] = json!({"monitor":"future","searchForMissingAlbums":false});
+            c.call(reqwest::Method::POST, "artist", &[], Some(artist))
+                .await?
+        }
+    };
+    let manager = artist["id"]
+        .as_i64()
+        .filter(|v| *v > 0)
+        .ok_or_else(unavailable)?;
+    update(state, key, RequestState::Requested, Some(manager)).await?;
+    Ok(true)
+}
 /// Returns false when `wait` allows it and Lidarr is still loading the album.
 async fn perform(state: &AppState, key: &str, wait: bool) -> Result<bool> {
     let request_id = key.to_owned();
@@ -360,6 +449,9 @@ async fn perform(state: &AppState, key: &str, wait: bool) -> Result<bool> {
         ));
     }
     let c = Connection::open(state, &s).await?;
+    if row.target == RequestTarget::Artist {
+        return monitor_releases(state, key, &c, &defaults, &row.external_id).await;
+    }
     let kind = endpoint(&s.kind);
     // Re-read manager metadata and ownership instead of accepting a client-supplied object.
     let mut item = lookup(&c, &row.external_id).await?;
@@ -383,11 +475,7 @@ async fn perform(state: &AppState, key: &str, wait: bool) -> Result<bool> {
                 .as_str()
                 .ok_or_else(unavailable)?
                 .to_owned();
-            let existing = c
-                .fetch::<Vec<Value>>("artist", &[("mbId", artist_id.clone())])
-                .await?
-                .into_iter()
-                .find(|a| a["foreignArtistId"] == artist_id);
+            let existing = super::music::lidarr_artist(&c, &artist_id).await?;
             let artist = match existing {
                 // Before the add: the refresh the add starts writes the artist back as it
                 // read it.

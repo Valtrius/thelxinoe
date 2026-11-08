@@ -608,6 +608,48 @@ fn schema_5_keeps_excluding_auto_deleted_movies_only() -> Result<()> {
 }
 
 #[test]
+fn schema_8_keeps_earlier_requests_for_their_title_and_checks_the_target() -> Result<()> {
+    let seed = "INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('alice','alice','unused','user',1);
+        INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,defaults,version,enabled,checked_at) VALUES ('lidarr','Lidarr','lidarr','c',8686,'g',X'00','','{}','1',1,1);
+        INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES ('r1','alice','lidarr','g','album','Album','requested',1,1);";
+    let (_temp, conn) = upgraded(7, seed)?;
+    let request = |id: &str, external: &str, target: &str| {
+        conn.execute(
+            "INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at,target) VALUES (?1,'alice','lidarr','g',?2,'Title','pending',1,1,?3)",
+            [id, external, target],
+        )
+    };
+    assert!(request("r2", "album", "item").is_err());
+    conn.execute(
+        "INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at,target) VALUES ('r3','alice','lidarr','g','artist','Artist','requested',1,1,'artist')",
+        [],
+    )?;
+    // Monitoring an artist again is a new request once the earlier one reached Lidarr.
+    request("r4", "artist", "artist")?;
+    assert!(request("r5", "artist", "artist").is_err());
+    assert_eq!(
+        conn.query_row(
+            "SELECT target,artist,artist_id FROM acquisition_requests WHERE id='r1'",
+            [],
+            |r| Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?
+            ))
+        )?,
+        ("item".into(), None, None)
+    );
+    assert!(
+        conn.execute(
+            "UPDATE acquisition_requests SET target='label' WHERE id='r1'",
+            []
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn upgrades_run_in_order_from_the_stored_version() -> Result<()> {
     let conn = Connection::open_in_memory()?;
     conn.execute_batch("CREATE TABLE t(a INTEGER, b INTEGER); PRAGMA user_version=2;")?;
