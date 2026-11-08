@@ -701,3 +701,57 @@ async fn a_retagged_track_moves_to_its_new_album_with_its_watch_state() -> Resul
     );
     Ok(())
 }
+
+// A renamed file holding two episodes carries each entry to the episode it stood for, in the
+// order the file was linked, whatever order their ids sort in.
+#[tokio::test]
+async fn a_renamed_double_episode_keeps_each_entry_at_its_number() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (db, root, media, tools) = library(temp.path(), "shows").await?;
+    std::fs::write(media.join("Old Show S01E01E02.wav"), wav(1))?;
+    scan(&db, root.clone(), tools.media()?).await?;
+    db.write("test.fixture", |c| {
+        // Ids that sort against the order the episodes were linked in.
+        let tx = c.transaction()?;
+        tx.pragma_update(None, "defer_foreign_keys", true)?;
+        for (number, id) in [(1, "z-first"), (2, "a-second")] {
+            let old: String = tx.query_row(
+                "SELECT id FROM media WHERE kind='episode' AND sort_number=?1",
+                [number],
+                |r| r.get(0),
+            )?;
+            tx.execute("UPDATE media SET id=?2 WHERE id=?1", params![old, id])?;
+            tx.execute(
+                "UPDATE media_sources SET media_id=?2 WHERE media_id=?1",
+                params![old, id],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO media_state(user_id,media_id,watched,favorite,updated_at) VALUES ('alice','z-first',1,1,1)",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
+    .await?;
+    std::fs::rename(
+        media.join("Old Show S01E01E02.wav"),
+        media.join("New Show S01E01E02.wav"),
+    )?;
+    scan(&db, root, tools.media()?).await?;
+    let episodes = db
+        .read("test.episodes", |c| {
+            Ok(c.prepare("SELECT m.id,m.evidence_key,COALESCE(s.watched AND s.favorite,0) FROM media m LEFT JOIN media_state s ON s.media_id=m.id AND s.user_id='alice' WHERE m.kind='episode' ORDER BY m.sort_number")?
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await?;
+    assert_eq!(
+        episodes,
+        [
+            ("z-first".into(), "new show:s1:e1".into(), true),
+            ("a-second".into(), "new show:s1:e2".into(), false),
+        ]
+    );
+    Ok(())
+}

@@ -75,8 +75,9 @@ pub(super) async fn scan_with_progress_read_present_paths(
     .await
 }
 
-/// The entries a file stands for, found by `media_sources_file` once per changed file.
-const LINKED_MEDIA: &str = "SELECT media_id FROM media_sources WHERE file_id=?1";
+/// The entries a file stands for, found by `media_sources_file` once per changed file. They
+/// come in the order they were linked, which `place` carries them over in.
+const LINKED_MEDIA: &str = "SELECT media_id FROM media_sources WHERE file_id=?1 ORDER BY rowid";
 const UNLINK_FILE: &str = "DELETE FROM media_sources WHERE file_id=?1";
 
 pub(super) async fn scan_with_progress_write_media_files(
@@ -264,7 +265,8 @@ fn prune(tx: &rusqlite::Connection, mut vacated: Vec<String>) -> anyhow::Result<
 mod tests {
     use super::*;
 
-    /// A scan reaches a file's links through its index instead of reading every link.
+    /// A scan reaches a file's links through its index, in the order they were linked and
+    /// without sorting them, instead of reading every link.
     #[tokio::test]
     async fn file_links_are_found_by_index() -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;
@@ -282,8 +284,13 @@ mod tests {
                     .collect::<anyhow::Result<Vec<_>>>()
             })
             .await?;
-        let indexed = "SEARCH media_sources USING COVERING INDEX media_sources_file (file_id=?)";
-        assert_eq!(plans, [[indexed], [indexed]]);
+        assert_eq!(
+            plans,
+            [
+                ["SEARCH media_sources USING INDEX media_sources_file (file_id=?)"],
+                ["SEARCH media_sources USING COVERING INDEX media_sources_file (file_id=?)"]
+            ]
+        );
         Ok(())
     }
 }
