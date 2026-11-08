@@ -1048,6 +1048,7 @@ CREATE INDEX jobs_subject ON jobs(kind, subject, created_at);
 
 CREATE INDEX media_parent ON media(parent_id);
 CREATE INDEX media_by_title ON media(kind,COALESCE(json_extract(metadata,'$.title'),json_extract(metadata,'$.name'),title) COLLATE NOCASE,id);
+CREATE INDEX media_sources_file ON media_sources(file_id,media_id);
 
 CREATE INDEX media_state_lists ON media_state(user_id, favorite, watch_later);
 
