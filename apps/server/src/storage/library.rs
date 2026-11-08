@@ -119,18 +119,12 @@ pub(super) async fn enqueue_scan(root_id: String, db: &Database) -> anyhow::Resu
     .await
 }
 
-/// A page of the matching items and how many match.
-pub(super) async fn browse(
-    db: &Database,
-    input: Browse,
-    limit: u32,
-) -> anyhow::Result<(Vec<Value>, u32)> {
-    db.read("library.browse", move|db|{
-        const TITLE: &str = "COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title)";
-        const MATCHING: &str = "FROM media m WHERE (?1 IS NULL OR m.kind=?1) AND (?2 IS NULL OR m.parent_id=?2) AND (?3 IS NULL OR COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) LIKE '%'||?3||'%') AND (?4 IS NULL OR json_extract(m.metadata,'$.belongs_to_collection.id')=?4) AND (?5 IS NULL OR m.parent_id=?5 OR m.parent_id IN (SELECT id FROM media WHERE parent_id=?5))";
-        // What a music page shows beside each item: a track's length, format, album and
-        // artist; an album's track count and length; an artist's album and track counts.
-        const MUSIC: &str = "CASE m.kind WHEN 'track' THEN (SELECT CAST(json_extract(f.probe,'$.format.duration') AS REAL) FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.id LIMIT 1)
+/// A media item's shown title, as `media_by_title` indexes it.
+const TITLE: &str =
+    "COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title)";
+/// What a music page shows beside each item: a track's length, format, album and artist; an
+/// album's track count and length; an artist's album and track counts.
+const MUSIC: &str = "CASE m.kind WHEN 'track' THEN (SELECT CAST(json_extract(f.probe,'$.format.duration') AS REAL) FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.id LIMIT 1)
                 WHEN 'album' THEN (SELECT SUM((SELECT CAST(json_extract(f.probe,'$.format.duration') AS REAL) FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=t.id AND f.present=1 ORDER BY f.id LIMIT 1)) FROM media t WHERE t.parent_id=m.id)
                 WHEN 'artist' THEN (SELECT SUM((SELECT CAST(json_extract(f.probe,'$.format.duration') AS REAL) FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=t.id AND f.present=1 ORDER BY f.id LIMIT 1)) FROM media a JOIN media t ON t.parent_id=a.id WHERE a.parent_id=m.id) END,
             CASE m.kind WHEN 'album' THEN (SELECT COUNT(*) FROM media t WHERE t.parent_id=m.id) WHEN 'artist' THEN (SELECT COUNT(*) FROM media t JOIN media a ON t.parent_id=a.id WHERE a.parent_id=m.id) END,
@@ -139,21 +133,105 @@ pub(super) async fn browse(
             CASE WHEN m.kind IN ('track','album') THEN (SELECT COALESCE(json_extract(p.metadata,'$.title'),json_extract(p.metadata,'$.name'),p.title) FROM media p WHERE p.id=m.parent_id) END,
             CASE WHEN m.kind='track' THEN (SELECT COALESCE(json_extract(g.metadata,'$.title'),json_extract(g.metadata,'$.name'),g.title) FROM media p JOIN media g ON g.id=p.parent_id WHERE p.id=m.parent_id) END,
             CASE WHEN m.kind='track' THEN (SELECT p.parent_id FROM media p WHERE p.id=m.parent_id) END";
-        let filter = params![input.kind,input.parent,input.q,input.collection,input.ancestor];
-        let total = db.query_row(&format!("SELECT COUNT(*) {MATCHING}"), filter, |r| r.get(0))?;
-        let direction = match input.order { Order::Asc => "ASC", Order::Desc => "DESC" };
-        let order_by = match input.sort {
-            Some(Sort::Year) => format!("m.year {direction} NULLS LAST,{TITLE} COLLATE NOCASE,m.id"),
-            Some(Sort::Added) => format!("m.created_at {direction},{TITLE} COLLATE NOCASE,m.id"),
-            Some(_) => format!("{TITLE} COLLATE NOCASE {direction},m.id"),
-            // An artist's tracks come album by album.
-            None if input.ancestor.is_some() => format!("(SELECT p.year FROM media p WHERE p.id=m.parent_id) NULLS LAST,(SELECT COALESCE(json_extract(p.metadata,'$.title'),json_extract(p.metadata,'$.name'),p.title) FROM media p WHERE p.id=m.parent_id) COLLATE NOCASE,m.sort_number,{TITLE} COLLATE NOCASE,m.id"),
-            None => format!("m.sort_number,{TITLE} COLLATE NOCASE,m.id"),
-        };
-        let mut query=db.prepare(&format!("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1),{MUSIC} {MATCHING} ORDER BY {order_by} LIMIT ?6 OFFSET ?7"))?;
-        let items = query.query_map(params![input.kind,input.parent,input.q,input.collection,input.ancestor,limit,input.offset],music_row)?.collect::<std::result::Result<Vec<_>,_>>()?;
-        Ok((items, total))
-    }).await
+
+/// A page of the matching items and how many match.
+pub(super) async fn browse(
+    db: &Database,
+    input: Browse,
+    limit: u32,
+) -> anyhow::Result<(Vec<Value>, u32)> {
+    db.read("library.browse", move |db| browse_page(db, input, limit))
+        .await
+}
+
+fn browse_page(
+    db: &rusqlite::Connection,
+    input: Browse,
+    limit: u32,
+) -> anyhow::Result<(Vec<Value>, u32)> {
+    let (count, page, mut filter) = browse_queries(&input);
+    let total = db.query_row(&count, rusqlite::params_from_iter(&filter), |r| r.get(0))?;
+    filter.extend([limit.into(), input.offset.into()]);
+    let items = db
+        .prepare(&page)?
+        .query_map(rusqlite::params_from_iter(&filter), music_row)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok((items, total))
+}
+
+/// How a browsed list is counted and paged, and the values both read. The page reads its
+/// limit and offset after them.
+fn browse_queries(input: &Browse) -> (String, String, Vec<rusqlite::types::Value>) {
+    // Only the filters asked for, so an index can find and order the matches.
+    let mut conditions = Vec::new();
+    let mut filter = Vec::<rusqlite::types::Value>::new();
+    let mut bind = |value: rusqlite::types::Value| {
+        filter.push(value);
+        format!("?{}", filter.len())
+    };
+    if let Some(kind) = &input.kind {
+        // A parent's children are found by `media_parent`; the unary plus keeps SQLite,
+        // which has no statistics, from reading every item of the kind instead.
+        let indexed = input.parent.is_none() && input.ancestor.is_none();
+        conditions.push(format!(
+            "{}m.kind={}",
+            if indexed { "" } else { "+" },
+            bind(kind.clone().into())
+        ));
+    }
+    if let Some(parent) = &input.parent {
+        conditions.push(format!("m.parent_id={}", bind(parent.clone().into())));
+    }
+    if let Some(q) = &input.q {
+        // The indexed value, so the index alone answers it. LIKE folds case either way.
+        conditions.push(format!(
+            "{TITLE} COLLATE NOCASE LIKE '%'||{}||'%'",
+            bind(q.clone().into())
+        ));
+    }
+    if let Some(collection) = input.collection {
+        conditions.push(format!(
+            "json_extract(m.metadata,'$.belongs_to_collection.id')={}",
+            bind(collection.into())
+        ));
+    }
+    if let Some(ancestor) = &input.ancestor {
+        let ancestor = bind(ancestor.clone().into());
+        conditions.push(format!("(m.parent_id={ancestor} OR m.parent_id IN (SELECT id FROM media WHERE parent_id={ancestor}))"));
+    }
+    let matching = if conditions.is_empty() {
+        "FROM media m".to_owned()
+    } else {
+        format!("FROM media m WHERE {}", conditions.join(" AND "))
+    };
+    let order_by = order_by(input);
+    // The page is chosen before what its items show is read, which costs the most.
+    let page = format!("LIMIT ?{} OFFSET ?{}", filter.len() + 1, filter.len() + 2);
+    (
+        format!("SELECT COUNT(*) {matching}"),
+        format!(
+            "WITH page AS MATERIALIZED (SELECT m.id {matching} ORDER BY {order_by} {page}) SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1),{MUSIC} FROM page JOIN media m ON m.id=page.id ORDER BY {order_by}"
+        ),
+        filter,
+    )
+}
+
+/// The order of a browsed list, ending in the id so that every page cuts it the same way.
+fn order_by(input: &Browse) -> String {
+    let direction = match input.order {
+        Order::Asc => "ASC",
+        Order::Desc => "DESC",
+    };
+    match input.sort {
+        Some(Sort::Year) => format!("m.year {direction} NULLS LAST,{TITLE} COLLATE NOCASE,m.id"),
+        Some(Sort::Added) => format!("m.created_at {direction},{TITLE} COLLATE NOCASE,m.id"),
+        Some(_) => format!("{TITLE} COLLATE NOCASE {direction},m.id"),
+        // An artist's tracks come album by album.
+        None if input.ancestor.is_some() => format!(
+            "(SELECT p.year FROM media p WHERE p.id=m.parent_id) NULLS LAST,(SELECT COALESCE(json_extract(p.metadata,'$.title'),json_extract(p.metadata,'$.name'),p.title) FROM media p WHERE p.id=m.parent_id) COLLATE NOCASE,m.sort_number,{TITLE} COLLATE NOCASE,m.id"
+        ),
+        None => format!("m.sort_number,{TITLE} COLLATE NOCASE,m.id"),
+    }
 }
 
 /// A playlist's tracks in their manual order, without what only their own page shows, so a
@@ -480,6 +558,197 @@ fn card_row(r: &rusqlite::Row<'_>, metadata: Value) -> rusqlite::Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A browsed list as it was read before only the asked filters were applied and the
+    /// page was chosen first.
+    fn browsed_before(db: &rusqlite::Connection, input: &Browse, limit: u32) -> (Vec<Value>, u32) {
+        let matching = "FROM media m WHERE (?1 IS NULL OR m.kind=?1) AND (?2 IS NULL OR m.parent_id=?2) AND (?3 IS NULL OR COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) LIKE '%'||?3||'%') AND (?4 IS NULL OR json_extract(m.metadata,'$.belongs_to_collection.id')=?4) AND (?5 IS NULL OR m.parent_id=?5 OR m.parent_id IN (SELECT id FROM media WHERE parent_id=?5))";
+        let filter = rusqlite::params![
+            input.kind,
+            input.parent,
+            input.q,
+            input.collection,
+            input.ancestor
+        ];
+        let total = db
+            .query_row(&format!("SELECT COUNT(*) {matching}"), filter, |r| r.get(0))
+            .unwrap();
+        let items = db
+            .prepare(&format!("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1),{MUSIC} {matching} ORDER BY {} LIMIT ?6 OFFSET ?7", order_by(input)))
+            .unwrap()
+            .query_map(
+                rusqlite::params![
+                    input.kind,
+                    input.parent,
+                    input.q,
+                    input.collection,
+                    input.ancestor,
+                    limit,
+                    input.offset
+                ],
+                music_row,
+            )
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        (items, total)
+    }
+
+    /// Every list reads as it did, whatever its filters, sort and page, among titles that
+    /// tie, differ in case, come from metadata or are not text.
+    #[tokio::test]
+    async fn browsed_lists_read_as_before() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Database::open(temp.path().join("db.sqlite3")).unwrap();
+        db.write("test.fixture", |db| {
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('music','Music','music','/music'),('movies','Movies','movies','/movies')", [])?;
+            for (id, root, kind, parent, title, metadata, sort, year, created) in [
+                ("ar1", "music", "artist", None, "Alpha", "{}", None, None, 1),
+                ("ar2", "music", "artist", None, "alpha", "{}", None, None, 1),
+                ("ar3", "music", "artist", None, "Zed", r#"{"name":"Beta"}"#, None, None, 2),
+                ("al1", "music", "album", Some("ar1"), "One", "{}", None, Some(2001), 5),
+                ("al2", "music", "album", Some("ar1"), "one", "{}", None, None, 5),
+                ("al3", "music", "album", Some("ar2"), "Two", "{}", None, Some(1999), 3),
+                ("al4", "music", "album", Some("ar3"), "x", r#"{"title":"Alpha Album"}"#, None, Some(2001), 9),
+                ("t1", "music", "track", Some("al1"), "Intro", "{}", Some(1), None, 6),
+                ("t2", "music", "track", Some("al1"), "intro", "{}", Some(2), None, 6),
+                ("t3", "music", "track", Some("al1"), "Song", "{}", None, None, 7),
+                ("t4", "music", "track", Some("al2"), "Song", "{}", Some(1), None, 6),
+                ("t5", "music", "track", Some("al3"), "Number", r#"{"title":7}"#, Some(1), None, 8),
+                ("t6", "music", "track", Some("al3"), "Stored", r#"{"title":null,"name":"Named"}"#, Some(2), None, 8),
+                ("t7", "music", "track", Some("al4"), "Zulu", "{}", Some(1), None, 10),
+                ("t8", "music", "track", Some("al4"), "alpha", "{}", Some(1), None, 10),
+                ("t9", "music", "track", None, "Loose", "{}", None, None, 11),
+                ("m1", "movies", "movie", None, "Movie", r#"{"title":"Film","belongs_to_collection":{"id":10}}"#, None, Some(2001), 4),
+                ("m2", "movies", "movie", None, "Other", r#"{"belongs_to_collection":{"id":"10"}}"#, None, None, 4),
+                ("m3", "movies", "movie", None, "intro", "{}", None, Some(1999), 12),
+            ] {
+                db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,metadata,sort_number,year,created_at) VALUES (?1,?2,?3,?4,?1,?5,?6,?7,?8,?9)", rusqlite::params![id, root, kind, parent, title, metadata, sort, year, created])?;
+            }
+            for (file, media, duration) in [("f1", "t1", "200.5"), ("f1b", "t1", "300"), ("f2", "t2", "100"), ("f7", "t7", "60")] {
+                let probe = json!({"format":{"duration":duration},"streams":[{"codec_type":"audio","codec_name":"flac","sample_rate":"44100","bits_per_raw_sample":"16"}]}).to_string();
+                db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,'music',?1,'g',1,'m',?1,?2,1)", rusqlite::params![file, probe])?;
+                db.execute("INSERT INTO media_sources(media_id,file_id) VALUES (?1,?2)", rusqlite::params![media, file])?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let compared = db
+            .read("test.browse", |db| {
+                let mut compared = 0;
+                for kind in [None, Some("track"), Some("album"), Some("artist"), Some("movie")] {
+                    for parent in [None, Some("al1"), Some("ar1")] {
+                        for ancestor in [None, Some("ar1")] {
+                            for q in [None, Some(""), Some("al"), Some("INTRO"), Some("7")] {
+                                for collection in [None, Some(10)] {
+                                    for sort in [None, Some(Sort::Title), Some(Sort::Year), Some(Sort::Added)] {
+                                        for order in [Order::Asc, Order::Desc] {
+                                            for (limit, offset) in [(500, 0), (2, 1), (0, 0)] {
+                                                let input = || Browse {
+                                                    kind: kind.map(Into::into),
+                                                    parent: parent.map(Into::into),
+                                                    ancestor: ancestor.map(Into::into),
+                                                    q: q.map(Into::into),
+                                                    collection,
+                                                    sort,
+                                                    order,
+                                                    offset,
+                                                    ..Default::default()
+                                                };
+                                                assert_eq!(
+                                                    browse_page(db, input(), limit)?,
+                                                    browsed_before(db, &input(), limit),
+                                                    "{kind:?} {parent:?} {ancestor:?} {q:?} {collection:?} {limit} {offset}"
+                                                );
+                                                compared += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(compared)
+            })
+            .await
+            .unwrap();
+        assert_eq!(compared, 5 * 3 * 2 * 5 * 2 * 4 * 2 * 3);
+    }
+
+    /// How SQLite, without statistics as in production, chooses each list's page.
+    #[tokio::test]
+    async fn browsed_pages_are_chosen_by_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Database::open(temp.path().join("db.sqlite3")).unwrap();
+        let plans = db
+            .read("test.plan", |db| {
+                let plan = |input: Browse| {
+                    let (count, page, _) = browse_queries(&input);
+                    let steps = |sql: &str| {
+                        let mut statement = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                        let unbound =
+                            vec![rusqlite::types::Value::Null; statement.parameter_count()];
+                        statement
+                            .query_map(rusqlite::params_from_iter(unbound), |r| {
+                                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get(3)?))
+                            })?
+                            .collect::<rusqlite::Result<Vec<(i64, i64, String)>>>()
+                    };
+                    // What chooses the page, below its materialization.
+                    let mut chosen = Vec::new();
+                    let mut ids = Vec::new();
+                    for (id, parent, detail) in steps(&page)? {
+                        if detail.starts_with("MATERIALIZE page") || ids.contains(&parent) {
+                            ids.push(id);
+                            chosen.push(detail);
+                        }
+                    }
+                    let counted = steps(&count)?.into_iter().map(|step| step.2).collect();
+                    Ok::<_, anyhow::Error>((chosen, counted))
+                };
+                let track = || Browse {
+                    kind: Some("track".into()),
+                    sort: Some(Sort::Title),
+                    ..Default::default()
+                };
+                Ok([
+                    plan(track())?,
+                    plan(Browse {
+                        q: Some("q".into()),
+                        ..track()
+                    })?,
+                    plan(Browse {
+                        ancestor: Some("artist".into()),
+                        sort: None,
+                        ..track()
+                    })?,
+                ])
+            })
+            .await
+            .unwrap();
+        // One kind in title order, found by its title too, is paged and counted from the
+        // index alone, without sorting.
+        let covered = "SEARCH m USING COVERING INDEX media_by_title (kind=?)".to_owned();
+        for (page, count) in &plans[..2] {
+            assert!(page.contains(&covered), "{page:?}");
+            assert!(
+                !page.iter().any(|step| step.contains("TEMP B-TREE")),
+                "{page:?}"
+            );
+            assert_eq!(count, std::slice::from_ref(&covered));
+        }
+        // An artist's tracks are found from the artist.
+        let (page, count) = &plans[2];
+        for steps in [page, count] {
+            assert!(
+                steps.contains(&"SEARCH m USING INDEX media_parent (parent_id=?)".into())
+                    && !steps.iter().any(|step| step.contains("media_by_title")),
+                "{steps:?}"
+            );
+        }
+    }
 
     /// A list reads the same title and year from the fields it keeps as a page does from
     /// the whole metadata, whatever those fields hold.
