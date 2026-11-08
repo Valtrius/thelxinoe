@@ -1031,7 +1031,7 @@ INSERT INTO edition_progress VALUES ('alice','e2','',30,60,1);")?;
 }
 
 #[tokio::test]
-async fn top_level_lists_return_whole_metadata_for_their_page() {
+async fn top_level_lists_return_compact_cards() {
     let (_temp, state, alice, _) = api_fixture().await;
     let metadata = |title: &str| {
         json!({"title":title,"overview":format!("About {title}"),"tagline":"Kept",
@@ -1090,12 +1090,13 @@ async fn top_level_lists_return_whole_metadata_for_their_page() {
     let item = &body["items"][0];
     assert_eq!(item["title"], "Aaa");
     assert_eq!(item["year"], 2001);
-    assert_eq!(item["overview"], "About Aaa");
-    assert_eq!(item["metadata"]["tagline"], "Kept");
-    assert_eq!(item["metadata"]["credits"]["cast"][0]["name"], "Someone");
-    assert_eq!(item["metadata"]["belongs_to_collection"]["name"], "Set");
     assert_eq!(item["rating"], 7.5);
     assert_eq!(item["runtime"], 90);
+    // What only a title's page shows stays out of its card.
+    assert!(
+        item.get("metadata").is_none() && item.get("overview").is_none(),
+        "{item}"
+    );
 
     // Facts of titles outside the page still filter and count.
     let body = list("kind=movie&collection=7&genre=Drama&sort=rating&order=desc&limit=1").await;
@@ -1103,7 +1104,6 @@ async fn top_level_lists_return_whole_metadata_for_their_page() {
     assert_eq!(body["genres"], json!(["Drama"]));
     assert_eq!(body["items"].as_array().unwrap().len(), 1);
 
-    // A title only Radarr knows has no metadata to read.
     let body = list("kind=movie&q=Aac").await;
     assert_eq!(body["items"][0]["virtual"], true);
     assert!(body["items"][0].get("metadata").is_none());
