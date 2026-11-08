@@ -141,7 +141,7 @@ fn next_period(date: NaiveDate, interval: &str) -> NaiveDate {
 }
 
 #[cfg(test)]
-use storage::aggregate;
+use storage::{aggregate, overview_reads};
 
 #[cfg(test)]
 mod tests;
