@@ -1,7 +1,7 @@
 //! Database operations for managers.requests.
 use crate::managers::domain::{
     AcquisitionRequest, CreateAcquisition, DecideAcquisition, RequestAction, RequestReceipt,
-    RequestState,
+    RequestState, RequestTarget,
 };
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
@@ -46,6 +46,30 @@ pub(super) async fn albums(
     .await
 }
 
+/// The library artist with this MusicBrainz ID.
+pub(super) async fn library_artists(db: &Database) -> anyhow::Result<Vec<(String, String)>> {
+    db.read("managers.requests.library_artists", |db| {
+        Ok(db
+            .prepare("SELECT MIN(title),CAST(json_extract(metadata,'$.musicbrainz_artist_id') AS TEXT) AS artist FROM media WHERE kind='artist' AND artist IS NOT NULL GROUP BY artist ORDER BY 1,2")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+    .await
+}
+
+pub(super) async fn library_artist(db: &Database, id: String) -> anyhow::Result<Option<String>> {
+    db.read("managers.requests.library_artist", move |db| {
+        Ok(db
+            .query_row(
+                "SELECT id FROM media WHERE kind='artist' AND CAST(json_extract(metadata,'$.musicbrainz_artist_id') AS TEXT)=?1 ORDER BY id LIMIT 1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    })
+    .await
+}
+
 pub(super) async fn list(
     db: &Database,
     p: thelxinoe_core::Principal,
@@ -56,7 +80,7 @@ pub(super) async fn list(
         let total: i64 = db.query_row("SELECT COUNT(*) FROM acquisition_requests WHERE ?1 OR user_id=?2", params![admin,p.user.id], |r| r.get(0))?;
         let pages = ((total + 199) / 200).max(1);
         let page = i64::from(page).clamp(1,pages);
-        let items = db.prepare("SELECT r.id,r.title,r.state,r.created_at,r.updated_at,r.manager_id,r.error,u.username,s.name,s.kind,r.user_id,r.generation FROM acquisition_requests r JOIN users u ON u.id=r.user_id JOIN manager_services s ON s.id=r.service_id WHERE ?1 OR r.user_id=?2 ORDER BY r.created_at DESC,r.id DESC LIMIT 200 OFFSET ?3")?.query_map(params![admin,p.user.id,(page-1)*200], |r| {
+        let items = db.prepare("SELECT r.id,r.title,r.state,r.created_at,r.updated_at,r.manager_id,r.error,u.username,s.name,s.kind,r.user_id,r.generation,r.external_id,r.target,r.artist,r.artist_id FROM acquisition_requests r JOIN users u ON u.id=r.user_id JOIN manager_services s ON s.id=r.service_id WHERE ?1 OR r.user_id=?2 ORDER BY r.created_at DESC,r.id DESC LIMIT 200 OFFSET ?3")?.query_map(params![admin,p.user.id,(page-1)*200], |r| {
             let id: String = r.get(0)?;
             let state: String = r.get(2)?;
             let updated: i64 = r.get(4)?;
@@ -65,7 +89,7 @@ pub(super) async fn list(
                 id: format!("request:{id}"),
                 revision: crate::operations::native_request_revision(&r.get::<_,String>(11)?, &state, updated),
             }) } else { None };
-            Ok(json!({"id":id,"title":r.get::<_,String>(1)?,"state":state,"created_at":r.get::<_,i64>(3)?,"updated_at":updated,"manager_id":r.get::<_,Option<i64>>(5)?,"error":r.get::<_,Option<String>>(6)?,"username":r.get::<_,String>(7)?,"service":r.get::<_,String>(8)?,"kind":r.get::<_,String>(9)?,"user_id":owner,"attention":attention}))
+            Ok(json!({"id":id,"title":r.get::<_,String>(1)?,"state":state,"created_at":r.get::<_,i64>(3)?,"updated_at":updated,"manager_id":r.get::<_,Option<i64>>(5)?,"error":r.get::<_,Option<String>>(6)?,"username":r.get::<_,String>(7)?,"service":r.get::<_,String>(8)?,"kind":r.get::<_,String>(9)?,"user_id":owner,"attention":attention,"external_id":r.get::<_,String>(12)?,"target":r.get::<_,String>(13)?,"artist":r.get::<_,Option<String>>(14)?,"artist_id":r.get::<_,Option<String>>(15)?}))
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(json!({"items":items,"page":page,"pages":pages}))
     }).await
@@ -76,10 +100,12 @@ pub(super) async fn request(
     input: CreateAcquisition,
 ) -> anyhow::Result<RequestReceipt> {
     db.write("managers.requests.request", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some((id,state))=tx.query_row("SELECT id,state FROM acquisition_requests WHERE user_id=?1 AND service_id=?2 AND external_id=?3 AND state NOT IN ('denied','cancelled','failed')",params![input.user_id,input.service_id,input.external_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?{return Ok(RequestReceipt{id,state:serde_json::from_value(json!(state))?})}
+        // Monitoring an artist again is a new request once the previous one has reached Lidarr.
+        if let Some((id,state))=tx.query_row("SELECT id,state FROM acquisition_requests WHERE user_id=?1 AND service_id=?2 AND external_id=?3 AND state NOT IN ('denied','cancelled','failed') AND NOT (target='artist' AND state IN ('requested','available'))",params![input.user_id,input.service_id,input.external_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?{return Ok(RequestReceipt{id,state:serde_json::from_value(json!(state))?})}
         let auto=input.administrator||tx.query_row("SELECT auto_approve FROM acquisition_users WHERE user_id=?1",[&input.user_id],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
         let key=id();let state=if auto{RequestState::Approved}else{RequestState::Pending};
-        tx.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8)",params![key,input.user_id,input.service_id,input.service_generation,input.external_id,input.title,state.as_str(),now()])?;
+        let (artist,artist_id)=input.artist.unzip();
+        tx.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at,target,artist,artist_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,?9,?10,?11)",params![key,input.user_id,input.service_id,input.service_generation,input.external_id,input.title,state.as_str(),now(),input.target.as_str(),artist,artist_id])?;
         if auto{enqueue(&tx,&key)?;}tx.commit()?;Ok(RequestReceipt{id:key,state})}).await
 }
 
@@ -142,8 +168,8 @@ pub(super) async fn perform(
     db: &Database,
 ) -> anyhow::Result<Option<AcquisitionRequest>> {
     db.read("managers.requests.perform", move|db|{
-        let row=db.query_row("SELECT service_id,generation,external_id,state FROM acquisition_requests WHERE id=?1",[request_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).optional()?;
-        row.map(|(service_id,service_generation,external_id,state)|Ok(AcquisitionRequest{service_id,service_generation,external_id,state:serde_json::from_value(json!(state))?})).transpose()
+        let row=db.query_row("SELECT service_id,generation,external_id,state,target FROM acquisition_requests WHERE id=?1",[request_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?))).optional()?;
+        row.map(|(service_id,service_generation,external_id,state,target)|Ok(AcquisitionRequest{service_id,service_generation,external_id,state:serde_json::from_value(json!(state))?,target:serde_json::from_value::<RequestTarget>(json!(target))?})).transpose()
     }).await
 }
 

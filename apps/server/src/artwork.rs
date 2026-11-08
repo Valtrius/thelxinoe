@@ -238,6 +238,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 }
 
 pub(crate) async fn prune(cache: &Path) -> anyhow::Result<()> {
+    let cache = cache.to_owned();
     let originals = cache.join("artwork");
     tokio::task::spawn_blocking(move || {
         remove_files(&originals.join("cards"), |name, old| {
@@ -249,7 +250,11 @@ pub(crate) async fn prune(cache: &Path) -> anyhow::Result<()> {
             old || source.is_some_and(|source| !source.is_file())
         })?;
         // Video stills are taken again when next shown, so old ones of removed media go.
-        remove_files(&originals.join("stills"), |_, old| old)
+        remove_files(&originals.join("stills"), |_, old| old)?;
+        // So is music discovery artwork.
+        let music = cache.join("music");
+        remove_files(&music.join("cards"), |_, old| old)?;
+        remove_files(&music, |_, old| old)
     })
     .await?
 }

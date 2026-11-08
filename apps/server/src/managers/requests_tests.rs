@@ -73,7 +73,23 @@ fn stub(lidarr: Shared) -> Router {
         )
         .route(
             "/api/v1/artist",
-            get(|Stub(l): Stub<Shared>| async move { Json(json!(l.lock().unwrap().artists)) }),
+            get(|Stub(l): Stub<Shared>| async move { Json(json!(l.lock().unwrap().artists)) })
+                .post(
+                    |Stub(l): Stub<Shared>, Json(mut body): Json<Value>| async move {
+                        let mut l = l.lock().unwrap();
+                        l.calls.push("add artist".into());
+                        l.added = Some(body.clone());
+                        body["id"] = json!(5);
+                        l.artists.push(body.clone());
+                        Json(body)
+                    },
+                ),
+        )
+        .route(
+            "/api/v1/artist/lookup",
+            get(|| async {
+                Json(json!([{"artistName":"BTS","foreignArtistId":ARTIST,"images":[]}]))
+            }),
         )
         .route(
             "/api/v1/artist/{id}",
@@ -109,6 +125,20 @@ async fn requested(
     tokio::task::JoinHandle<()>,
     thelxinoe_jobs::Job,
 ) {
+    requested_target(lidarr, "item", ALBUM).await
+}
+
+/// An approved request for `external`, its claimed job, and `lidarr` serving the manager.
+async fn requested_target(
+    lidarr: Shared,
+    target: &'static str,
+    external: &'static str,
+) -> (
+    tempfile::TempDir,
+    AppState,
+    tokio::task::JoinHandle<()>,
+    thelxinoe_jobs::Job,
+) {
     let (temp, mut state, _) = fixture().await;
     let media = temp.path().join("media");
     std::fs::create_dir_all(&media).unwrap();
@@ -119,7 +149,7 @@ async fn requested(
         "metadata_profile":1,"monitored":true});
     state.db.write("test.request", move |db| {
         db.execute("UPDATE manager_services SET defaults=?1 WHERE id='lidarr'", [defaults.to_string()])?;
-        db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES ('request','alice','lidarr','g',?1,'ARIRANG','approved',1,1)", [ALBUM])?;
+        db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at,target) VALUES ('request','alice','lidarr','g',?1,'ARIRANG','approved',1,1,?2)", [external, target])?;
         thelxinoe_jobs::enqueue_in(db, "manager.request", "request", &json!({"request_id":"request"}), 0)?;
         Ok(())
     }).await.unwrap();
@@ -198,6 +228,52 @@ async fn an_unmonitored_artist_is_monitored_before_the_add_and_a_slow_album_is_s
         assert_eq!(l.calls, ["monitor artist", "add album", "AlbumSearch [7]"]);
         assert_eq!(l.added.as_ref().unwrap()["artist"]["monitored"], true);
         assert_eq!(l.artists[0]["monitorNewItems"], "none");
+    }
+    assert_eq!(progress(&state, &job.id).await.0, "requested");
+    server.abort();
+}
+
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
+#[tokio::test]
+async fn monitoring_a_new_artist_adds_it_for_its_future_albums_only() {
+    let lidarr = Shared::default();
+    let (_temp, state, server, job) = requested_target(lidarr.clone(), "artist", ARTIST).await;
+    assert!(acquire(&state, &job).await.unwrap());
+    {
+        let l = lidarr.lock().unwrap();
+        let artist = l.added.as_ref().unwrap();
+        assert_eq!(artist["monitored"], true);
+        assert_eq!(artist["monitorNewItems"], "all");
+        assert_eq!(artist["rootFolderPath"], "/media/music");
+        assert_eq!(
+            artist["addOptions"],
+            json!({"monitor":"future","searchForMissingAlbums":false})
+        );
+        assert_eq!(l.calls, ["add artist"]);
+    }
+    assert_eq!(
+        progress(&state, &job.id).await,
+        ("requested".into(), Some(5), false)
+    );
+    server.abort();
+}
+
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
+#[tokio::test]
+async fn monitoring_an_artist_lidarr_holds_takes_on_its_new_albums() {
+    let lidarr = Shared::default();
+    lidarr
+        .lock()
+        .unwrap()
+        .artists
+        .push(json!({"id":5,"foreignArtistId":ARTIST,
+        "artistName":"BTS","monitored":true,"monitorNewItems":"none"}));
+    let (_temp, state, server, job) = requested_target(lidarr.clone(), "artist", ARTIST).await;
+    assert!(acquire(&state, &job).await.unwrap());
+    {
+        let l = lidarr.lock().unwrap();
+        assert_eq!(l.calls, ["monitor artist"]);
+        assert_eq!(l.artists[0]["monitorNewItems"], "all");
     }
     assert_eq!(progress(&state, &job.id).await.0, "requested");
     server.abort();
