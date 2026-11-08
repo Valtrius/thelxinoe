@@ -66,6 +66,143 @@ async fn variants_preserve_originals_and_alpha_and_invalidate_when_the_source_ch
     }
 }
 
+/// A photo-like image: gradients, curves and hard edges.
+fn photo(width: u32, height: u32, gray: bool) -> Vec<u8> {
+    let image = image::RgbImage::from_fn(width, height, |x, y| {
+        let (fx, fy) = (x as f32 / width as f32, y as f32 / height as f32);
+        let ring = ((fx - 0.5).hypot(fy - 0.5) * 40.0).sin() * 60.0;
+        image::Rgb([
+            (fx * 200.0 + ring).clamp(0.0, 255.0) as u8,
+            (fy * 200.0 - ring).clamp(0.0, 255.0) as u8,
+            if (x / 40 + y / 40) % 2 == 0 { 40 } else { 210 },
+        ])
+    });
+    let image = if gray {
+        DynamicImage::ImageLuma8(DynamicImage::ImageRgb8(image).to_luma8())
+    } else {
+        DynamicImage::ImageRgb8(image)
+    };
+    let mut bytes = Cursor::new(Vec::new());
+    image.write_to(&mut bytes, ImageFormat::Jpeg).unwrap();
+    bytes.into_inner()
+}
+
+/// A black JPEG with blue rows.
+fn lined(width: u32, height: u32, rows: &[u32]) -> Vec<u8> {
+    let image = image::RgbImage::from_fn(width, height, |_, y| {
+        image::Rgb(if rows.contains(&y) {
+            [0, 0, 255]
+        } else {
+            [0, 0, 0]
+        })
+    });
+    let mut bytes = Cursor::new(Vec::new());
+    image.write_to(&mut bytes, ImageFormat::Jpeg).unwrap();
+    bytes.into_inner()
+}
+
+/// The JPEG with an Adobe segment naming how its colours are stored.
+fn adobe(bytes: &[u8], transform: u8) -> Vec<u8> {
+    let mut segment = vec![0xFF, 0xEE, 0, 14];
+    segment.extend_from_slice(b"Adobe");
+    segment.extend_from_slice(&[0, 100, 0, 0, 0, 0, transform]);
+    [&bytes[..2], &segment, &bytes[2..]].concat()
+}
+
+/// The card a whole decode makes, as before JPEGs were decoded scaled.
+fn whole(bytes: &[u8], width: u32) -> DynamicImage {
+    let decoded = image::load_from_memory(bytes).unwrap();
+    decoded.resize(
+        width.min(decoded.width()),
+        decoded.height(),
+        image::imageops::FilterType::Triangle,
+    )
+}
+
+fn psnr(a: &DynamicImage, b: &DynamicImage) -> f64 {
+    let (a, b) = (a.to_rgb8(), b.to_rgb8());
+    let error = a
+        .as_raw()
+        .iter()
+        .zip(b.as_raw())
+        .map(|(x, y)| (f64::from(*x) - f64::from(*y)).powi(2))
+        .sum::<f64>()
+        / a.as_raw().len() as f64;
+    10.0 * (255.0f64.powi(2) / error).log10()
+}
+
+#[test]
+fn large_jpegs_decode_scaled_to_the_size_and_look_of_a_whole_decode() {
+    for (width, height, card, gray) in [
+        (2000, 3000, 500, false),
+        (2000, 3000, 1000, false),
+        (3840, 2160, 500, false),
+        (1440, 2160, 500, true),
+        (1000, 1500, 500, false),
+        (3996, 1080, 1000, false),
+    ] {
+        let bytes = photo(width, height, gray);
+        let scaled = scaled_jpeg(&bytes, card).unwrap();
+        let before = whole(&bytes, card);
+        assert_eq!(scaled.dimensions(), before.dimensions(), "{width}x{height}");
+        assert_eq!(scaled.color(), before.color(), "{width}x{height}");
+        // The two downscale differently, most at hard edges such as these squares. A
+        // swapped channel, a shift or a wrong scale lands far below this.
+        let quality = psnr(&scaled, &before);
+        assert!(quality > 20.0, "{width}x{height}: {quality} dB");
+    }
+    let bytes = adobe(&photo(2000, 3000, false), 1);
+    let quality = psnr(&scaled_jpeg(&bytes, 500).unwrap(), &whole(&bytes, 500));
+    assert!(quality > 20.0, "Adobe YCbCr: {quality} dB");
+}
+
+#[test]
+fn jpegs_scaling_would_not_shrink_or_beyond_limits_decode_whole() {
+    // Less than twice as wide as the card.
+    assert!(scaled_jpeg(&photo(999, 1500, false), 500).is_none());
+    // Wider than `image` decodes.
+    assert!(scaled_jpeg(&photo(8200, 100, false), 500).is_none());
+    assert!(scaled_jpeg(b"invalid image", 500).is_none());
+    // Lossless JPEGs have no IDCT to scale.
+    assert!(scaled_jpeg(include_bytes!("lossless.jpg"), 32).is_none());
+    // `image` reads these colours as stored, where this decoder would convert them.
+    assert!(scaled_jpeg(&adobe(&photo(2000, 3000, false), 0), 500).is_none());
+    // No scale covers the card with whole MCUs.
+    for (width, height, card) in [
+        (1999, 3001, 500),
+        (1160, 2175, 500),
+        (2320, 2349, 1000),
+        (4000, 9, 500),
+        (1000, 1, 500),
+    ] {
+        assert!(
+            scaled_jpeg(&photo(width, height, false), card).is_none(),
+            "{width}x{height}"
+        );
+    }
+}
+
+#[test]
+fn a_cards_edge_is_read_like_the_rest_of_it() {
+    // The same line at the same place in its MCU, inside the image and at its edge.
+    let card = scaled_jpeg(&lined(2000, 3000, &[1495, 2999]), 500)
+        .unwrap()
+        .to_rgb8();
+    let blue = |row: u32| {
+        (0..card.width())
+            .map(|x| f64::from(card.get_pixel(x, row)[2]))
+            .sum::<f64>()
+            / f64::from(card.width())
+    };
+    let (inside, edge) = (blue(1495 / 4), blue(2999 / 4));
+    assert!(
+        inside > 32.0 && (edge - inside).abs() < 4.0,
+        "{edge} against {inside}"
+    );
+    // At the edge of a partial MCU, a scaled row would mostly be the encoder's padding.
+    assert!(scaled_jpeg(&lined(2000, 3001, &[3000]), 500).is_none());
+}
+
 #[tokio::test]
 async fn invalid_or_unwritable_cache_falls_back_and_orphans_are_pruned() {
     let dir = tempfile::tempdir().unwrap();
