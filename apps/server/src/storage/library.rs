@@ -405,8 +405,8 @@ impl<'de> serde::de::Visitor<'de> for Unread {
     }
 }
 
-/// A `media_row` card holding only the listed metadata, and the metadata as stored.
-fn listed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(Value, Box<str>)> {
+/// A `media_row` card holding only the listed metadata.
+fn listed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let stored = r.get::<_, String>(6)?;
     let metadata = match serde_json::from_str::<ListedMetadata>(&stored) {
         Ok(listed) => listed.0,
@@ -419,16 +419,13 @@ fn listed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(Value, Box<str>)> {
             other => other,
         },
     };
-    Ok((card_row(r, metadata)?, stored.into_boxed_str()))
+    card_row(r, metadata)
 }
 
 /// Every top-level movie or show in a fixed order, with when it joined the library and
 /// what its files weigh. A show is available once any of its episodes is. Each card holds
-/// only the metadata its list needs, beside the whole metadata as stored.
-pub(super) async fn titles(
-    db: &Database,
-    kind: String,
-) -> anyhow::Result<Vec<(Value, Facts, Box<str>)>> {
+/// only the metadata its list needs.
+pub(super) async fn titles(db: &Database, kind: String) -> anyhow::Result<Vec<(Value, Facts)>> {
     db.read("library.titles", move |db| {
         let mut query = db.prepare("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,
                 CASE m.kind WHEN 'show' THEN EXISTS(SELECT 1 FROM media s JOIN media e ON e.parent_id=s.id JOIN media_sources ms ON ms.media_id=e.id JOIN media_files f ON f.id=ms.file_id WHERE s.parent_id=m.id AND f.present=1)
@@ -441,16 +438,14 @@ pub(super) async fn titles(
             FROM media m WHERE m.kind=?1 AND m.parent_id IS NULL ORDER BY m.id")?;
         Ok(query
             .query_map([kind], |r| {
-                let (card, metadata) = listed_row(r)?;
                 Ok((
-                    card,
+                    listed_row(r)?,
                     Facts {
                         added: Some(r.get(8)?),
                         size: r.get::<_, Option<i64>>(9)?.filter(|size| *size > 0),
                         episodes: Some(r.get::<_, i64>(10)?).filter(|count| *count > 0),
                         ..Facts::default()
                     },
-                    metadata,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
@@ -787,7 +782,7 @@ mod tests {
             "{",
             "",
         ] {
-            let row = |r: &rusqlite::Row<'_>| Ok((listed_row(r)?.0, media_row(r)?));
+            let row = |r: &rusqlite::Row<'_>| Ok((listed_row(r)?, media_row(r)?));
             let (listed, whole) = db
                 .query_row(
                     "SELECT 'id','movie','Stored',NULL,1999,NULL,?1,1",
@@ -812,7 +807,7 @@ mod tests {
             .query_row(
                 "SELECT 'id','movie','Stored',NULL,1999,NULL,?1,1",
                 [r#"{"title":"Own","overview":"Long","credits":{"cast":[]},"runtime":90}"#],
-                |r| Ok(listed_row(r)?.0),
+                listed_row,
             )
             .unwrap();
         assert_eq!(listed["overview"], Value::Null);

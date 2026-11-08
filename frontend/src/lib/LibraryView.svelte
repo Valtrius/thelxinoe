@@ -52,9 +52,7 @@
     year: number | null;
     available: boolean;
     watched: boolean;
-    metadata: Record<string, unknown>;
     artwork_url?: string;
-    overview?: string;
     virtual?: boolean;
     status?: TitleStatus | null;
     ended?: boolean;
