@@ -75,6 +75,11 @@ pub(super) async fn scan_with_progress_read_present_paths(
     .await
 }
 
+/// The entries a file stands for, found by `media_sources_file` once per changed file. They
+/// come in the order they were linked, which `place` carries them over in.
+const LINKED_MEDIA: &str = "SELECT media_id FROM media_sources WHERE file_id=?1 ORDER BY rowid";
+const UNLINK_FILE: &str = "DELETE FROM media_sources WHERE file_id=?1";
+
 pub(super) async fn scan_with_progress_write_media_files(
     indexed: Vec<IndexedFile>,
     current_paths: std::collections::HashSet<String>,
@@ -102,13 +107,13 @@ pub(super) async fn scan_with_progress_write_media_files(
             // are kept distinct instead of merging unrelated entries by a guessed title.
             let candidates:Vec<_>=missing.iter().filter(|(_,hash)|hash==&file.fingerprint).collect();
             let source_file=if old.is_some(){Some(&file_id)}else if candidates.len()==1 && fingerprint_counts.get(&file.fingerprint)==Some(&1){Some(&candidates[0].0)}else{None};
-            let previous:Vec<String>=if let Some(source)=source_file{tx.prepare("SELECT media_id FROM media_sources WHERE file_id=?1")?.query_map([source],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?}else{Vec::new()};
+            let previous:Vec<String>=if let Some(source)=source_file{tx.prepare(LINKED_MEDIA)?.query_map([source],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?}else{Vec::new()};
             let changed=tx.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,edition,present,scanned_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10) ON CONFLICT(path) DO UPDATE SET generation=excluded.generation,size=excluded.size,modified=excluded.modified,fingerprint=excluded.fingerprint,probe=excluded.probe,edition=excluded.edition,present=1,scanned_at=excluded.scanned_at,ownership=CASE WHEN generation=excluded.generation THEN ownership ELSE 'unresolved' END WHERE media_files.generation IS NOT excluded.generation OR media_files.size IS NOT excluded.size OR media_files.modified IS NOT excluded.modified OR media_files.fingerprint IS NOT excluded.fingerprint OR media_files.probe IS NOT excluded.probe OR media_files.edition IS NOT excluded.edition OR media_files.present=0",params![file_id,root.id,file.path,generation,file.size,file.modified,file.fingerprint,file.probe.to_string(),file.edition,now()])?;
             let trailer=file.probe["thelxinoe_local_trailer"].as_bool()==Some(true);
             // An unchanged file keeps its row and its media links as they are, unless how files
             // are identified changed and it now stands for other entries.
             if changed==0 && (trailer || placed(&tx,&previous,&file.identities)?) {continue;}
-            tx.execute("DELETE FROM media_sources WHERE file_id=?1",[&file_id])?;
+            tx.execute(UNLINK_FILE,[&file_id])?;
             tx.execute("DELETE FROM local_trailers WHERE file_id=?1",[&file_id])?;
             let linked=place(&tx,&root.id,&file_id,&file.identities,&previous,trailer,&mut vacated)?;
             vacated.extend(previous.into_iter().filter(|media|!linked.contains(media)));
@@ -254,4 +259,38 @@ fn prune(tx: &rusqlite::Connection, mut vacated: Vec<String>) -> anyhow::Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scan reaches a file's links through its index, in the order they were linked and
+    /// without sorting them, instead of reading every link.
+    #[tokio::test]
+    async fn file_links_are_found_by_index() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = Database::open(temp.path().join("db.sqlite3"))?;
+        let plans = db
+            .read("test.plan", |c| {
+                [LINKED_MEDIA, UNLINK_FILE]
+                    .into_iter()
+                    .map(|sql| {
+                        let mut plan = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                        Ok(plan
+                            .query_map([""], |r| r.get::<_, String>(3))?
+                            .collect::<rusqlite::Result<Vec<_>>>()?)
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .await?;
+        assert_eq!(
+            plans,
+            [
+                ["SEARCH media_sources USING INDEX media_sources_file (file_id=?)"],
+                ["SEARCH media_sources USING COVERING INDEX media_sources_file (file_id=?)"]
+            ]
+        );
+        Ok(())
+    }
 }
