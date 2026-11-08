@@ -302,7 +302,7 @@ async fn an_abandoned_segment_leaves_no_partial_output() {
 }
 
 // A remux reads the whole file once to find its keyframes; later starts of the same file
-// generation reuse the index instead of reading it again.
+// generation reuse the index instead of reading it again, in this process or a later one.
 #[tokio::test]
 async fn a_keyframe_index_is_built_once_per_file_generation() {
     let temp = tempfile::tempdir().unwrap();
@@ -345,8 +345,26 @@ async fn a_keyframe_index_is_built_once_per_file_generation() {
         modified: "1".into(),
         probe: serde_json::json!({"format":{"duration":"6","start_time":"0"}}),
     };
-    let vod = crate::vod::VodCache::open(
+    let kept = root.join("keyframes");
+    let open = || async {
+        crate::vod::VodCache::open(
+            &root.join("cache"),
+            &kept,
+            Arc::new(tokio::sync::Semaphore::new(4)),
+            tools.clone(),
+            Arc::new(crate::cache::Scanner::default()),
+            Arc::default(),
+        )
+        .await
+        .unwrap()
+    };
+    let media_tools = tools.media().unwrap();
+    // Where indexes can't be kept, starts still index the file.
+    let blocked = root.join("blocked");
+    std::fs::write(&blocked, "").unwrap();
+    let unkept = crate::vod::VodCache::open(
         &root.join("cache"),
+        &blocked,
         Arc::new(tokio::sync::Semaphore::new(4)),
         tools.clone(),
         Arc::new(crate::cache::Scanner::default()),
@@ -354,19 +372,94 @@ async fn a_keyframe_index_is_built_once_per_file_generation() {
     )
     .await
     .unwrap();
-    let media_tools = tools.media().unwrap();
+    assert_eq!(
+        unkept.index(&source, &media_tools).await.unwrap().0,
+        [0.0, 2.0, 4.0, 6.0]
+    );
+    let vod = open().await;
     let (boundaries, _) = vod.index(&source, &media_tools).await.unwrap();
     assert_eq!(boundaries, [0.0, 2.0, 4.0, 6.0]);
+    // A kept index that no longer reads, or reads otherwise than written, is built again.
+    let written = std::fs::read_dir(&kept)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(written.len(), 1);
+    let whole = std::fs::read(&written[0]).unwrap();
+    let mut flipped = whole.clone();
+    // The sign of the second boundary, after the hash and the video start.
+    flipped[32 + 8 + 8 + 7] ^= 0x80;
+    for changed in [flipped, whole[..10].to_vec()] {
+        std::fs::write(&written[0], changed).unwrap();
+        assert_eq!(
+            open().await.index(&source, &media_tools).await.unwrap().0,
+            boundaries
+        );
+        assert_eq!(std::fs::read(&written[0]).unwrap(), whole);
+    }
     // Served from the index: the file is no longer there to read.
     std::fs::remove_file(&media).unwrap();
     assert_eq!(
         vod.index(&source, &media_tools).await.unwrap().0,
         boundaries
     );
-    // Another generation of the file is indexed anew.
+    let later = open().await;
+    assert_eq!(
+        later.index(&source, &media_tools).await.unwrap().0,
+        boundaries
+    );
+    // Another generation of the file, another probe or another ffprobe indexes anew.
     let changed = Source {
         modified: "2".into(),
-        ..source
+        ..source.clone()
     };
-    assert!(vod.index(&changed, &media_tools).await.is_err());
+    assert!(later.index(&changed, &media_tools).await.is_err());
+    let reprobed = Source {
+        probe: serde_json::json!({"format":{"duration":"6.1","start_time":"0"}}),
+        ..source.clone()
+    };
+    assert!(later.index(&reprobed, &media_tools).await.is_err());
+    let mut upgraded = media_tools.clone();
+    upgraded.ffprobe.digest = "upgraded".into();
+    assert!(later.index(&source, &upgraded).await.is_err());
+}
+
+#[tokio::test]
+async fn kept_keyframe_indexes_are_the_latest_written() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path();
+    let epoch = std::time::SystemTime::UNIX_EPOCH;
+    for index in 0..crate::vod::KEPT_INDEXES as u64 {
+        let file = std::fs::File::create(directory.join(format!("{index}.json"))).unwrap();
+        file.set_modified(epoch + std::time::Duration::from_secs(index))
+            .unwrap();
+    }
+    let latest = directory.join("latest.json");
+    crate::vod::keep_index(directory, &latest, &(vec![0.0, 6.0], 0.0))
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_dir(directory).unwrap().count(),
+        crate::vod::KEPT_INDEXES
+    );
+    assert!(!directory.join("0.json").exists());
+    assert!(directory.join("1.json").exists());
+    assert_eq!(
+        crate::vod::kept_index(&std::fs::read(latest).unwrap()),
+        Some((vec![0.0, 6.0], 0.0))
+    );
+}
+
+#[test]
+fn kept_keyframe_indexes_read_back_exactly() {
+    // Times that differ from their shortest decimal reading in the last bit.
+    let index = (
+        vec![0.0, 3.402 - 1.4, 0.1 + 0.2, 7200.000000000001, 5e-324],
+        1.4,
+    );
+    let kept = crate::vod::kept_bytes(&index);
+    assert_eq!(crate::vod::kept_index(&kept), Some(index));
+    for changed in [&kept[..kept.len() - 1], &kept[..32], &[]] {
+        assert_eq!(crate::vod::kept_index(changed), None);
+    }
 }
