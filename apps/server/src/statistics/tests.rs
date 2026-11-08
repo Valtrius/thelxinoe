@@ -486,3 +486,171 @@ async fn progress_reports_read_statistics_sources_by_key() {
         .await
         .unwrap();
 }
+
+/// The rows an overview read before it named only the filters asked for: when tracking
+/// started, then the activity and the statistics in range.
+fn overview_rows_before(
+    db: &rusqlite::Connection,
+    user: Option<&str>,
+    platform: &str,
+    cutoff: Option<i64>,
+    now: i64,
+) -> rusqlite::Result<[Vec<Vec<rusqlite::types::Value>>; 3]> {
+    let tracking = "SELECT MIN(bucket_started_at) FROM playback_activity WHERE (?1 IS NULL OR user_id=?1) AND (?2='all' OR platform=?2) AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||playback_activity.platform||'.enabled' AND value='false')";
+    let activity = "SELECT bucket_started_at,platform,media_id,active_seconds,channel_id,channel_name,user_id FROM playback_activity WHERE (?1 IS NULL OR user_id=?1) AND (?2='all' OR platform=?2) AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||playback_activity.platform||'.enabled' AND value='false') AND (?3 IS NULL OR bucket_started_at>=?3) AND bucket_started_at<=?4 ORDER BY bucket_started_at";
+    let statistics = "SELECT s.platform,CASE WHEN s.platform='youtube' THEN s.first_played_at ELSE s.last_played_at END,s.content_type,COALESCE(y.watched,m.watched,s.completed),s.channel_id,s.category_name
+        FROM playback_statistics s LEFT JOIN youtube_state y ON y.user_id=s.user_id AND 'youtube:'||y.video_id=s.media_id
+        LEFT JOIN media_state m ON m.user_id=s.user_id AND m.media_id=s.media_id
+        WHERE (?1 IS NULL OR s.user_id=?1) AND (?2='all' OR s.platform=?2) AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||s.platform||'.enabled' AND value='false') AND (?3 IS NULL OR CASE WHEN s.platform='youtube' THEN s.first_played_at ELSE s.last_played_at END>=?3) AND s.last_played_at<=?4";
+    Ok([
+        rows(db, tracking, params![user, platform])?,
+        rows(db, activity, params![user, platform, cutoff, now])?,
+        rows(db, statistics, params![user, platform, cutoff, now])?,
+    ])
+}
+
+fn rows(
+    db: &rusqlite::Connection,
+    sql: &str,
+    values: impl rusqlite::Params,
+) -> rusqlite::Result<Vec<Vec<rusqlite::types::Value>>> {
+    let mut statement = db.prepare(sql)?;
+    let columns = statement.column_count();
+    statement
+        .query_map(values, |r| {
+            (0..columns)
+                .map(|i| r.get(i))
+                .collect::<rusqlite::Result<_>>()
+        })?
+        .collect()
+}
+
+/// Every overview reads the rows it read before, for each user, platform and range, around
+/// the range's first moment and now, with a provider turned off.
+#[tokio::test]
+async fn overview_reads_find_the_rows_they_found_before() {
+    let (_temp, state, _) = fixture().await;
+    let compared = state.db.write("test.compare", |db| {
+        let now = "2026-11-08T12:00:30Z".parse::<DateTime<Utc>>()?;
+        let at = now.timestamp();
+        let mut moments = vec![at - 400 * 86_400, at - 60 * 86_400, at - 3_600, at, at + 60];
+        for range in RANGES {
+            if let Some(cutoff) = range_cutoff(chrono_tz::UTC, range, now) {
+                moments.extend([cutoff - 60, cutoff, cutoff + 60]);
+            }
+        }
+        db.execute("INSERT INTO settings(key,value) VALUES ('online.twitch.enabled','false')", [])?;
+        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('movies','Movies','movies','/movies')", [])?;
+        for (u, user) in ["alice", "bob"].into_iter().enumerate() {
+            for (p, platform) in PLATFORMS.into_iter().enumerate() {
+                for (m, moment) in moments.iter().enumerate() {
+                    // Each user leaves out some moments, so their rows differ.
+                    if (u + p + m) % 3 == 0 {
+                        continue;
+                    }
+                    let media = format!("{platform}:{m}");
+                    db.execute("INSERT INTO playback_activity VALUES (?1,?2,?3,?4,?5,?4,'channel','Channel','','upload')", params![user, moment, platform, media, (m + 1) as f64])?;
+                    db.execute("INSERT INTO playback_statistics VALUES (?1,?2,?3,?3,'channel','Channel','','upload',?4,?5,100,?6)", params![user, platform, media, moment - 86_400 * (m as i64 % 2), moment, m % 2 == 0])?;
+                    if platform == "youtube" && m % 3 == 1 {
+                        db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES (?1,?2,'Video')", params![user, m.to_string()])?;
+                        db.execute("INSERT INTO youtube_state(user_id,video_id,watched,updated_at) VALUES (?1,?2,?3,1)", params![user, m.to_string(), u == 0])?;
+                    }
+                    if platform == "movies" && m % 3 == 2 {
+                        db.execute("INSERT OR IGNORE INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES (?1,'movies','movie',?1,?1,1)", [&media])?;
+                        db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,?3,1)", params![user, media, u == 1])?;
+                    }
+                }
+            }
+        }
+        let mut compared = 0;
+        let mut found = 0;
+        for user in [None, Some("alice"), Some("bob"), Some("nobody")] {
+            for platform in std::iter::once("all").chain(PLATFORMS) {
+                for range in RANGES {
+                    let cutoff = range_cutoff(chrono_tz::UTC, range, now);
+                    let reads = overview_reads(user, platform, cutoff, at);
+                    let [tracking, mut activity, mut statistics] =
+                        overview_rows_before(db, user, platform, cutoff, at)?;
+                    let mut read_activity =
+                        rows(db, &reads.activity, rusqlite::params_from_iter(&reads.bounds))?;
+                    let mut read_statistics =
+                        rows(db, &reads.statistics, rusqlite::params_from_iter(&reads.bounds))?;
+                    assert_eq!(
+                        rows(db, &reads.tracking, rusqlite::params_from_iter(&reads.scope))?,
+                        tracking,
+                        "{user:?} {platform} {range}"
+                    );
+                    // Activity comes in time order; rows of the same minute in any order.
+                    assert!(read_activity.is_sorted_by_key(|row| match row[0] {
+                        rusqlite::types::Value::Integer(at) => at,
+                        _ => i64::MIN,
+                    }));
+                    for list in [&mut activity, &mut read_activity, &mut statistics, &mut read_statistics] {
+                        list.sort_by_key(|row| format!("{row:?}"));
+                    }
+                    assert_eq!(read_activity, activity, "{user:?} {platform} {range}");
+                    assert_eq!(read_statistics, statistics, "{user:?} {platform} {range}");
+                    compared += 1;
+                    found += activity.len() + statistics.len();
+                }
+            }
+        }
+        Ok((compared, found))
+    }).await.unwrap();
+    assert_eq!(compared, (4 * 7 * 4, 1_828));
+}
+
+/// An overview finds a person's activity and statistics by their key and a range's activity
+/// by its date, without reading the rest.
+#[tokio::test]
+async fn overview_reads_are_found_by_key_and_date() {
+    let (_temp, state, _) = fixture().await;
+    let plans = state
+        .db
+        .read("test.plans", |db| {
+            let plans = |user, platform| {
+                let reads = overview_reads(user, platform, Some(1), 2);
+                [reads.tracking, reads.activity, reads.statistics]
+                    .map(|sql| crate::test_support::query_plan(db, &sql))
+                    .into_iter()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            };
+            Ok([
+                plans(Some("alice"), "all")?,
+                plans(Some("alice"), "movies")?,
+                plans(None, "all")?,
+            ])
+        })
+        .await
+        .unwrap();
+    let person =
+        "SEARCH a USING PRIMARY KEY (user_id=? AND bucket_started_at>? AND bucket_started_at<?)";
+    let expected = [
+        [
+            "SEARCH a USING PRIMARY KEY (user_id=?)",
+            person,
+            "SEARCH s USING INDEX sqlite_autoindex_playback_statistics_1 (user_id=?)",
+        ],
+        [
+            "SEARCH a USING PRIMARY KEY (user_id=?)",
+            person,
+            "SEARCH s USING INDEX sqlite_autoindex_playback_statistics_1 (user_id=? AND platform=?)",
+        ],
+        [
+            "SEARCH a USING COVERING INDEX playback_activity_date",
+            "SEARCH a USING INDEX playback_activity_date (bucket_started_at>? AND bucket_started_at<?)",
+            // Everyone's statistics have no date to be found by.
+            "SCAN s",
+        ],
+    ];
+    for (plans, expected) in plans.iter().zip(expected) {
+        for (plan, first) in plans.iter().zip(expected) {
+            assert_eq!(plan[0], first, "{plan:#?}");
+            // Activity comes from the key or index in time order, without sorting.
+            assert!(
+                !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+                "{plan:#?}"
+            );
+        }
+    }
+}

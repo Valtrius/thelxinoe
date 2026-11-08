@@ -208,6 +208,81 @@ pub(crate) fn delete_provider(
     Ok(())
 }
 
+/// What an overview reads: when tracking started, then the activity and the statistics in
+/// its range. Each names only the filters asked for, so a key or index finds its rows.
+pub(super) struct OverviewReads {
+    pub(super) tracking: String,
+    pub(super) activity: String,
+    pub(super) statistics: String,
+    /// What `tracking` binds.
+    pub(super) scope: Vec<rusqlite::types::Value>,
+    /// What `activity` and `statistics` bind.
+    pub(super) bounds: Vec<rusqlite::types::Value>,
+}
+
+pub(super) fn overview_reads(
+    user: Option<&str>,
+    platform: &str,
+    cutoff: Option<i64>,
+    now: i64,
+) -> OverviewReads {
+    let mut scope = Vec::<rusqlite::types::Value>::new();
+    let mut asked = Vec::new();
+    if let Some(user) = user {
+        scope.push(user.to_owned().into());
+        asked.push(("user_id", scope.len()));
+    }
+    if platform != "all" {
+        scope.push(platform.to_owned().into());
+        asked.push(("platform", scope.len()));
+    }
+    let filtered = |table: &str| {
+        let mut conditions = asked
+            .iter()
+            .map(|(column, at)| format!("{table}.{column}=?{at}"))
+            .collect::<Vec<_>>();
+        conditions.push(format!("NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||{table}.platform||'.enabled' AND value='false')"));
+        conditions
+    };
+    let mut bounds = scope.clone();
+    let since = cutoff.map(|cutoff| {
+        bounds.push(cutoff.into());
+        bounds.len()
+    });
+    bounds.push(now.into());
+    let until = bounds.len();
+    // YouTube videos count from when they were first played, everything else from the last time.
+    const PLAYED: &str =
+        "CASE WHEN s.platform='youtube' THEN s.first_played_at ELSE s.last_played_at END";
+    let mut activity = filtered("a");
+    let mut statistics = filtered("s");
+    if let Some(since) = since {
+        activity.push(format!("a.bucket_started_at>=?{since}"));
+        statistics.push(format!("{PLAYED}>=?{since}"));
+    }
+    activity.push(format!("a.bucket_started_at<=?{until}"));
+    statistics.push(format!("s.last_played_at<=?{until}"));
+    OverviewReads {
+        tracking: format!(
+            "SELECT MIN(a.bucket_started_at) FROM playback_activity a WHERE {}",
+            filtered("a").join(" AND ")
+        ),
+        activity: format!(
+            "SELECT a.bucket_started_at,a.platform,a.media_id,a.active_seconds,a.channel_id,a.channel_name,a.user_id FROM playback_activity a WHERE {} ORDER BY a.bucket_started_at",
+            activity.join(" AND ")
+        ),
+        statistics: format!(
+            "SELECT s.platform,{PLAYED},s.content_type,COALESCE(y.watched,m.watched,s.completed),s.channel_id,s.category_name
+        FROM playback_statistics s LEFT JOIN youtube_state y ON y.user_id=s.user_id AND 'youtube:'||y.video_id=s.media_id
+        LEFT JOIN media_state m ON m.user_id=s.user_id AND m.media_id=s.media_id
+        WHERE {}",
+            statistics.join(" AND ")
+        ),
+        scope,
+        bounds,
+    }
+}
+
 pub(super) fn aggregate(
     db: &rusqlite::Connection,
     user: Option<&str>,
@@ -231,7 +306,12 @@ pub(super) fn aggregate(
         "all" => "month",
         _ => "day",
     };
-    let tracking: Option<i64> = db.query_row("SELECT MIN(bucket_started_at) FROM playback_activity WHERE (?1 IS NULL OR user_id=?1) AND (?2='all' OR platform=?2) AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||playback_activity.platform||'.enabled' AND value='false')",params![user,platform],|r|r.get(0))?;
+    let reads = overview_reads(user, platform, cutoff, now.timestamp());
+    let tracking: Option<i64> = db.query_row(
+        &reads.tracking,
+        rusqlite::params_from_iter(&reads.scope),
+        |r| r.get(0),
+    )?;
     let mut activity = BTreeMap::<NaiveDate, [f64; 6]>::new();
     let mut rhythm = [[0.0; 6]; 168];
     let mut totals = [0.0; 6];
@@ -239,8 +319,8 @@ pub(super) fn aggregate(
     let mut channels = HashMap::<(String, String), Channel>::new();
     let mut people = BTreeMap::<String, f64>::new();
     let mut streams = [HashSet::<String>::new(), HashSet::<String>::new()];
-    let mut statement = db.prepare("SELECT bucket_started_at,platform,media_id,active_seconds,channel_id,channel_name,user_id FROM playback_activity WHERE (?1 IS NULL OR user_id=?1) AND (?2='all' OR platform=?2) AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||playback_activity.platform||'.enabled' AND value='false') AND (?3 IS NULL OR bucket_started_at>=?3) AND bucket_started_at<=?4 ORDER BY bucket_started_at")?;
-    let mut rows = statement.query(params![user, platform, cutoff, now.timestamp()])?;
+    let mut statement = db.prepare(&reads.activity)?;
+    let mut rows = statement.query(rusqlite::params_from_iter(&reads.bounds))?;
     while let Some(row) = rows.next()? {
         let timestamp: i64 = row.get(0)?;
         let Some(local) = DateTime::from_timestamp(timestamp, 0).map(|t| t.with_timezone(&zone))
@@ -322,11 +402,8 @@ pub(super) fn aggregate(
     let mut mix = [0; 3];
     let mut groups: [HashSet<String>; 6] = Default::default();
     let mut albums = HashSet::new();
-    let mut statement = db.prepare("SELECT s.platform,CASE WHEN s.platform='youtube' THEN s.first_played_at ELSE s.last_played_at END,s.content_type,COALESCE(y.watched,m.watched,s.completed),s.channel_id,s.category_name
-        FROM playback_statistics s LEFT JOIN youtube_state y ON y.user_id=s.user_id AND 'youtube:'||y.video_id=s.media_id
-        LEFT JOIN media_state m ON m.user_id=s.user_id AND m.media_id=s.media_id
-        WHERE (?1 IS NULL OR s.user_id=?1) AND (?2='all' OR s.platform=?2) AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||s.platform||'.enabled' AND value='false') AND (?3 IS NULL OR CASE WHEN s.platform='youtube' THEN s.first_played_at ELSE s.last_played_at END>=?3) AND s.last_played_at<=?4")?;
-    let mut rows = statement.query(params![user, platform, cutoff, now.timestamp()])?;
+    let mut statement = db.prepare(&reads.statistics)?;
+    let mut rows = statement.query(rusqlite::params_from_iter(&reads.bounds))?;
     while let Some(row) = rows.next()? {
         let Some(date) =
             DateTime::from_timestamp(row.get(1)?, 0).map(|t| t.with_timezone(&zone).date_naive())
