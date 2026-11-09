@@ -74,9 +74,17 @@ test('server actions stay pending for three seconds while background reads stay 
 }, info) => {
   await page.goto('/#admin/services/prowlarr');
   const panel = await scenario(page, 'owned');
-  await expect(panel.getByLabel('Response delay', { exact: true })).toHaveValue(
-    '3000',
-  );
+  await panel
+    .getByLabel('Response delay', { exact: true })
+    .selectOption('3000');
+  await panel.getByRole('button', { name: 'Apply controls' }).click();
+  await expect
+    .poll(
+      async () =>
+        (await (await page.request.get('/__mock/services')).json()).services
+          .prowlarr.delay,
+    )
+    .toBe(3000);
   await panel.getByRole('button', { name: 'Close service scenarios' }).click();
   const restart = page.getByRole('button', { name: 'Restart', exact: true });
   const finished = page.waitForResponse(

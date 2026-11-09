@@ -1,4 +1,12 @@
-export const serverActionDelay = 3000;
+// How long server actions take by default, so their pending states show.
+// Tests start without it and set a delay on the services that need one.
+export const serverActionDelay = Number(
+  process.env.THELXINOE_MOCK_ACTION_DELAY ?? 3000,
+);
+if (![0, 500, 1500, 3000, 5000].includes(serverActionDelay))
+  throw Error('Invalid THELXINOE_MOCK_ACTION_DELAY');
+/** How long each transfer step takes. */
+export const transferStepDelay = 3000;
 
 export async function waitForServerAction(s, { path, method, body }) {
   const write = !['GET', 'HEAD'].includes(method);

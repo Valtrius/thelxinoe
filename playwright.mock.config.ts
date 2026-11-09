@@ -3,6 +3,7 @@ import { browserConnection } from './scripts/ci-browser.mjs';
 import { freePort } from './scripts/ci-resources.mjs';
 
 const port = (process.env.THELXINOE_MOCK_PORT ??= String(await freePort()));
+process.env.THELXINOE_MOCK_ACTION_DELAY ??= '0';
 export default defineConfig({
   testDir: 'tests',
   testMatch: [
