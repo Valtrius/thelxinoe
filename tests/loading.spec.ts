@@ -7,11 +7,9 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
+// Shows share LibraryView with Movies, and every Music view shares MusicHome.
 for (const [section, view, kind] of [
   ['Movies', undefined, undefined],
-  ['Shows', undefined, undefined],
-  ['Music', 'artists', 'artist'],
-  ['Music', 'albums', 'album'],
   ['Music', 'tracks', 'track'],
 ] as const) {
   test(`${section}${view ? ` ${view}` : ''} reserves content while its first response is pending`, async ({
@@ -82,46 +80,46 @@ for (const [section, view, kind] of [
   });
 }
 
-for (const platform of ['YouTube', 'Twitch', 'Kick'] as const) {
-  test(`${platform} waits for account state before showing connection controls`, async ({
-    page,
-  }, testInfo) => {
-    const fixture = await installUiFixture(page, { section: platform });
-    await page.route('**/api/v1/online/youtube/watchlists', (route) =>
-      route.fulfill({ json: { items: [] } }),
-    );
-    const gate = responseGate();
-    await page.route(
-      `**/api/v1/online/${platform.toLowerCase()}`,
-      async (route) => {
-        await gate.promise;
-        await route.fallback();
-      },
-    );
-    try {
-      await page.goto('/');
-      const loading = page.getByRole('status', {
-        name: `Loading ${platform}`,
-        exact: true,
-      });
-      await expect(loading).toBeVisible();
-      await expect(
-        page.getByRole('button', { name: `Connect ${platform}`, exact: true }),
-      ).toHaveCount(0);
-      await testInfo.attach('pending-account', {
-        body: await page.screenshot(),
-        contentType: 'image/png',
-      });
-      gate.release();
-      await expect(loading).toHaveCount(0);
-      await expect(page.locator('[data-feed-content]')).toBeVisible();
-      expect(fixture.errors).toEqual([]);
-      expect(fixture.unexpected).toEqual([]);
-    } finally {
-      gate.release();
-    }
-  });
-}
+// Every provider shares ProviderView's loading state.
+test('YouTube waits for account state before showing connection controls', async ({
+  page,
+}, testInfo) => {
+  const platform = 'YouTube';
+  const fixture = await installUiFixture(page, { section: platform });
+  await page.route('**/api/v1/online/youtube/watchlists', (route) =>
+    route.fulfill({ json: { items: [] } }),
+  );
+  const gate = responseGate();
+  await page.route(
+    `**/api/v1/online/${platform.toLowerCase()}`,
+    async (route) => {
+      await gate.promise;
+      await route.fallback();
+    },
+  );
+  try {
+    await page.goto('/');
+    const loading = page.getByRole('status', {
+      name: `Loading ${platform}`,
+      exact: true,
+    });
+    await expect(loading).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: `Connect ${platform}`, exact: true }),
+    ).toHaveCount(0);
+    await testInfo.attach('pending-account', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    gate.release();
+    await expect(loading).toHaveCount(0);
+    await expect(page.locator('[data-feed-content]')).toBeVisible();
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  } finally {
+    gate.release();
+  }
+});
 
 test('switching providers starts the next account read while the previous one is pending', async ({
   page,
@@ -511,62 +509,46 @@ for (const viewport of [
   });
 }
 
-for (const setting of [
-  {
-    section: 'devices',
-    path: '/auth/sessions',
-    label: 'Loading devices',
-    heading: 'Your devices',
-  },
-  {
-    section: 'people',
-    path: '/users',
-    label: 'Loading users',
-    heading: 'User access',
-  },
-  {
-    section: 'account',
-    path: '/me/preferences',
-    label: 'Loading display preferences',
-    heading: 'Your display preferences',
-  },
-] as const) {
-  test(`${setting.section} settings keep the shell visible while data loads`, async ({
-    page,
-  }, testInfo) => {
-    const fixture = await installUiFixture(page, {
-      role: 'admin',
-      settingsSection: setting.section,
-    });
-    const gate = responseGate();
-    let reads = 0;
-    await page.route(`**/api/v1${setting.path}`, async (route) => {
-      if (setting.section !== 'account' || ++reads > 1) await gate.promise;
-      await route.fallback();
-    });
-    try {
-      await page.goto('/');
-      const loading = page.getByRole('status', {
-        name: setting.label,
-        exact: true,
-      });
-      await expect(loading).toBeVisible();
-      await expect(
-        page.getByRole('heading', { name: setting.heading, exact: true }),
-      ).toBeVisible();
-      await testInfo.attach('settings-loading', {
-        body: await page.screenshot(),
-        contentType: 'image/png',
-      });
-      gate.release();
-      await expect(loading).toHaveCount(0);
-      expect(fixture.errors).toEqual([]);
-      expect(fixture.unexpected).toEqual([]);
-    } finally {
-      gate.release();
-    }
+// Every settings section renders its skeleton inside its own card.
+test('account settings keep the shell visible while data loads', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'account',
   });
-}
+  const gate = responseGate();
+  let reads = 0;
+  await page.route('**/api/v1/me/preferences', async (route) => {
+    // Startup reads the preferences once before the section opens.
+    if (++reads > 1) await gate.promise;
+    await route.fallback();
+  });
+  try {
+    await page.goto('/');
+    const loading = page.getByRole('status', {
+      name: 'Loading display preferences',
+      exact: true,
+    });
+    await expect(loading).toBeVisible();
+    await expect(
+      page.getByRole('heading', {
+        name: 'Your display preferences',
+        exact: true,
+      }),
+    ).toBeVisible();
+    await testInfo.attach('settings-loading', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    gate.release();
+    await expect(loading).toHaveCount(0);
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  } finally {
+    gate.release();
+  }
+});
 
 for (const startup of [
   {

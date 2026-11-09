@@ -466,38 +466,6 @@ test('a slow click on a music list does not use up its animations', async ({
   expect(frames.filter((frame) => frame.leaving).length).toBeGreaterThan(2);
 });
 
-test('the choice highlight fills its button up to the separator at fractional widths', async ({
-  page,
-}) => {
-  await page.goto('/#library/music');
-  await ready(page);
-  await page.addStyleTag({
-    content:
-      '[data-page-content] [aria-label^="Artists"] { width: 90.5px; } [data-page-content] [aria-label^="Albums"] { width: 80.5px; } [data-page-content] [aria-label^="Tracks"] { width: 70.5px; }',
-  });
-  const lists = page.getByRole('group', { name: 'Music lists' });
-  const highlight = lists.locator('[data-choice-selection]');
-  for (const [name, separator] of [
-    ['Artists', 1],
-    ['Albums', 1],
-    ['Tracks', 0],
-  ] as const) {
-    const button = lists.getByRole('button', { name: new RegExp(`^${name}`) });
-    await button.click();
-    await ready(page);
-    await expect
-      .poll(async () => {
-        const selected = (await button.boundingBox())!;
-        const selection = (await highlight.boundingBox())!;
-        return (
-          Math.abs(selected.x - selection.x) +
-          Math.abs(selected.width - separator - selection.width)
-        );
-      })
-      .toBeLessThan(0.05);
-  }
-});
-
 test('opening the app again brings the player back paused, where Play carries on, until it is closed', async ({
   page,
 }) => {

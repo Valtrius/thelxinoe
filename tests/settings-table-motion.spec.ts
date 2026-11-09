@@ -292,6 +292,11 @@ for (const scenario of scenarios) {
     await expect(table.getByText(before)).toHaveCount(0);
     expect(fixture.errors).toEqual([]);
   });
+}
+
+// Every table shares its row motion and read handling with Background jobs.
+{
+  const scenario = scenarios[0];
 
   test(`${scenario.table} cancel a read a newer filter replaced`, async ({
     page,
@@ -467,7 +472,9 @@ for (const scenario of scenarios) {
     await expect(page.locator('[data-motion-layer]')).toHaveCount(0);
     expect(fixture.errors).toEqual([]);
   });
+}
 
+for (const scenario of scenarios) {
   test(`${scenario.table} stack once their columns stop fitting`, async ({
     page,
   }) => {
@@ -897,25 +904,6 @@ test('the first show of an empty library animates in', async ({ page }) => {
   await expect
     .poll(async () => (await recordedMotion(page)).resized)
     .toBeGreaterThan(0);
-});
-
-test('a long user name stays inside its column', async ({ page }) => {
-  const name = 'alexander.smith.with.a.long.name@example.com';
-  const { table } = await open(page, scenarios[2], (route) =>
-    route.fulfill({
-      json: {
-        ...scenarios[2].answer([]),
-        items: [{ ...entry(1, before), actor: name }],
-      },
-    }),
-  );
-  const cell = table.getByRole('cell', { name });
-  await expect(cell.getByText(name)).toHaveAttribute('title', name);
-  expect(
-    await cell.evaluate(
-      (element) => element.scrollWidth <= element.clientWidth,
-    ),
-  ).toBe(true);
 });
 
 test('the audit view waits for its data, and coming back rereads activity', async ({

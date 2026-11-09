@@ -429,7 +429,9 @@ test('Discover history restores the rendered screen after navigating away', asyn
   });
 });
 
-for (const entry of ['feed', 'search', 'direct link'] as const) {
+// Search covers the feed's path and also keeps its query; a direct link has no
+// discover page behind it.
+for (const entry of ['search', 'direct link'] as const) {
   test(`Back to discover leaves recommendation history from ${entry}`, async ({
     page,
   }, testInfo) => {

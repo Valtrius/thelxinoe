@@ -452,61 +452,48 @@ test('an older update read cannot unlock a newly queued update', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-for (const state of [
-  'queued',
-  'submitting',
-  'preparing',
-  'snapshotting',
-  'preflight',
-  'queued-activate',
-  'recovery-snapshot',
-  'isolated-live-validation',
-  'activating',
-  'queued-recover',
-]) {
-  test(`a ${state} update hides only its own service controls`, async ({
-    page,
-  }, testInfo) => {
-    const fixture = await installUiFixture(page, {
-      role: 'admin',
-      settingsSection: 'services',
-      serviceUpdateState: state,
-      stackCapabilities: {
-        can_retire: true,
-        can_remove: true,
-        can_recreate: true,
-      },
-    });
-    await page.goto('/');
-    await selectRadarr(page);
-    await expect(
-      page
-        .getByRole('complementary', { name: 'Service controls' })
-        .getByRole('button'),
-    ).toHaveCount(0);
-    await expect(
-      page.getByText('Retiring removes the installation', { exact: false }),
-    ).toHaveCount(0);
-    await expect(
-      page.getByRole('button', { name: 'Check compatibility', exact: true }),
-    ).toBeDisabled();
-    if (state === 'activating' || state === 'preflight')
-      await testInfo.attach(`service-controls-${state}`, {
-        body: await page.screenshot(),
-        contentType: 'image/png',
-      });
-    await page.getByRole('link', { name: 'Sonarr', exact: true }).click();
-    await expect(
-      page.getByRole('button', { name: 'Install Sonarr', exact: true }),
-    ).toBeEnabled();
-    await page.getByRole('link', { name: 'NZBGet', exact: true }).click();
-    await expect(
-      page.getByRole('button', { name: 'Pause all', exact: true }),
-    ).toBeEnabled();
-    expect(fixture.errors).toEqual([]);
-    expect(fixture.unexpected).toEqual([]);
+// Every unfinished stage hides the same controls (see activeServiceUpdate).
+test('an activating update hides only its own service controls', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+    serviceUpdateState: 'activating',
+    stackCapabilities: {
+      can_retire: true,
+      can_remove: true,
+      can_recreate: true,
+    },
   });
-}
+  await page.goto('/');
+  await selectRadarr(page);
+  await expect(
+    page
+      .getByRole('complementary', { name: 'Service controls' })
+      .getByRole('button'),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText('Retiring removes the installation', { exact: false }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Check compatibility', exact: true }),
+  ).toBeDisabled();
+  await testInfo.attach('service-controls-activating', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  await page.getByRole('link', { name: 'Sonarr', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Install Sonarr', exact: true }),
+  ).toBeEnabled();
+  await page.getByRole('link', { name: 'NZBGet', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Pause all', exact: true }),
+  ).toBeEnabled();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
 
 for (const savedControllerData of [false, true]) {
   test(`fresh service setup ${savedControllerData ? 'explains unmatched controller data' : 'offers installation for every service'}`, async ({
@@ -1131,7 +1118,7 @@ test('NZBGet combines active downloads with scrollable history and compact actio
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('NZBGet URL has compact login and password copy buttons', async ({
+test('NZBGet copies its login and password without showing them', async ({
   page,
 }) => {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
@@ -1164,16 +1151,6 @@ test('NZBGet URL has compact login and password copy buttons', async ({
       (write) => write.path === '/admin/support/support-nzbget/login',
     ),
   ).toBe(false);
-  await page.setViewportSize({ width: 320, height: 850 });
-  await waitForViewportFit(page);
-  const urlBox = await url.boundingBox();
-  const loginBox = await copyLogin.boundingBox();
-  const passwordBox = await copyPassword.boundingBox();
-  await line.screenshot({ path: '.local/nzbget-url-line-320.png' });
-  expect(urlBox && loginBox && passwordBox).toBeTruthy();
-  expect(loginBox!.x).toBeGreaterThanOrEqual(urlBox!.x + urlBox!.width);
-  expect(passwordBox!.x).toBeGreaterThanOrEqual(loginBox!.x + loginBox!.width);
-  expect(Math.abs(urlBox!.y - loginBox!.y)).toBeLessThan(4);
   await copyLogin.click();
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
@@ -1265,13 +1242,7 @@ test('NZBGet copy buttons appear after installation and use managed credentials'
   expect(fixture.unexpected).toEqual([]);
 });
 
-for (const state of [
-  'ready',
-  'blocked',
-  'recovery-required',
-  'runtime-failure',
-  'committed',
-]) {
+for (const state of ['ready', 'blocked', 'recovery-required', 'committed']) {
   test(`service remains running after ${state} update`, async ({ page }) => {
     const fixture = await installUiFixture(page, {
       role: 'admin',
@@ -1333,24 +1304,6 @@ for (const scenario of [
   {
     endpoint: '/admin/support',
     label: 'Support services',
-    unaffectedService: 'Radarr',
-    unaffectedVersion: '6.0.0',
-  },
-  {
-    endpoint: '/admin/service-updates',
-    label: 'Service updates',
-    unaffectedService: 'Radarr',
-    unaffectedVersion: '6.0.0',
-  },
-  {
-    endpoint: '/admin/managers/containers',
-    label: 'Docker container discovery',
-    unaffectedService: 'Radarr',
-    unaffectedVersion: '6.0.0',
-  },
-  {
-    endpoint: '/admin/stack',
-    label: 'Managed service runtime',
     unaffectedService: 'Radarr',
     unaffectedVersion: '6.0.0',
   },

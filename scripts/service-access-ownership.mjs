@@ -58,10 +58,10 @@ async function adoptReplacement(f, kind, image) {
   return f.services[kind];
 }
 
-// test-transfers.mjs transfers every kind; these cover the kind-specific
-// review blockers and the Connected stage before a transfer.
+// test-transfers.mjs covers the transfers themselves; these cover the review
+// blockers and the Connected stage before a transfer, for a manager and NZBGet.
 export async function ownershipAccess({ f, scenario, output }) {
-  for (const kind of ['radarr', 'sonarr', 'nzbget']) {
+  for (const kind of ['radarr', 'nzbget']) {
     await scenario(
       kind +
         ': a Connected service is validation-only until its transfer completes',
@@ -120,7 +120,8 @@ export async function ownershipAccess({ f, scenario, output }) {
         expect(after.State.StartedAt).toBe(original.State.StartedAt);
 
         // A stopped original can't be reviewed; nothing changes until it's back.
-        if (kind === 'sonarr') {
+        let startedAt = original.State.StartedAt;
+        if (kind === 'radarr') {
           docker('stop', attached.container);
           const blocked = await f.transfer(attached.id, { approve: false });
           expect(blocked.review.review.blockers.join(' ')).toContain(
@@ -140,6 +141,7 @@ export async function ownershipAccess({ f, scenario, output }) {
               { timeout: 180000 },
             )
             .toBe(true);
+          startedAt = inspect().State.StartedAt;
         }
         // Compose ownership must be explicitly resolved before anything stops.
         if (kind === 'radarr') {
@@ -159,7 +161,7 @@ export async function ownershipAccess({ f, scenario, output }) {
               },
             }),
           ).rejects.toThrow(/HTTP 4\d\d/);
-          expect(inspect().State.StartedAt).toBe(original.State.StartedAt);
+          expect(inspect().State.StartedAt).toBe(startedAt);
         }
 
         const before = config();

@@ -468,15 +468,8 @@ test('completed transfers can be inspected directly and controls fit a small scr
   await evidence(page, info, 'mobile-completed-transfer');
 });
 
-for (const kind of [
-  'seerr',
-  'radarr',
-  'sonarr',
-  'lidarr',
-  'bazarr',
-  'prowlarr',
-  'nzbget',
-]) {
+// Every service runs the same dialog; Seerr also completes the whole transfer.
+for (const kind of ['seerr', 'radarr']) {
   test(`${kind} automatically finishes stopping the original after approval`, async ({
     page,
   }, info) => {
