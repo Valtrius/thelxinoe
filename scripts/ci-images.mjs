@@ -97,8 +97,10 @@ export async function pullFixtureImage(reference) {
         elapsed_ms: Date.now() - started,
       });
       save();
+      // GHCR can refuse one pull of a public image with `denied` while the same
+      // login pulls it elsewhere, so only these fail at once.
       if (
-        ['authorization', 'missing-manifest', 'storage'].includes(category) ||
+        ['missing-manifest', 'storage'].includes(category) ||
         attempt === 4 ||
         Date.now() - started >= 290000
       )
