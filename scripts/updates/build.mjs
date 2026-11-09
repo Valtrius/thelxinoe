@@ -144,12 +144,16 @@ export function source(lab, version) {
     copyFileSync(join(repository, file), destination);
   }
   const cargo = join(directory, 'Cargo.toml');
+  const manifest = readFileSync(cargo, 'utf8').replace(
+    /(\[workspace.package\][\s\S]*?version = ")[^"]+/,
+    `$1${version}`,
+  );
+  // Lab builds qualify updates, not speed, so they skip most optimization.
+  const profile = /\[profile\.release\]\r?\nlto = "thin"/;
+  if (!profile.test(manifest)) throw Error('Missing release profile');
   writeFileSync(
     cargo,
-    readFileSync(cargo, 'utf8').replace(
-      /(\[workspace.package\][\s\S]*?version = ")[^"]+/,
-      `$1${version}`,
-    ),
+    manifest.replace(profile, '[profile.release]\nopt-level = 1\nlto = false'),
   );
   run(process.execPath, [join(directory, 'scripts/version.mjs'), '--write'], {
     cwd: directory,
