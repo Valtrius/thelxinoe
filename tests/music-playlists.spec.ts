@@ -125,26 +125,26 @@ test('the toolbar stays above the page and the sidebar, on every Music page', as
   expect(await button(page, 'Open playlists').boundingBox()).toEqual(toggled);
 });
 
-for (const width of [721, 800, 1000]) {
-  test(`the sidebar stays where it is between pages in a ${width}px window`, async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width, height: 900 });
-    await page.goto('/#library/music');
-    await button(page, 'Open playlists').click();
-    await expect(rowsOf(frame(page)).first()).toBeVisible();
-    await expect(button(page, 'Scan music library')).toBeInViewport();
-    const placed = await frame(page).boundingBox();
-    await page.locator('[data-card-grid] .card-primary').first().click();
-    await expect(button(page, /^Back to/)).toBeVisible();
-    expect(await frame(page).boundingBox()).toEqual(placed);
-    await button(page, /^Back to/).click();
-    await expect(button(page, 'Scan music library')).toBeVisible();
-    expect(await frame(page).boundingBox()).toEqual(placed);
-  });
-}
+// The narrowest window with a sidebar; up to 1000px the toolbar keeps one layout.
+test('the sidebar stays where it is between pages in a 721px window', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 721, height: 900 });
+  await page.goto('/#library/music');
+  await button(page, 'Open playlists').click();
+  await expect(rowsOf(frame(page)).first()).toBeVisible();
+  await expect(button(page, 'Scan music library')).toBeInViewport();
+  const placed = await frame(page).boundingBox();
+  await page.locator('[data-card-grid] .card-primary').first().click();
+  await expect(button(page, /^Back to/)).toBeVisible();
+  expect(await frame(page).boundingBox()).toEqual(placed);
+  await button(page, /^Back to/).click();
+  await expect(button(page, 'Scan music library')).toBeVisible();
+  expect(await frame(page).boundingBox()).toEqual(placed);
+});
 
-for (const width of [721, 1000, 1100]) {
+// One width for each toolbar layout, below and above 1000px.
+for (const width of [721, 1100]) {
   test(`the sort menu fits a ${width}px window with the sidebar open`, async ({
     page,
   }) => {
@@ -996,11 +996,7 @@ test('the dock lists a queue of thousands by what is near the viewport', async (
 // A list longer than the page the app shows, whose later pages are held back
 // until `release`, so a test sees what the dock does while it reads them. Tracks
 // around the end of the first page can play, as well as the first few.
-async function heldBackTracks(
-  page: Page,
-  request: Page['request'],
-  holdPages = true,
-) {
+async function heldBackTracks(page: Page, request: Page['request']) {
   const real = (await (
     await request.get('/api/v1/catalog?kind=track&limit=500')
   ).json()) as { items: { id: string; title: string }[] };
@@ -1034,7 +1030,7 @@ async function heldBackTracks(
       const limit = Number(url.searchParams.get('limit'));
       const offset = Number(url.searchParams.get('offset') ?? 0);
       if (reading(url)) held.reads++;
-      if (reading(url) || (holdPages && offset > 0)) await gate;
+      if (reading(url) || offset > 0) await gate;
       await route
         .fulfill({
           json: { items: tracks.slice(offset, offset + limit), total: 300 },
@@ -1044,7 +1040,7 @@ async function heldBackTracks(
   );
   await page.goto('/#library/music?view=tracks');
   await expect(page.locator('[data-track]').first()).toBeVisible();
-  return { held, tracks };
+  return { held };
 }
 const playRow = (page: Page, at: number) =>
   button(
@@ -1073,45 +1069,8 @@ test('a track starts before the rest of its list is read, which then joins the q
   await expect(button(queue, 'Play Track number 299')).toBeInViewport();
 });
 
-test('a queue cleared while the rest of its list is read stays cleared', async ({
-  page,
-  request,
-}) => {
-  const { held } = await heldBackTracks(page, request);
-  await playRow(page, 0);
-  const dock = page.getByRole('region', { name: 'Music player' });
-  await expect(dock.getByText('1 of 120', { exact: true })).toBeVisible();
-  await expect.poll(() => held.reads).toBe(1);
-  await button(dock, 'Queue').click();
-  const queue = page.locator('[data-popover-content]');
-  await button(queue, 'Clear').click();
-  await expect(dock.getByText('1 of 120', { exact: true })).toBeHidden();
-  await expect.poll(() => held.abandoned).toBe(1);
-
-  held.release();
-  await expect(button(queue, 'Play Track number 1')).toHaveCount(0);
-  await expect(dock.getByText('1 of 300', { exact: true })).toBeHidden();
-});
-
-test('a track removed while the rest of its list is read does not come back', async ({
-  page,
-  request,
-}) => {
-  const { held } = await heldBackTracks(page, request);
-  await playRow(page, 0);
-  const dock = page.getByRole('region', { name: 'Music player' });
-  await expect(dock.getByText('1 of 120', { exact: true })).toBeVisible();
-  await button(dock, 'Queue').click();
-  const queue = page.locator('[data-popover-content]');
-  await button(queue, 'Remove Track number 1 from the queue').click();
-  await expect(dock.getByText('1 of 119', { exact: true })).toBeVisible();
-
-  held.release();
-  await expect(dock.getByText('1 of 299', { exact: true })).toBeVisible();
-  await expect(button(queue, 'Play Track number 1')).toHaveCount(0);
-});
-
-test('choosing another track leaves the list read for the last one behind', async ({
+// What the queue does with the rest of a list is covered in queue-follow.test.ts.
+test('a list being read is left behind when its queue is replaced or cleared', async ({
   page,
   request,
 }) => {
@@ -1125,79 +1084,15 @@ test('choosing another track leaves the list read for the last one behind', asyn
   await expect.poll(() => held.abandoned).toBe(1);
   await expect.poll(() => held.reads).toBe(2);
 
-  held.release();
-  await expect(dock.getByText('3 of 300', { exact: true })).toBeVisible();
-});
-
-test('a repeating queue goes on to the rest of its list instead of starting over', async ({
-  page,
-  request,
-}) => {
-  const { held } = await heldBackTracks(page, request);
-  await playRow(page, 119);
-  const dock = page.getByRole('region', { name: 'Music player' });
-  await expect(dock.getByText('120 of 120', { exact: true })).toBeVisible();
-  await button(dock, 'Repeat off').click();
+  await button(dock, 'Queue').click();
+  const queue = page.locator('[data-popover-content]');
+  await button(queue, 'Clear').click();
+  await expect(dock.getByText('3 of 120', { exact: true })).toBeHidden();
+  await expect.poll(() => held.abandoned).toBe(2);
 
   held.release();
-  await expect(dock.getByText('120 of 300', { exact: true })).toBeVisible();
-  await button(dock, 'Next track').click();
-  await expect(dock.getByText('121 of 300', { exact: true })).toBeVisible();
-});
-
-test('a repeating queue keeps the next track it loaded when the rest of its list arrives', async ({
-  page,
-  request,
-}) => {
-  const { held, tracks } = await heldBackTracks(page, request);
-  const reads = new Map<string, number>();
-  page.on('request', (sent) => {
-    const read = /^\/api\/v1\/catalog\/(.+)\/playback$/.exec(
-      new URL(sent.url()).pathname,
-    );
-    if (read) reads.set(read[1], (reads.get(read[1]) ?? 0) + 1);
-  });
-  await playRow(page, 118);
-  const dock = page.getByRole('region', { name: 'Music player' });
-  await expect(dock.getByText('119 of 120', { exact: true })).toBeVisible();
-  await button(dock, 'Repeat off').click();
-  const seek = dock.getByLabel('Music position');
-  // Close enough to the track's end that the track after it loads.
-  const nearEnd = async (left: number) => {
-    await expect(seek).toBeEnabled();
-    await expect(seek).not.toHaveAttribute('max', '0');
-    await seek.fill(String(Number(await seek.getAttribute('max')) - left));
-  };
-  await nearEnd(30);
-  await expect.poll(() => reads.get(tracks[119].id)).toBe(1);
-
-  held.release();
-  await expect(dock.getByText('119 of 300', { exact: true })).toBeVisible();
-  await nearEnd(0.5);
-  await expect(dock.getByText('120 of 300', { exact: true })).toBeVisible();
-  await nearEnd(30);
-  await expect.poll(() => reads.get(tracks[120].id)).toBe(1);
-  expect(reads.get(tracks[119].id)).toBe(1);
-});
-
-test('a track added by hand while the rest of its list is read stays where it was added', async ({
-  page,
-  request,
-}) => {
-  const { held } = await heldBackTracks(page, request, false);
-  await playRow(page, 0);
-  const dock = page.getByRole('region', { name: 'Music player' });
-  await expect(dock.getByText('1 of 120', { exact: true })).toBeVisible();
-  await expect.poll(() => held.reads).toBe(1);
-  const last = page.locator('[data-track]').nth(119);
-  await last.scrollIntoViewIfNeeded();
-  await expect(page.locator('[data-track]').nth(120)).toBeVisible();
-  await button(page, 'Actions for Track number 120').click();
-  await page.getByRole('menuitem', { name: 'Add to queue' }).click();
-  await expect(dock.getByText('1 of 121', { exact: true })).toBeVisible();
-
-  held.release();
-  await expect(dock.getByText('1 of 300', { exact: true })).toBeVisible();
+  await expect(button(queue, 'Play Track number 3')).toHaveCount(0);
+  await expect(dock.getByText('3 of 300', { exact: true })).toBeHidden();
 });
 
 test('phones open playlists in a drawer above the dock, kept open while playing', async ({
@@ -1249,71 +1144,6 @@ test('phones open playlists in a drawer above the dock, kept open while playing'
   await context.close();
 });
 
-test('a queue reopened with the app keeps following its playlist until cleared', async ({
-  page,
-  request,
-}) => {
-  await openPlaylists(page);
-  const rows = rowsOf(frame(page));
-  const tracks = (await playlist(request, 'playlist-1')).items;
-  await rows.nth(1).locator('[role="button"]').click();
-  const dock = page.getByRole('region', { name: 'Music player' });
-  await expect(dock.getByText('2 of 12', { exact: true })).toBeVisible();
-  await button(dock, 'Pause').click();
-  await expect(button(dock, 'Play')).toBeVisible();
-
-  await page.reload();
-  await expect(dock.getByText('2 of 12', { exact: true })).toBeVisible();
-  await expect(rows).toHaveCount(12);
-  await request.delete(`/api/v1/playlists/playlist-1/items/${tracks[5].id}`);
-  await expect(dock.getByText('2 of 11', { exact: true })).toBeVisible();
-
-  const queue = page.locator('[data-popover-content]');
-  const entries = queue.getByRole('button', { name: /^Play / });
-  await button(dock, 'Queue').click();
-  await button(queue, 'Clear').click();
-  await expect(entries).toHaveCount(1);
-  await page.reload();
-  await expect(rows).toHaveCount(11);
-  await request.delete(`/api/v1/playlists/playlist-1/items/${tracks[6].id}`);
-  await expect(rows).toHaveCount(10);
-  await button(dock, 'Queue').click();
-  await expect(entries).toHaveCount(1);
-});
-
-test('a reopened queue catches up with its playlist, and keeps hand edits to an unchanged one', async ({
-  page,
-  request,
-}) => {
-  await openPlaylists(page);
-  const rows = rowsOf(frame(page));
-  const tracks = (await playlist(request, 'playlist-1')).items;
-  await rows.nth(1).locator('[role="button"]').click();
-  const dock = page.getByRole('region', { name: 'Music player' });
-  const place = (text: string) => dock.getByText(text, { exact: true });
-  await expect(place('2 of 12')).toBeVisible();
-  await button(dock, 'Pause').click();
-  await expect(button(dock, 'Play')).toBeVisible();
-  await button(dock, 'Queue').click();
-  await page
-    .locator('[data-popover-content] li')
-    .nth(5)
-    .getByRole('button', { name: /^Remove / })
-    .click();
-  await expect(place('2 of 11')).toBeVisible();
-
-  await page.reload();
-  await expect(rows).toHaveCount(12);
-  await expect(place('2 of 11')).toBeVisible();
-
-  await page.goto('about:blank');
-  for (const track of [tracks[6], tracks[7]])
-    await request.delete(`/api/v1/playlists/playlist-1/items/${track.id}`);
-  await page.goto('/#library/music');
-  await expect(rows).toHaveCount(10);
-  await expect(place('2 of 10')).toBeVisible();
-});
-
 test('a track removed while playing leaves the queue once it stops', async ({
   page,
   request,
@@ -1350,24 +1180,12 @@ test('a track removed while playing leaves the queue once it stops', async ({
   await button(dock, 'Next track').click();
   await expect(place('2 of 10')).toBeVisible();
   await expect(dock).toContainText(tracks[3].title);
-});
 
-test('a removed track reopened with the app still leaves once it stops', async ({
-  page,
-  request,
-}) => {
-  await openPlaylists(page);
-  const rows = rowsOf(frame(page));
-  const tracks = (await playlist(request, 'playlist-1')).items;
-  await rows.nth(1).locator('[role="button"]').click();
-  const dock = page.getByRole('region', { name: 'Music player' });
-  const place = (text: string) => dock.getByText(text, { exact: true });
-  await expect(place('2 of 12')).toBeVisible();
+  // Reopened with the app, it still goes once it stops.
   await button(dock, 'Pause').click();
   await expect(button(dock, 'Play')).toBeVisible();
-
-  await request.delete(`/api/v1/playlists/playlist-1/items/${tracks[1].id}`);
-  await expect(rows).toHaveCount(11);
+  await request.delete(`/api/v1/playlists/playlist-1/items/${tracks[3].id}`);
+  await expect(rows).toHaveCount(9);
   await expect
     .poll(() =>
       page.evaluate(() =>
@@ -1377,13 +1195,12 @@ test('a removed track reopened with the app still leaves once it stops', async (
       ),
     )
     .toBe(true);
-
   await page.reload();
-  await expect(rows).toHaveCount(11);
-  await expect(place('2 of 12')).toBeVisible();
+  await expect(rows).toHaveCount(9);
+  await expect(place('2 of 10')).toBeVisible();
   await button(dock, 'Next track').click();
-  await expect(place('2 of 11')).toBeVisible();
-  await expect(dock).toContainText(tracks[2].title);
+  await expect(place('2 of 9')).toBeVisible();
+  await expect(dock).toContainText(tracks[4].title);
 });
 
 test('an add that took nothing still shows what someone else added meanwhile', async ({
@@ -1414,7 +1231,7 @@ test('an add that took nothing still shows what someone else added meanwhile', a
   await expect(rows).toHaveCount(12);
 });
 
-test('the dock follows its playlist over hand edits until it is cleared', async ({
+test('the dock follows its playlist over hand edits until it is cleared, also when reopened', async ({
   page,
   request,
 }, info) => {
@@ -1447,14 +1264,21 @@ test('the dock follows its playlist over hand edits until it is cleared', async 
   const plays = (list: typeof tracks) =>
     list.map((track) => `Play ${track.title}`);
 
-  // Hand edits last until the playlist changes.
+  // Hand edits last until the playlist changes, also while the app is closed.
   await queue
     .locator('li')
     .nth(5)
     .getByRole('button', { name: /^Remove / })
     .click();
   await expect(entries).toHaveCount(11);
+  await page.reload();
+  await expect(rows).toHaveCount(12);
+  await expect(dock.getByText('2 of 11', { exact: true })).toBeVisible();
+  await page.goto('about:blank');
   await request.delete(`/api/v1/playlists/playlist-1/items/${tracks[3].id}`);
+  await page.goto('/#library/music');
+  await expect(rows).toHaveCount(11);
+  await button(dock, 'Queue').click();
   const remaining = tracks.filter((_, index) => index !== 3);
   await expect.poll(queued).toEqual(plays(remaining));
 
@@ -1477,5 +1301,11 @@ test('the dock follows its playlist over hand edits until it is cleared', async 
   await expect(entries).toHaveCount(1);
   await request.delete(`/api/v1/playlists/playlist-1/items/${tracks[2].id}`);
   await expect(rows).toHaveCount(9);
+  await expect(entries).toHaveCount(1);
+  await page.reload();
+  await expect(rows).toHaveCount(9);
+  await request.delete(`/api/v1/playlists/playlist-1/items/${tracks[4].id}`);
+  await expect(rows).toHaveCount(8);
+  await button(dock, 'Queue').click();
   await expect(entries).toHaveCount(1);
 });

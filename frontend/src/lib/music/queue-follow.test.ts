@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import type { Repeat } from '../gapless';
 import type { MediaChoice } from '../playback';
-import { extendedQueue, followedQueue } from './queue-follow';
+import type { MusicItem } from './library';
+import { restOf } from './library';
+import {
+  appendedQueue,
+  extendedQueue,
+  followedQueue,
+  insertedQueue,
+  playsAfter,
+  removedQueue,
+} from './queue-follow';
 
 const list = (ids: string) =>
   [...ids].map((id): MediaChoice => ({ id, title: id }));
@@ -147,5 +157,127 @@ describe('followedQueue', () => {
     );
     expect(ids(next.choices)).toBe('cabd');
     expect(next.index).toBe(1);
+  });
+});
+
+describe('playsAfter', () => {
+  it('repeats one track unless its playlist lost it', () => {
+    const choices = list('abc');
+    expect(playsAfter({ choices, repeat: 'one' }, 1)).toBe(1);
+    expect(playsAfter({ choices, repeat: 'one', leaving: choices[1] }, 1)).toBe(
+      2,
+    );
+  });
+
+  it('does not start over with only a track that is leaving', () => {
+    const choices = list('b');
+    expect(playsAfter({ choices, repeat: 'all' }, 0)).toBe(0);
+    expect(playsAfter({ choices, repeat: 'all', leaving: choices[0] }, 0)).toBe(
+      1,
+    );
+  });
+});
+
+describe('insertedQueue', () => {
+  const insert = (index: number, next: boolean, finished = false) =>
+    insertedQueue(
+      {
+        choices: list('abc'),
+        order: list('abc'),
+        index,
+        shuffled: false,
+        finished,
+      },
+      list('x'),
+      next,
+    );
+
+  it('adds after the playing track or at the end', () => {
+    expect(ids(insert(0, true).choices)).toBe('axbc');
+    expect(ids(insert(0, false).choices)).toBe('abcx');
+  });
+
+  it('adds to a finished queue where it ended', () => {
+    const next = insert(3, true, true);
+    expect(ids(next.choices)).toBe('abcx');
+    expect(next.at).toBe(3);
+  });
+});
+
+// The queue a list starts with is its first page; the rest of the list is read
+// while the chosen track plays.
+describe('the rest of a list', () => {
+  const all = [...'abcdefg'].map((id): MusicItem => ({
+    id,
+    kind: 'track',
+    title: id,
+    year: null,
+    available: true,
+    metadata: {},
+  }));
+  const shown = list('abc');
+  const rest = restOf(all, shown);
+  const playing = (
+    index: number,
+    next: number,
+    repeat: Repeat = 'off',
+    choices = list('abc'),
+  ) => ({
+    choices,
+    order: choices,
+    index,
+    next,
+    shuffled: false,
+    repeat,
+    loaded: true,
+  });
+
+  it('joins the queue after the track loaded next', () => {
+    // b plays and c is loaded, so d loads next.
+    const next = appendedQueue(playing(1, 3), rest, new Set())!;
+    expect(ids(next.choices)).toBe('abcdefg');
+    expect(next.reset).toBe(false);
+    expect(next.choices[next.next].id).toBe('d');
+  });
+
+  it('does not bring back a track removed while it was read', () => {
+    const removed = removedQueue(playing(0, 1), 1);
+    expect(ids(removed.choices)).toBe('ac');
+    const next = appendedQueue(
+      { ...playing(removed.index, 1), ...removed },
+      rest,
+      new Set(),
+    )!;
+    expect(ids(next.choices)).toBe('acdefg');
+  });
+
+  it('leaves a track added by hand where it was added', () => {
+    const added = insertedQueue(
+      { ...playing(0, 1), finished: false },
+      list('e'),
+      false,
+    );
+    expect(ids(added.choices)).toBe('abce');
+    const next = appendedQueue(
+      { ...playing(0, 1), ...added },
+      rest,
+      new Set(['e']),
+    )!;
+    expect(ids(next.choices)).toBe('abcedfg');
+    expect(appendedQueue(playing(0, 1), list('e'), new Set(['e']))).toBe(null);
+  });
+
+  it('goes on instead of starting over when the last track repeats the queue', () => {
+    // c plays last and the queue would start over with a.
+    const next = appendedQueue(playing(2, 0, 'all'), rest, new Set())!;
+    expect(next.reset).toBe(true);
+    expect(playsAfter({ ...next, repeat: 'all' }, 2)).toBe(3);
+  });
+
+  it('keeps the track a repeating queue loaded next', () => {
+    // b plays and c is loaded, after which the queue would start over.
+    const next = appendedQueue(playing(1, 0, 'all'), rest, new Set())!;
+    expect(next.reset).toBe(false);
+    expect(next.choices[next.next].id).toBe('d');
   });
 });

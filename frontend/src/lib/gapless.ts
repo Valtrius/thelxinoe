@@ -2,7 +2,14 @@ import type Hls from 'hls.js';
 import { api } from './api';
 import { inBackground } from './page-readiness';
 import { captureSession } from './session';
-import { extendedQueue, followedQueue } from './music/queue-follow';
+import {
+  appendedQueue,
+  followedQueue,
+  insertedQueue,
+  playsAfter,
+  removedQueue,
+  wraps,
+} from './music/queue-follow';
 import { PlaybackActivity } from './playback-activity';
 import {
   capabilities,
@@ -213,18 +220,16 @@ export class GaplessQueue {
     };
     if (!this.parked) await this.context.resume();
   }
+  private get upcoming() {
+    return {
+      choices: this.choices,
+      repeat: this.repeat,
+      leaving: this.leaving,
+    };
+  }
   /** What plays after the choice at `at`. */
   private advance(at: number) {
-    if (this.repeat === 'one' && this.choices[at] !== this.leaving) return at;
-    if (at + 1 < this.choices.length) return at + 1;
-    return this.wraps() ? 0 : this.choices.length;
-  }
-  /** Whether the queue starts over after its end. */
-  private wraps() {
-    return (
-      this.repeat !== 'off' &&
-      this.choices.some((choice) => choice !== this.leaving)
-    );
+    return playsAfter(this.upcoming, at);
   }
   private forgetLeaving() {
     const at = this.choices.indexOf(this.leaving!);
@@ -864,7 +869,7 @@ export class GaplessQueue {
     const target =
       this.index + 1 < this.choices.length
         ? this.index + 1
-        : this.wraps()
+        : wraps(this.upcoming)
           ? 0
           : this.choices.length;
     if (target < this.choices.length)
@@ -924,16 +929,19 @@ export class GaplessQueue {
     if (this.closed || !items.length) return;
     for (const item of items) this.inserted.add(item.id);
     const finished = !this.entries.length && this.next >= this.choices.length;
-    const at =
-      next && !finished
-        ? Math.min(this.index + 1, this.choices.length)
-        : this.choices.length;
-    this.choices = [
-      ...this.choices.slice(0, at),
-      ...items,
-      ...this.choices.slice(at),
-    ];
-    this.order = this.shuffled ? [...this.order, ...items] : [...this.choices];
+    const { choices, order, at } = insertedQueue(
+      {
+        choices: this.choices,
+        order: this.order,
+        index: this.index,
+        shuffled: this.shuffled,
+        finished,
+      },
+      items,
+      next,
+    );
+    this.choices = choices;
+    this.order = order;
     if (finished) {
       this.index = at;
       this.next = at;
@@ -943,9 +951,12 @@ export class GaplessQueue {
   }
   async remove(at: number) {
     if (this.closed || at < 0 || at >= this.choices.length) return;
-    const removed = this.choices[at];
-    this.choices = this.choices.filter((_, i) => i !== at);
-    this.order = this.order.filter((choice) => choice !== removed);
+    const { choices, order, index } = removedQueue(
+      { choices: this.choices, order: this.order, index: this.index },
+      at,
+    );
+    this.choices = choices;
+    this.order = order;
     if (at === this.index) {
       if (at < this.choices.length) return this.jump(at);
       this.parked = false;
@@ -958,7 +969,7 @@ export class GaplessQueue {
       this.update();
       return;
     }
-    if (at < this.index) this.index--;
+    this.index = index;
     this.resetAhead();
   }
   /**
@@ -1015,31 +1026,24 @@ export class GaplessQueue {
     );
   }
   private append(list: MediaChoice[]) {
-    const items = list.filter((item) => !this.inserted.has(item.id));
-    if (this.closed || !this.ownsSession() || !items.length) return;
-    const count = this.choices.length;
-    const upNext = this.choices[this.advance(this.index)];
-    const { choices, order } = extendedQueue(
+    if (this.closed || !this.ownsSession()) return;
+    const appended = appendedQueue(
       {
-        choices: this.choices,
+        ...this.upcoming,
         order: this.order,
         index: this.index,
+        next: this.next,
         shuffled: this.shuffled,
+        loaded: this.loading || this.entries.length > 0,
       },
-      items,
+      list,
+      this.inserted,
     );
-    this.choices = choices;
-    this.order = order;
-    // A track at the end of the queue now has the new tracks after it.
-    if (this.choices[this.advance(this.index)] !== upNext)
-      return this.resetAhead();
-    // Past the tracks loaded, a repeating queue no longer starts over.
-    if (
-      this.repeat === 'all' &&
-      this.next === 0 &&
-      (this.loading || this.entries.length)
-    )
-      this.next = count;
+    if (!appended) return;
+    this.choices = appended.choices;
+    this.order = appended.order;
+    if (appended.reset) return this.resetAhead();
+    this.next = appended.next;
     this.update();
   }
   /** Keep only the playing track. */
