@@ -3120,6 +3120,7 @@ INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,metad
  ('e3','shows','episode','season1','e3','Not downloaded',3,'{}',1),
  ('sp1','shows','episode','specials','sp1','Special',1,'{}',1);
 INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice','e1',1,1);
+INSERT INTO edition_progress(user_id,media_id,edition,position,duration,updated_at) VALUES ('alice','e1','',5200,5400,1),('alice','e2','',2700,5400,1);
 "#)?;
         for (file, media, root) in [("fm","movie","movies"),("f1","e1","shows"),("f2","e2","shows"),("fs","sp1","shows")] {
             db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,?2,?1,'g',1,'m',?1,?3,1)", rusqlite::params![file, root, probe])?;
@@ -3196,6 +3197,26 @@ INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice','e1
             (json!("2015-11-20T08:00:00Z"), json!({"Tvdb":"5311261"})),
             (json!("2015-11-27T00:00:00Z"), json!({})),
             (Value::Null, json!({}))
+        ]
+    );
+    // Only a resume position has a percentage: a played episode stopped near its end shows
+    // no progress.
+    assert_eq!(
+        episodes
+            .iter()
+            .map(|e| {
+                let data = &e["UserData"];
+                (
+                    data["Played"].clone(),
+                    data["PlaybackPositionTicks"].clone(),
+                    data.get("PlayedPercentage").cloned(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        [
+            (json!(true), json!(0), None),
+            (json!(false), json!(27_000_000_000_i64), Some(json!(50.0))),
+            (json!(false), json!(0), None)
         ]
     );
     // Playable unwatched episodes; a series leaves out its specials.
