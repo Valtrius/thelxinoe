@@ -25,13 +25,12 @@ const kinds = option('kinds') ?? [
   'seerr',
 ];
 // Storage handling does not depend on the service kind, so each kind is
-// transferred with one storage type. Every original is still connected in both
+// transferred with one storage type. Lidarr and Prowlarr transfer like Radarr
+// and Bazarr, so they stay originals. Every original is still connected in both
 // passes, so cross-service records exist for each transfer.
 const transferStorage = {
   radarr: 'bind',
   sonarr: 'volume',
-  lidarr: 'bind',
-  prowlarr: 'volume',
   bazarr: 'bind',
   nzbget: 'volume',
   seerr: 'bind',

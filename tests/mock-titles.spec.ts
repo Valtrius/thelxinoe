@@ -1126,6 +1126,7 @@ test('a finishing episode offers the next one from its credits, across seasons, 
   await page.screenshot({ path: info.outputPath('up-next.png') });
   // The countdown starts the next season through the usual playback start, and
   // the finished episode reports its end.
+  await at(88);
   await expect(
     player.getByRole('heading', { name: 'Beyond the Horizon · First Contact' }),
   ).toBeVisible({ timeout: 20_000 });
@@ -1170,6 +1171,7 @@ test('a finishing episode offers the next one from its credits, across seasons, 
       exact: true,
     }),
   ).toBeVisible();
+  await scene.at(88);
   await expect(
     player.getByRole('heading', { name: 'Beyond the Horizon · The Signal' }),
   ).toBeVisible({ timeout: 20_000 });

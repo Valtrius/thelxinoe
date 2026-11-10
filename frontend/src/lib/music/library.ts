@@ -95,10 +95,14 @@ export async function restOfList(
   queue: MediaChoice[],
   signal: AbortSignal,
 ) {
-  const known = new Set(queue.map((choice) => choice.id));
   const all = await listAll(path, (page) =>
     inBackground(() => api<MusicPage>(page, 'GET', undefined, signal)),
   );
+  return restOf(all, queue);
+}
+/** The playable tracks of a list that `queue` started without. */
+export function restOf(all: MusicItem[], queue: MediaChoice[]) {
+  const known = new Set(queue.map((choice) => choice.id));
   return all
     .filter((track) => playable(track) && !known.has(track.id))
     .map(trackChoice);

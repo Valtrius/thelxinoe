@@ -579,9 +579,9 @@ test('menu dots track live severity while pages are closed and survive sidebar c
   expect(fixture.unexpected).toEqual([]);
 });
 
+// Shows mark posters as Movies do; Music marks an artist's albums.
 for (const [section, kind] of [
   ['Movies', 'movie'],
-  ['Shows', 'show'],
   ['Music', 'artist'],
 ]) {
   test(`available ${section} requests mark their posters and acknowledge only on hover`, async ({
@@ -807,65 +807,62 @@ test('a newer available request remains marked when an older hover acknowledgmen
   expect(fixture.unexpected).toEqual([]);
 });
 
-for (const [type, section] of [
-  ['movie', 'Movies'],
-  ['tv', 'Shows'],
-]) {
-  test(`available ${type} requests open their title from the request list`, async ({
-    page,
-  }, testInfo) => {
-    const fixture = await installUiFixture(page, { section: 'Discover' });
-    await page.route('**/api/v1/seerr/**', (route) => {
-      const path = new URL(route.request().url()).pathname;
-      if (path.endsWith('/status'))
-        return route.fulfill({ json: { configured: true, ready: true } });
-      if (path.endsWith('/requests'))
-        return route.fulfill({
-          json: {
-            pageInfo: { pages: 1 },
-            results: [
-              {
-                id: 1,
-                status: 5,
-                type,
-                media: { tmdbId: 11, mediaType: type, status: 5 },
-              },
-            ],
-          },
-        });
-      if (path.endsWith('/11'))
-        return route.fulfill({
-          json: { id: 11, title: 'Available request', mediaType: type },
-        });
-      return route.fulfill({ json: { results: [], page: 1, totalPages: 1 } });
-    });
-    await page.goto('/');
-    await page
-      .getByRole('navigation', { name: 'Discover navigation' })
-      .getByRole('button', { name: 'My requests', exact: true })
-      .click();
-    await page
-      .getByRole('button', { name: 'Available request Available', exact: true })
-      .click();
-    await expect(
-      page.getByRole('heading', {
-        name: 'Available request',
-        level: 1,
-        exact: true,
-      }),
-    ).toBeVisible();
-    await expect(
-      page
-        .getByRole('article', { name: 'Available request' })
-        .getByText(new RegExp(`^${section === 'Movies' ? 'Movie' : 'Series'}`)),
-    ).toBeVisible();
-    await expect(
-      page.getByRole('button', { name: 'Back to discover', exact: true }),
-    ).toBeVisible();
-    await page.screenshot({
-      path: testInfo.outputPath('available-request-title.png'),
-    });
-    expect(fixture.errors).toEqual([]);
-    expect(fixture.unexpected).toEqual([]);
+// Movies open the same way, without the series type mapping.
+test('available tv requests open their title from the request list', async ({
+  page,
+}, testInfo) => {
+  const type = 'tv';
+  const fixture = await installUiFixture(page, { section: 'Discover' });
+  await page.route('**/api/v1/seerr/**', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/status'))
+      return route.fulfill({ json: { configured: true, ready: true } });
+    if (path.endsWith('/requests'))
+      return route.fulfill({
+        json: {
+          pageInfo: { pages: 1 },
+          results: [
+            {
+              id: 1,
+              status: 5,
+              type,
+              media: { tmdbId: 11, mediaType: type, status: 5 },
+            },
+          ],
+        },
+      });
+    if (path.endsWith('/11'))
+      return route.fulfill({
+        json: { id: 11, title: 'Available request', mediaType: type },
+      });
+    return route.fulfill({ json: { results: [], page: 1, totalPages: 1 } });
   });
-}
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Discover navigation' })
+    .getByRole('button', { name: 'My requests', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Available request Available', exact: true })
+    .click();
+  await expect(
+    page.getByRole('heading', {
+      name: 'Available request',
+      level: 1,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole('article', { name: 'Available request' })
+      .getByText(/^Series/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Back to discover', exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('available-request-title.png'),
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});

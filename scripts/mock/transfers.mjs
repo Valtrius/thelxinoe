@@ -1,5 +1,5 @@
 import { label, now } from './data.mjs';
-import { serverActionDelay } from './timing.mjs';
+import { transferStepDelay } from './timing.mjs';
 
 // Preview-only model of the two service stages and the guided ownership transfer.
 const steps = [
@@ -281,7 +281,7 @@ export function syncTransfers(s) {
     if (s.scenarios?.services[t.kind]?.paused) continue;
     let elapsed = Math.min(
       8,
-      Math.floor((Date.now() - t.updated) / serverActionDelay),
+      Math.floor((Date.now() - t.updated) / transferStepDelay),
     );
     while (
       elapsed-- > 0 &&

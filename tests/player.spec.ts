@@ -3179,12 +3179,16 @@ test('buffered HLS resumes without rebuilding its pipeline and quality changes p
 test('An online stream that stops supplying media offers recovery', async ({
   page,
 }, testInfo) => {
-  test.setTimeout(65000);
+  await page.clock.install();
   await fixture(page, { mode: 'remux', stalled: true });
   await decoded(page);
-  await expect(
-    page.getByRole('button', { name: 'Retry playback' }),
-  ).toBeVisible({ timeout: 50000 });
+  // The player gives up after 30 seconds without media. One second at a time,
+  // so the stream's reads still answer between its timers.
+  const retry = page.getByRole('button', { name: 'Retry playback' });
+  await expect(async () => {
+    await page.clock.fastForward(1000);
+    await expect(retry).toBeVisible({ timeout: 100 });
+  }).toPass({ intervals: [100], timeout: 45000 });
   await expect(page.getByRole('alert')).toContainText(
     'stopped supplying media',
   );

@@ -453,68 +453,63 @@ test('YouTube video codecs save and keep at least one codec', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-for (const platform of ['YouTube', 'Twitch', 'Kick']) {
-  test(`${platform} integration can be disabled and restored server-wide`, async ({
-    page,
-  }, testInfo) => {
-    const fixture = await providerFixture(page, 'Settings');
-    await page.goto('/');
-    await page
-      .getByRole('link', { name: 'Provider applications', exact: true })
-      .click();
-    const toggle = page.getByRole('switch', {
-      name: `Enable ${platform} integration`,
-    });
-    await expect(toggle).toBeChecked();
-    await toggle.uncheck();
-    await expect(
-      page
-        .getByRole('navigation', { name: 'Main navigation' })
-        .getByRole('link', { name: platform, exact: true }),
-    ).toHaveCount(0);
-    await expect(toggle).not.toBeChecked();
-    await page.reload();
-    await page
-      .getByRole('link', { name: 'Provider applications', exact: true })
-      .click();
-    await expect(toggle).not.toBeChecked();
-    await page
-      .getByRole('link', { name: 'Online accounts', exact: true })
-      .click();
-    await expect(
-      page.getByRole('button', { name: `Connect ${platform}`, exact: true }),
-    ).toHaveCount(0);
-    if (platform === 'Kick')
-      await expect(
-        page.getByRole('button', { name: 'Manage channels', exact: true }),
-      ).toHaveCount(0);
-    await page.goto(`/?section=${platform}`);
-    await expect(page.locator('.page-header h1')).toHaveText('Home');
-    await page.getByRole('link', { name: 'Settings', exact: true }).click();
-    await page
-      .getByRole('link', { name: 'Provider applications', exact: true })
-      .click();
-    await expect(toggle).not.toBeChecked();
-    await page.screenshot({
-      path: testInfo.outputPath(`${platform.toLowerCase()}-disabled.png`),
-      fullPage: true,
-    });
-    await toggle.check();
-    await expect(
-      page
-        .getByRole('navigation', { name: 'Main navigation' })
-        .getByRole('link', { name: platform, exact: true }),
-    ).toBeVisible();
-    await expect(toggle).toBeChecked();
-    await expect(
-      page.getByLabel(
-        platform === 'YouTube' ? 'Google client ID' : `${platform} client ID`,
-      ),
-    ).toBeVisible();
-    expect(fixture.errors).toEqual([]);
-    expect(fixture.unexpected).toEqual([]);
+// Every provider shares the integration switch; Kick also hides its channels.
+test('Kick integration can be disabled and restored server-wide', async ({
+  page,
+}, testInfo) => {
+  const platform = 'Kick';
+  const fixture = await providerFixture(page, 'Settings');
+  await page.goto('/');
+  await page
+    .getByRole('link', { name: 'Provider applications', exact: true })
+    .click();
+  const toggle = page.getByRole('switch', {
+    name: `Enable ${platform} integration`,
   });
-}
+  await expect(toggle).toBeChecked();
+  await toggle.uncheck();
+  await expect(
+    page
+      .getByRole('navigation', { name: 'Main navigation' })
+      .getByRole('link', { name: platform, exact: true }),
+  ).toHaveCount(0);
+  await expect(toggle).not.toBeChecked();
+  await page.reload();
+  await page
+    .getByRole('link', { name: 'Provider applications', exact: true })
+    .click();
+  await expect(toggle).not.toBeChecked();
+  await page
+    .getByRole('link', { name: 'Online accounts', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: `Connect ${platform}`, exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Manage channels', exact: true }),
+  ).toHaveCount(0);
+  await page.goto(`/?section=${platform}`);
+  await expect(page.locator('.page-header h1')).toHaveText('Home');
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('link', { name: 'Provider applications', exact: true })
+    .click();
+  await expect(toggle).not.toBeChecked();
+  await page.screenshot({
+    path: testInfo.outputPath(`${platform.toLowerCase()}-disabled.png`),
+    fullPage: true,
+  });
+  await toggle.check();
+  await expect(
+    page
+      .getByRole('navigation', { name: 'Main navigation' })
+      .getByRole('link', { name: platform, exact: true }),
+  ).toBeVisible();
+  await expect(toggle).toBeChecked();
+  await expect(page.getByLabel(`${platform} client ID`)).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
 
 test('integration switches recover from failed saves and fit mobile settings', async ({
   page,

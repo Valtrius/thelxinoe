@@ -188,10 +188,16 @@ async function services() {
   await group('service-access', () =>
     pnpm('run', 'test:service-access', '--built'),
   );
+  await group('service-safety', () => node('scripts/test-service-safety.mjs'));
+}
+
+async function connections() {
+  await images();
+  await stageServiceImages();
+  await browser();
   await group('service-connections', () =>
     node('scripts/test-service-connections.mjs'),
   );
-  await group('service-safety', () => node('scripts/test-service-safety.mjs'));
   await group('local-acceptance', () =>
     node('scripts/test-local-acceptance.mjs'),
   );
@@ -441,6 +447,7 @@ const phases = {
   mock,
   images: imagesPhase,
   services,
+  connections,
   recyclarr,
   media,
   transfers,

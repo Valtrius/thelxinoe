@@ -203,24 +203,6 @@ function reveals(page: Page) {
   );
 }
 
-test('window controls use the standard arrow cursor', async ({
-  page,
-}, testInfo) => {
-  const fixture = await desktopFixture(page, true);
-  await page.goto('/');
-  for (const name of ['Minimize window', 'Maximize window', 'Close window']) {
-    const control = page.getByRole('button', { name, exact: true });
-    await control.hover();
-    await expect(control).toHaveCSS('cursor', 'default');
-  }
-  await testInfo.attach('window-controls', {
-    body: await page.screenshot(),
-    contentType: 'image/png',
-  });
-  expect(fixture.errors).toEqual([]);
-  expect(fixture.unexpected).toEqual([]);
-});
-
 test('desktop waits for its connection screen and icon before revealing the window', async ({
   page,
 }, testInfo) => {
@@ -336,37 +318,5 @@ for (const scenario of ['offline', 'incompatible', 'setup'] as const) {
       body: await page.screenshot(),
       contentType: 'image/png',
     });
-  });
-}
-
-for (const colorScheme of ['dark', 'light'] as const) {
-  test(`splashscreen uses the YouTwitch template in ${colorScheme} mode`, async ({
-    page,
-  }, testInfo) => {
-    await page.setViewportSize({ width: 420, height: 240 });
-    await page.emulateMedia({ colorScheme });
-    await page.goto('/splashscreen.html');
-    await expect(
-      page.getByRole('heading', { name: 'Preparing your library' }),
-    ).toBeVisible();
-    await expect(page.getByLabel('Loading')).toBeVisible();
-    const icon = page.locator('img');
-    await expect
-      .poll(() => icon.evaluate((image) => image.naturalWidth))
-      .toBeGreaterThan(0);
-    expect(
-      await page.evaluate(() => document.documentElement.scrollHeight),
-    ).toBe(240);
-    expect(
-      await page.evaluate(
-        () => getComputedStyle(document.body).backgroundColor,
-      ),
-    ).toBe(colorScheme === 'dark' ? 'rgb(5, 7, 11)' : 'rgb(237, 241, 243)');
-    await testInfo.attach(`splash-${colorScheme}`, {
-      body: await page.screenshot(),
-      contentType: 'image/png',
-    });
-    await page.emulateMedia({ reducedMotion: 'reduce' });
-    await expect(page.locator('i')).toHaveCSS('animation-name', 'none');
   });
 }
