@@ -273,7 +273,7 @@ pub(super) fn overview_reads(
         ),
         statistics: format!(
             "SELECT s.platform,{PLAYED},s.content_type,COALESCE(y.watched,m.watched,s.completed),s.channel_id,s.category_name
-        FROM playback_statistics s LEFT JOIN youtube_state y ON y.user_id=s.user_id AND 'youtube:'||y.video_id=s.media_id
+        FROM playback_statistics s LEFT JOIN youtube_state y ON s.platform='youtube' AND y.user_id=s.user_id AND y.video_id=substr(s.media_id,length('youtube:')+1)
         LEFT JOIN media_state m ON m.user_id=s.user_id AND m.media_id=s.media_id
         WHERE {}",
             statistics.join(" AND ")

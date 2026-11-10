@@ -539,5 +539,16 @@ async fn overview_reads_are_found_by_key_and_date() {
                 "{plan:#?}"
             );
         }
+        // Each statistic finds its watched state by its whole key.
+        let statistics = &plans[2];
+        for state in [
+            "sqlite_autoindex_youtube_state_1 (user_id=? AND video_id=?)",
+            "sqlite_autoindex_media_state_1 (user_id=? AND media_id=?)",
+        ] {
+            assert!(
+                statistics.iter().any(|step| step.contains(state)),
+                "{statistics:#?}"
+            );
+        }
     }
 }
