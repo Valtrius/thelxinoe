@@ -65,105 +65,110 @@ async fn download_progress_reaches_only_users_with_that_video() {
 }
 
 #[tokio::test]
-async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
-    let (_temp, state, _) = fixture().await;
+async fn auto_removal_waits_only_for_marks_made_by_hand() {
+    let (_temp, state, cookie) = fixture().await;
     state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO youtube_media VALUES(?1)",[VIDEO])?;
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES('alice',?1,'Video')",[VIDEO])?;
         for (id,auto_remove) in [(1,1),(2,0)] {
             db.execute("INSERT INTO youtube_watchlists(id,user_id,name,auto_remove_watched,created_at,updated_at) VALUES(?1,'alice','Test',?2,1,1)",params![id,auto_remove])?;
-            db.execute("INSERT INTO youtube_watchlist_items VALUES('alice',?1,?2,0,1)",params![id,VIDEO])?;
+            db.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES('alice',?1,?2,0,1)",params![id,VIDEO])?;
         }
-        db.execute("INSERT INTO youtube_state(user_id,video_id,watched,updated_at) VALUES('alice',?1,1,?2)",params![VIDEO,now()])?;
+        for id in ["partial", "finished"] {
+            db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,youtube_video_id,streaming) SELECT ?1,'alice',id,'g','public','ready','transcode','{}',100,?2,?2,?3,1 FROM sessions WHERE user_id='alice' LIMIT 1",params![id,now(),VIDEO])?;
+        }
         Ok(())
     }).await.unwrap();
-    maintain_watchlists(&state).await.unwrap();
-    assert_eq!(
+    let lists = async || {
         state
             .db
-            .write("test.fixture", |db| Ok(db.query_row(
-                "SELECT COUNT(*) FROM youtube_watchlist_items",
-                [],
-                |r| r.get::<_, i64>(0)
-            )?))
+            .read("test.lists", |db| {
+                Ok(db
+                    .prepare("SELECT watchlist_id FROM youtube_watchlist_items ORDER BY 1")?
+                    .query_map([], |r| r.get::<_, i64>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
             .await
-            .unwrap(),
-        2
-    );
-    state
-        .db
-        .write("test.fixture", |db| {
-            db.execute("UPDATE youtube_state SET updated_at=?1", [now() - 6])?;
-            Ok(())
-        })
+            .unwrap()
+    };
+    let send = async |path: String, method: &str, body: Value| {
+        let response = call(&state, &path, method, body, &cookie).await;
+        assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+    };
+    let mark = async |watched: bool| {
+        send(
+            format!("/api/v1/online/youtube/videos/{VIDEO}"),
+            "PUT",
+            json!({ "watched": watched }),
+        )
         .await
-        .unwrap();
-    maintain_watchlists(&state).await.unwrap();
-    state
-        .db
-        .write("test.fixture", |db| {
-            assert_eq!(
-                db.query_row(
-                    "SELECT watchlist_id FROM youtube_watchlist_items",
+    };
+    let stop = async |session: &str, position: f64| {
+        send(
+            format!("/api/v1/playback/{session}/progress"),
+            "POST",
+            json!({"sequence":1,"position":position,"state":"stopped"}),
+        )
+        .await
+    };
+    let undo_window_passes = async || {
+        state
+            .db
+            .write("test.window", |db| {
+                db.execute(
+                    "UPDATE youtube_watchlist_items SET remove_at=remove_at-6",
                     [],
-                    |r| r.get::<_, i64>(0)
-                )?,
-                2
-            );
-            assert!(db.query_row(
-                "SELECT watchlist FROM youtube_video_state WHERE user_id='alice'",
-                [],
-                |r| r.get::<_, bool>(0)
-            )?);
-            Ok(())
-        })
-        .await
-        .unwrap();
-    // Re-adding an already watched video gets its own undo window. Membership
-    // changes no longer rewrite the user's playback-state timestamp.
-    state
-        .db
-        .write("test.fixture", |db| {
-            db.execute(
-                "INSERT INTO youtube_watchlist_items VALUES('alice',1,?1,0,?2)",
-                params![VIDEO, now()],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    maintain_watchlists(&state).await.unwrap();
-    state
-        .db
-        .write("test.fixture", |db| {
-            assert_eq!(
-                db.query_row("SELECT COUNT(*) FROM youtube_watchlist_items", [], |r| r
-                    .get::<_, u32>(0))?,
-                2
-            );
-            db.execute(
-                "UPDATE youtube_watchlist_items SET added_at=?1 WHERE watchlist_id=1",
-                [now() - 6],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    maintain_watchlists(&state).await.unwrap();
-    state
-        .db
-        .write("test.fixture", |db| {
-            assert_eq!(
-                db.query_row(
-                    "SELECT watchlist_id FROM youtube_watchlist_items",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap()
+    };
+    let changes = async || {
+        state
+            .db
+            .read("test.events", |db| {
+                Ok(db.query_row(
+                    "SELECT COUNT(*) FROM events WHERE kind='youtube.changed' AND user_id='alice'",
                     [],
-                    |r| r.get::<_, i64>(0)
-                )?,
-                2
-            );
-            Ok(())
-        })
-        .await
-        .unwrap();
+                    |r| r.get::<_, i64>(0),
+                )?)
+            })
+            .await
+            .unwrap()
+    };
+
+    // A mark made by hand leaves an undo window before the list drops the video.
+    mark(true).await;
+    maintain_watchlists(&state).await.unwrap();
+    assert_eq!(lists().await, [1, 2]);
+    mark(false).await;
+    undo_window_passes().await;
+    maintain_watchlists(&state).await.unwrap();
+    assert_eq!(lists().await, [1, 2]);
+    mark(true).await;
+    undo_window_passes().await;
+    maintain_watchlists(&state).await.unwrap();
+    assert_eq!(lists().await, [2]);
+
+    // Added again once watched, the video stays until it is watched again.
+    send(
+        "/api/v1/online/youtube/watchlists/1/items".into(),
+        "POST",
+        json!({"videoId":VIDEO,"manualPosition":0}),
+    )
+    .await;
+    undo_window_passes().await;
+    maintain_watchlists(&state).await.unwrap();
+    assert_eq!(lists().await, [1, 2]);
+    stop("partial", 50.).await;
+    assert_eq!(lists().await, [1, 2]);
+
+    // Finished playback removes it at once and tells the user's clients.
+    let before = changes().await;
+    stop("finished", 95.).await;
+    assert_eq!(lists().await, [2]);
+    assert_eq!(changes().await, before + 1);
 }
 
 #[tokio::test]
@@ -344,7 +349,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
         db.execute("INSERT INTO youtube_media(video_id) VALUES (?1)",[VIDEO])?;
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('alice',?1,'Public fixture','public')",[VIDEO])?;
         let list=crate::online::watchlists::default_list(db,"alice")?;
-        db.execute("INSERT INTO youtube_watchlist_items VALUES('alice',?1,?2,0,1)",params![list,VIDEO])?;
+        db.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES('alice',?1,?2,0,1)",params![list,VIDEO])?;
         db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,path,size,modified,probe,requested_at,updated_at,completed_at) VALUES (?1,?2,'ready','{}',?3,?4,?5,?6,1,1,1)",params![VIDEO,generation_copy,path.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),json!({"format":{"duration":"100"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string()])?;
         Ok(())
     }).await.unwrap();

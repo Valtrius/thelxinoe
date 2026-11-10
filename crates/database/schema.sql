@@ -931,6 +931,9 @@ CREATE TABLE youtube_watchlist_items (
     video_id TEXT NOT NULL,
     manual_position REAL NOT NULL,
     added_at INTEGER NOT NULL,
+    -- Set once the video is watched while listed; a list that removes watched videos drops
+    -- the entry from then on. An entry added after the video was watched has none.
+    remove_at INTEGER,
     PRIMARY KEY(watchlist_id,video_id),
     FOREIGN KEY(user_id,watchlist_id) REFERENCES youtube_watchlists(user_id,id) ON DELETE CASCADE,
     FOREIGN KEY(user_id,video_id) REFERENCES youtube_videos(user_id,video_id) ON DELETE CASCADE
