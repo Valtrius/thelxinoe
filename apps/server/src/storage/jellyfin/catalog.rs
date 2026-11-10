@@ -494,7 +494,12 @@ pub(super) fn row(
         .and_then(|s| s.get(..4))
         .and_then(|s| s.parse::<i64>().ok())
         .or(r.get(4)?);
-    let mut value = json!({"Id":id,"ServerId":server,"Name":title,"SortName":title,"Type":item_type(&kind),"IsFolder":!["movie","episode","track"].contains(&kind.as_str()),"MediaType":if kind=="track"{"Audio"}else{"Video"},"LocationType":"FileSystem","ParentId":parent.clone().unwrap_or(r.get::<_,String>(8)?),"ProductionYear":year,"IndexNumber":r.get::<_,Option<i64>>(5)?,"RunTimeTicks":ticks(duration),"Overview":metadata.get("overview"),"ChildCount":r.get::<_,i64>(19)?,"Genres":[],"People":[],"Studios":[],"ProviderIds":{},"ImageTags":{},"BackdropImageTags":[],"MediaSources":[],"UserData":{"Key":id,"ItemId":id,"IsFavorite":r.get::<_,bool>(9)?,"Played":played,"PlayCount":if played {1}else{0},"PlaybackPositionTicks":if played {0}else{ticks(position)},"PlayedPercentage":if duration>0.0{position/duration*100.0}else{0.0}}});
+    let mut value = json!({"Id":id,"ServerId":server,"Name":title,"SortName":title,"Type":item_type(&kind),"IsFolder":!["movie","episode","track"].contains(&kind.as_str()),"MediaType":if kind=="track"{"Audio"}else{"Video"},"LocationType":"FileSystem","ParentId":parent.clone().unwrap_or(r.get::<_,String>(8)?),"ProductionYear":year,"IndexNumber":r.get::<_,Option<i64>>(5)?,"RunTimeTicks":ticks(duration),"Overview":metadata.get("overview"),"ChildCount":r.get::<_,i64>(19)?,"Genres":[],"People":[],"Studios":[],"ProviderIds":{},"ImageTags":{},"BackdropImageTags":[],"MediaSources":[],"UserData":{"Key":id,"ItemId":id,"IsFavorite":r.get::<_,bool>(9)?,"Played":played,"PlayCount":if played {1}else{0},"PlaybackPositionTicks":if played {0}else{ticks(position)}}});
+    // Like Jellyfin, only a resume position has a percentage; clients such as Wholphin draw
+    // it as a progress bar even over a played item.
+    if !played && position > 0.0 && duration > 0.0 {
+        value["UserData"]["PlayedPercentage"] = json!(position / duration * 100.0);
+    }
     if metadata["artwork_cached"] == true {
         value["ImageTags"] = json!({"Primary":format!("{}",r.get::<_,i64>(7)?)});
     } else if ["movie", "episode"].contains(&kind.as_str()) && has_video(&probe) {
