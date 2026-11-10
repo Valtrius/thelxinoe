@@ -58,6 +58,9 @@ pub(super) async fn edit_for(
                 tx.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",params![user,list,video,-now(),now()])?;
             } else { tx.execute("DELETE FROM youtube_watchlist_items WHERE user_id=?1 AND video_id=?2",params![user,video])?; }
         }
+        if let Some(watched)=input.watched {
+            super::super::watchlists::mark_watched(&tx,&user,&video,watched)?;
+        }
         tx.commit()?;Ok(1)
     }).await
 }

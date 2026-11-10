@@ -39,6 +39,9 @@ pub(super) async fn update(
                 }
                 let position = if input.played == Some(true) { Some(duration) } else { position.map(|value| if duration > 0.0 {value.min(duration)} else {value}).or_else(|| (input.played == Some(false)).then_some(0.0)) };
                 tx.execute("INSERT INTO youtube_state(user_id,video_id,pinned,watched,position,updated_at) VALUES(?1,?2,COALESCE(?3,0),COALESCE(?4,0),COALESCE(?5,0),?6) ON CONFLICT(user_id,video_id) DO UPDATE SET pinned=COALESCE(?3,pinned),watched=COALESCE(?4,watched),position=COALESCE(?5,position),updated_at=?6", params![user,video,input.is_favorite,input.played,position,now()])?;
+                if let Some(played) = input.played {
+                    crate::online::watchlists::mark_watched(&tx, &user, &video, played)?;
+                }
             }
             Target::Playlist(id) => {
                 if !tx.query_row("SELECT EXISTS(SELECT 1 FROM playlists WHERE id=?1 AND (access<>'private' OR owner_id=?2))", [&id, &user], |row| row.get::<_,bool>(0))? {

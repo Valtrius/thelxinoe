@@ -19,7 +19,7 @@ async fn seed(state: &AppState, video: &'static str, size: usize, age: i64) -> P
         for user in ["alice", "bob"] {
             db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy,metadata_at) VALUES (?1,?2,?2,'public',1)", params![user,video])?;
             let list = crate::online::watchlists::default_list(db,user)?;
-            db.execute("INSERT INTO youtube_watchlist_items VALUES (?1,?2,?3,0,1)",params![user,list,video])?;
+            db.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES (?1,?2,?3,0,1)",params![user,list,video])?;
         }
         db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,path,size,modified,probe,requested_at,updated_at,completed_at) VALUES (?1,?2,'ready','{}',?3,?4,?5,?6,1,?7,?7)",params![video,generation,stored.to_string_lossy(),size as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),json!({"format":{"duration":"100"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string(),age])?;
         Ok(())

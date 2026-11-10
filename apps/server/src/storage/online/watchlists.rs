@@ -134,6 +134,35 @@ pub(crate) fn default_list(db: &Connection, user: &str) -> anyhow::Result<i64> {
     )?)
 }
 
+/// How long a video marked watched by hand stays in lists that remove watched videos, so
+/// the mark can be undone.
+const UNDO_SECONDS: i64 = 5;
+
+pub(crate) fn mark_watched(
+    tx: &Connection,
+    user: &str,
+    video: &str,
+    watched: bool,
+) -> anyhow::Result<()> {
+    tx.execute(
+        "UPDATE youtube_watchlist_items SET remove_at=?3 WHERE user_id=?1 AND video_id=?2",
+        params![user, video, watched.then(|| now() + UNDO_SECONDS)],
+    )?;
+    Ok(())
+}
+
+/// Playback that finishes a video removes it from lists that remove watched videos at once.
+pub(crate) fn finish_playback(tx: &Connection, user: &str, video: &str) -> anyhow::Result<()> {
+    tx.execute(
+        "UPDATE youtube_watchlist_items SET remove_at=?3 WHERE user_id=?1 AND video_id=?2",
+        params![user, video, now()],
+    )?;
+    if tx.execute("DELETE FROM youtube_watchlist_items WHERE user_id=?1 AND video_id=?2 AND watchlist_id IN (SELECT id FROM youtube_watchlists WHERE user_id=?1 AND auto_remove_watched=1)", params![user, video])? > 0 {
+        changed(tx, user)?;
+    }
+    Ok(())
+}
+
 fn changed(tx: &Connection, user: &str) -> anyhow::Result<()> {
     crate::storage::record_event(tx, Some(user), "youtube.changed", &json!({}))
 }

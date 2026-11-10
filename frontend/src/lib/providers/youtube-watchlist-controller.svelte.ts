@@ -357,8 +357,9 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
     }
   }
 
-  // A watched video stays in an auto-remove watchlist, faded, until the server
-  // removes it a few seconds later and its event reloads the lists.
+  // A video marked watched by hand stays in an auto-remove watchlist, faded,
+  // until the server removes it a few seconds later and its event reloads the
+  // lists.
   function applyProgress(progress: YoutubeProgressEvent): boolean {
     const manual = pendingManualWatchedVideoIds.delete(progress.videoId);
     updateWatchlistVideo(progress.videoId, (video) => ({

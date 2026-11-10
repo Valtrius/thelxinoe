@@ -51,8 +51,9 @@ pub(super) async fn maintain_watchlists_write_youtube_watchlist_items(
     db: &Database,
 ) -> anyhow::Result<Vec<String>> {
     db.write("online.downloads.maintain_watchlists_write_youtube_watchlist_items", |db|{
-        let users=db.prepare("SELECT DISTINCT i.user_id FROM youtube_watchlist_items i JOIN youtube_watchlists w ON w.id=i.watchlist_id JOIN youtube_state s ON s.user_id=i.user_id AND s.video_id=i.video_id WHERE w.auto_remove_watched=1 AND s.watched=1 AND s.updated_at<?1 AND i.added_at<?1")?.query_map([now()-5],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        db.execute("DELETE FROM youtube_watchlist_items WHERE added_at<?1 AND EXISTS(SELECT 1 FROM youtube_watchlists w JOIN youtube_state s ON s.user_id=w.user_id WHERE w.id=youtube_watchlist_items.watchlist_id AND w.auto_remove_watched=1 AND s.video_id=youtube_watchlist_items.video_id AND s.watched=1 AND s.updated_at<?1)",[now()-5])?;
+        let due=now();
+        let users=db.prepare("SELECT DISTINCT i.user_id FROM youtube_watchlist_items i JOIN youtube_watchlists w ON w.id=i.watchlist_id JOIN youtube_state s ON s.user_id=i.user_id AND s.video_id=i.video_id WHERE w.auto_remove_watched=1 AND s.watched=1 AND i.remove_at<=?1")?.query_map([due],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        db.execute("DELETE FROM youtube_watchlist_items WHERE remove_at<=?1 AND EXISTS(SELECT 1 FROM youtube_watchlists w JOIN youtube_state s ON s.user_id=w.user_id WHERE w.id=youtube_watchlist_items.watchlist_id AND w.auto_remove_watched=1 AND s.video_id=youtube_watchlist_items.video_id AND s.watched=1)",[due])?;
         Ok(users)
     }).await
 }
@@ -216,7 +217,11 @@ pub(crate) fn record_state(
     duration: f64,
     stopped: bool,
 ) -> anyhow::Result<()> {
-    tx.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,updated_at) SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2) ON CONFLICT(user_id,video_id) DO UPDATE SET watched=MAX(watched,excluded.watched),position=excluded.position,updated_at=excluded.updated_at",params![user,video,stopped&&duration>0.0&&position>=duration*0.9,if duration>0.0 {position}else{0.0},now()])?;
+    let finished = stopped && duration > 0.0 && position >= duration * 0.9;
+    tx.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,updated_at) SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2) ON CONFLICT(user_id,video_id) DO UPDATE SET watched=MAX(watched,excluded.watched),position=excluded.position,updated_at=excluded.updated_at",params![user,video,finished,if duration>0.0 {position}else{0.0},now()])?;
+    if finished {
+        super::super::watchlists::finish_playback(tx, user, video)?;
+    }
     Ok(())
 }
 

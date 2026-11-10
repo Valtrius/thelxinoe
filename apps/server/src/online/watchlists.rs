@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use thelxinoe_core::{Principal, now};
 
-pub(crate) use storage::default_list;
+pub(crate) use storage::{default_list, finish_playback, mark_watched};
 async fn authorize(state: &AppState, user: &str, id: i64) -> Result<()> {
     let user = user.to_owned();
     if !storage::authorize(user, &state.db, id).await? {

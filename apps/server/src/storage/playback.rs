@@ -196,15 +196,16 @@ pub(super) async fn fail(id: String, db: &Database) -> anyhow::Result<()> {
     .await
 }
 
-/// Playback that ends without a final report, like a closed tab, still marks its video watched
-/// past the threshold. Returns whether it recorded events.
+/// Playback that ends without a final report, like a closed tab, still finishes its video past
+/// the threshold. Returns whether it recorded events.
 fn finish_abandoned_videos(db: &rusqlite::Connection, cutoff: i64) -> anyhow::Result<bool> {
-    let ended=db.prepare("SELECT p.id,p.user_id,p.youtube_video_id,p.position,p.duration FROM playback_sessions p JOIN youtube_state s ON s.user_id=p.user_id AND s.video_id=p.youtube_video_id WHERE p.state IN ('ready','playing','paused') AND p.updated_at<=?1 AND p.duration>0 AND p.position>=p.duration*0.9 AND s.watched=0")?.query_map([cutoff],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,f64>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let ended=db.prepare("SELECT p.id,p.user_id,p.youtube_video_id,p.position,p.duration FROM playback_sessions p JOIN youtube_state s ON s.user_id=p.user_id AND s.video_id=p.youtube_video_id WHERE p.state IN ('ready','playing','paused') AND p.updated_at<=?1 AND p.duration>0 AND p.position>=p.duration*0.9")?.query_map([cutoff],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,f64>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     for (id, user, video, position, duration) in &ended {
         db.execute(
             "UPDATE youtube_state SET watched=1,updated_at=?3 WHERE user_id=?1 AND video_id=?2",
             params![user, video, now()],
         )?;
+        crate::online::watchlists::finish_playback(db, user, video)?;
         crate::storage::record_event(
             db,
             Some(user),

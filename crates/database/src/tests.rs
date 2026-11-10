@@ -650,6 +650,38 @@ fn schema_8_keeps_earlier_requests_for_their_title_and_checks_the_target() -> Re
 }
 
 #[test]
+fn schema_9_keeps_the_undo_window_of_watched_watchlist_entries() -> Result<()> {
+    let seed = "INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('alice','alice','unused','user',1);
+        INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice','watched','Watched'),('alice','unwatched','Unwatched');
+        INSERT INTO youtube_state(user_id,video_id,watched,updated_at) VALUES ('alice','watched',1,100),('alice','unwatched',0,100);
+        INSERT INTO youtube_watchlists(id,user_id,name,created_at,updated_at) VALUES (1,'alice','Early',1,1),(2,'alice','Late',1,1);
+        INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES
+            ('alice',1,'watched',0,50),('alice',2,'watched',0,200),('alice',1,'unwatched',1,50);";
+    let (_temp, conn) = upgraded(8, seed)?;
+    let entries = conn
+        .prepare(
+            "SELECT watchlist_id,video_id,remove_at FROM youtube_watchlist_items ORDER BY 1,2",
+        )?
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    assert_eq!(
+        entries,
+        [
+            (1, "unwatched".into(), None),
+            (1, "watched".into(), Some(105)),
+            (2, "watched".into(), Some(205)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn upgrades_run_in_order_from_the_stored_version() -> Result<()> {
     let conn = Connection::open_in_memory()?;
     conn.execute_batch("CREATE TABLE t(a INTEGER, b INTEGER); PRAGMA user_version=2;")?;
