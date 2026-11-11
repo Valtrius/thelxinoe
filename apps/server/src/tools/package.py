@@ -26,7 +26,7 @@ MAX_EXPANDED = 2 * 1024 * 1024 * 1024
 HOSTS = {"api.github.com", "github.com", "release-assets.githubusercontent.com",
          "objects.githubusercontent.com", "dl.deno.land", "pypi.org", "files.pythonhosted.org"}
 PLATFORM = "linux-x86_64"
-FFMPEG_BRANCH = "8.1"
+FFMPEG_BRANCH = "9.0"
 CACHE_ROOT = None
 
 
@@ -160,12 +160,12 @@ def discover(tool, channel):
                          source="https://dl.deno.land/release", license="MIT", artifacts=[asset(url, digest, size, name)])
     elif tool == "ffmpeg":
         require(channel == "stable", "Only the qualified FFmpeg branch is supported")
-        releases = json.loads(metadata("https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10"))
+        releases = json.loads(metadata("https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases?per_page=10"))
         release = next(r for r in releases if r["tag_name"].startswith("autobuild-") and not r["draft"])
         suffix = f"-linux64-gpl-{FFMPEG_BRANCH}.tar.xz"
         name = next(a["name"] for a in release["assets"] if a["name"].endswith(suffix))
         candidate.update(version=FFMPEG_BRANCH, notes_url=release["html_url"],
-                         source="https://github.com/BtbN/FFmpeg-Builds", license="GPL-3.0-or-later",
+                         source="https://github.com/FFmpeg-Builds/FFmpeg-Builds", license="GPL-3.0-or-later",
                          artifacts=[github_asset(release, name)])
     elif tool == "streamlink":
         require(channel == "stable", "Only stable Streamlink is qualified")
@@ -209,7 +209,9 @@ def check_candidate(candidate):
         prefixes = {
             "yt-dlp": ("https://github.com/yt-dlp/yt-dlp/releases/download/", "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/download/"),
             "deno": ("https://dl.deno.land/release/",),
-            "ffmpeg": ("https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-",),
+            # Candidates recorded before the builds moved keep their old, redirecting address.
+            "ffmpeg": ("https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-",
+                       "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-"),
             "streamlink": ("https://files.pythonhosted.org/packages/",),
         }
         require(value["url"].startswith(prefixes[candidate["tool"]]), "Artifact is outside its tool's release source")

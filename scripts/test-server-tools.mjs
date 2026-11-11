@@ -926,7 +926,7 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
           if (failure === 'version') candidate.version = '0.0';
           if (failure === 'size') candidate.artifacts[0].size = 3 * 1024 ** 3;
           if (['unsafe-archive', 'missing-codecs'].includes(failure)) {
-            fixture = `import io,tarfile,hashlib,json\nfrom pathlib import Path\nb=io.BytesIO()\nwith tarfile.open(fileobj=b,mode='w:xz') as t:\n for name in ${failure === 'unsafe-archive' ? "['../escape']" : "['fixture/bin/ffmpeg','fixture/bin/ffprobe']"}:\n  data=b'#!/bin/sh\\necho ffmpeg version n8.1\\n'; i=tarfile.TarInfo(name); i.size=len(data); i.mode=0o755; t.addfile(i,io.BytesIO(data))\ndata=b.getvalue(); digest=hashlib.sha256(data).hexdigest(); Path('/var/lib/thelxinoe/tools/artifacts',digest).write_bytes(data); print(json.dumps({'sha256':digest,'size':len(data)}))`;
+            fixture = `import io,tarfile,hashlib,json\nfrom pathlib import Path\nb=io.BytesIO()\nwith tarfile.open(fileobj=b,mode='w:xz') as t:\n for name in ${failure === 'unsafe-archive' ? "['../escape']" : "['fixture/bin/ffmpeg','fixture/bin/ffprobe']"}:\n  data=b'#!/bin/sh\\necho ffmpeg version n${candidate.version}\\n'; i=tarfile.TarInfo(name); i.size=len(data); i.mode=0o755; t.addfile(i,io.BytesIO(data))\ndata=b.getvalue(); digest=hashlib.sha256(data).hexdigest(); Path('/var/lib/thelxinoe/tools/artifacts',digest).write_bytes(data); print(json.dumps({'sha256':digest,'size':len(data)}))`;
             Object.assign(
               candidate.artifacts[0],
               JSON.parse(await docker('exec', name, 'python3', '-c', fixture)),

@@ -333,8 +333,15 @@ fn a_burned_subtitle_converts_in_software() {
     assert!(args.input.contains(&"-hwaccel".to_owned()));
 }
 
-/// Pipelines and a 12 s H.264 clip, for a browser without H.264 so the video converts.
+/// `clip_with` the runner's FFmpeg pair.
 async fn clip(root: &Path) -> (Pipelines, Source, Options) {
+    let tools = thelxinoe_tools::Runtime::new(root.join("tools"));
+    tool_runtime::install(&tools, &root.join("tools"));
+    clip_with(root, tools).await
+}
+
+/// Pipelines and a 12 s H.264 clip, for a browser without H.264 so the video converts.
+async fn clip_with(root: &Path, tools: thelxinoe_tools::Runtime) -> (Pipelines, Source, Options) {
     let media = root.join("clip.mkv");
     run(
         "ffmpeg",
@@ -378,8 +385,6 @@ async fn clip(root: &Path) -> (Pipelines, Source, Options) {
             .to_string(),
         probe: probe(&media),
     };
-    let tools = thelxinoe_tools::Runtime::new(root.join("tools"));
-    tool_runtime::install(&tools, &root.join("tools"));
     let pipelines = Pipelines::open(&root.join("cache"), tools).await.unwrap();
     let options = Options {
         capabilities: Capabilities {
@@ -568,9 +573,17 @@ async fn only_failures_ffmpeg_puts_on_the_gpu_or_a_run_without_frames_count_agai
     );
 }
 
-/// A public video served as HLS over the fixture CDN, with its keyframe index.
+/// A public video served as HLS over the fixture CDN, with its keyframe index and FFmpeg
+/// tools that trust that CDN.
 #[cfg(unix)]
-async fn public_video(root: &Path) -> (tokio::process::Child, crate::RemoteSource, Source) {
+async fn public_video(
+    root: &Path,
+) -> (
+    tokio::process::Child,
+    crate::RemoteSource,
+    Source,
+    thelxinoe_tools::Runtime,
+) {
     let media = root.join("source.mp4");
     run(
         "ffmpeg",
@@ -633,8 +646,8 @@ async fn public_video(root: &Path) -> (tokio::process::Child, crate::RemoteSourc
         proxy: Some(proxy["proxy"].as_str().unwrap().into()),
         segments: (0..9).map(|index| f64::from(index) * 2.0).collect(),
     };
-    let tools = thelxinoe_tools::Runtime::new(root.join("probe-tools"));
-    tool_runtime::install(&tools, &root.join("probe-tools"));
+    let tools = thelxinoe_tools::Runtime::new(root.join("tools"));
+    tool_runtime::install_trusting(&tools, &root.join("tools"), &root.join("cert.pem"));
     let mut probe = remote.probe(&tools.media().unwrap()).await.unwrap();
     probe["format"]["duration"] = json!("18");
     let source = Source {
@@ -648,15 +661,15 @@ async fn public_video(root: &Path) -> (tokio::process::Child, crate::RemoteSourc
         modified: String::new(),
         probe,
     };
-    (cdn, remote, source)
+    (cdn, remote, source, tools)
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn a_public_video_window_the_gpu_fails_resumes_in_software() {
     let temp = tempfile::tempdir().unwrap();
-    let (_cdn, remote, source) = public_video(temp.path()).await;
-    let (pipelines, _, _) = clip(temp.path()).await;
+    let (_cdn, remote, source, tools) = public_video(temp.path()).await;
+    let (pipelines, _, _) = clip_with(temp.path(), tools).await;
     // A browser without H.264 that takes fragmented MP4.
     let options = Options {
         capabilities: Capabilities {

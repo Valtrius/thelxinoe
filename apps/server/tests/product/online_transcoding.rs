@@ -132,7 +132,11 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice','abcdefghijk','Offline provider variants')", [])?;
         Ok(())
     }).await.unwrap();
-    tool_runtime::install(&state.tools.runtime, &state.config.state.join("tools"));
+    tool_runtime::install_trusting(
+        &state.tools.runtime,
+        &state.config.state.join("tools"),
+        &root.join("cert.pem"),
+    );
     for (height, size) in [(180, "320x180"), (90, "160x90")] {
         let source = format!("testsrc2=size={size}:rate=24");
         // Separate video files shaped like YouTube's, with two-second fragments.
