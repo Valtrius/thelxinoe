@@ -1,9 +1,9 @@
 [
   {
     "name": "mpv",
-    "url": "https://downloads.sourceforge.net/project/mpv-player-windows/64bit/mpv-x86_64-20261018-git-01e2533f31.7z",
-    "sha256": "d7157567a2fd88e46f739d2e8b8e6c02d2ad812db04547b45c59a2800821991f",
-    "size": 33998447,
+    "url": "https://downloads.sourceforge.net/project/mpv-player-windows/64bit/mpv-x86_64-20261108-git-55d3feb45c.7z",
+    "sha256": "465faafbf90527421ccc304870f02e59f3f47d3361a6f526ef95f40f8f2c2459",
+    "size": 34145102,
     "entry": "mpv.exe"
   },
   {

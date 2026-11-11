@@ -32,7 +32,7 @@ services:
       - runtime:/run/thelxinoe:ro
     networks: [proxy]
   auth-provider:
-    image: node:24-alpine
+    image: node:26-alpine
     network_mode: service:server
     command: [node, /fixture/auth-idp.mjs]
     environment:
