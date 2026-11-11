@@ -244,7 +244,11 @@ export async function installMockApi(page, currentState, events) {
       body: request.postDataJSON() ?? {},
       query: url.searchParams,
       origin: url.origin,
-      emit: events.emit,
+      // Work a request leaves running, such as a scan, reports only while its
+      // state is current, so it never reaches a test after a reset.
+      emit: (kind, payload) => {
+        if (currentState() === s) events.emit(kind, payload);
+      },
       async json(value) {
         const write =
           !['GET', 'HEAD'].includes(request.method()) &&
