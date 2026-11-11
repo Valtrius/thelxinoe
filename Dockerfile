@@ -23,14 +23,14 @@ COPY apps apps
 # Refresh local inputs and hold the cache until both binaries are copied out.
 RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target,sharing=locked find apps crates -type f -exec touch {} + && cargo build --locked --release -p thelxinoe-server -p thelxinoe-docker-controller && cp target/release/thelxinoe-server target/release/thelxinoe-docker-controller /usr/local/bin/
 
-FROM python:3.15-slim-trixie@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS tools
+FROM python:3.11-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535 AS tools
 WORKDIR /src
 COPY apps/server/src/tools/package.py apps/server/src/tools/package.py
 COPY apps/server/src/online/youtube_worker.py apps/server/src/online/streamlink_worker.py apps/server/src/online/
 COPY scripts/prepare-server-tools.py scripts/server-tools.lock.json scripts/
 RUN python scripts/prepare-server-tools.py /opt/thelxinoe/tools --compact
 
-FROM python:3.15-slim-trixie@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS server
+FROM python:3.11-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535 AS server
 # VAAPI for the managed FFmpeg, which loads the system libva. Intel GPUs before Ice Lake
 # encode and scale with shader kernels that only Debian's non-free drivers ship.
 RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini libva2 libva-drm2 intel-media-va-driver-non-free i965-va-driver-shaders && rm -rf /var/lib/apt/lists/* && groupadd -g 10001 thelxinoe && useradd -u 10001 -g 10001 thelxinoe && mkdir -p /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chown -R 10001:10001 /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chmod 2770 /run/thelxinoe

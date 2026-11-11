@@ -123,7 +123,7 @@ export async function stageBuildImages(
     'node:26-trixie-slim',
     'rust:1.99-trixie',
     'debian:trixie-slim',
-    'python:3.15-slim-trixie',
+    'python:3.11-slim-trixie',
   ],
 ) {
   for (const image of images) await pullFixtureImage(image);

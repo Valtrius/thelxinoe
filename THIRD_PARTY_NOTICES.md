@@ -16,7 +16,7 @@ which records each artifact's download address and SHA-256.
 | Deno                                    | MIT                                           | [denoland/deno](https://github.com/denoland/deno)                                                             |
 | Streamlink and its Python dependencies  | BSD-2-Clause and their own licenses           | [streamlink/streamlink](https://github.com/streamlink/streamlink), [PyPI](https://pypi.org/)                  |
 | Intel VA-API drivers, libva and gmmlib  | MIT; i965 shaders EPL-1.0 and Apache-2.0      | [iHD](https://github.com/intel/media-driver), [i965](https://github.com/intel/intel-vaapi-driver)             |
-| Python 3.15 and Debian base system      | PSF-2.0 and Debian package licenses           | [python:3.15-slim-trixie](https://hub.docker.com/_/python), [Debian](https://sources.debian.org/)             |
+| Python 3.11 and Debian base system      | PSF-2.0 and Debian package licenses           | [python:3.11-slim-trixie](https://hub.docker.com/_/python), [Debian](https://sources.debian.org/)             |
 | Rust crates compiled into the binaries  | MIT, Apache-2.0 and others                    | [`Cargo.lock`](Cargo.lock)                                                                                    |
 | npm packages bundled in the web app     | MIT and others                                | [`pnpm-lock.yaml`](pnpm-lock.yaml)                                                                            |
 
