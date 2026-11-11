@@ -15,7 +15,7 @@ thelxinoe-core.workspace = true
 thelxinoe-database.workspace = true
 walkdir = "2"
 regex = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 
 [dev-dependencies]

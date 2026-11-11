@@ -122,7 +122,10 @@ pub fn extract(archive: &Path, destination: &Path, format: &str, entry: &str) ->
                         "Archive links and special files are not supported.",
                     ));
                 }
-                let name = item.name().to_string();
+                let name = item
+                    .name()
+                    .map_err(|e| AppError::validation(e.to_string()))?
+                    .into_owned();
                 let size = item.size();
                 let dir = item.is_dir();
                 extraction.entry(&name, size, dir, &mut item)?;

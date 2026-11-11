@@ -23,7 +23,7 @@ pub(super) fn local_settings() -> &'static str {
     "resource_providers:\n  - name: pinned-guides\n    type: trash-guides\n    path: /config/resources/trash-guides/git/official\n    replace_default: true\n  - name: pinned-templates\n    type: config-templates\n    path: /config/resources/config-templates/git/official\n    replace_default: true\n"
 }
 fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 fn state_directory(url: &str) -> String {
     let mut hash = 14695981039346656037_u64;
@@ -74,7 +74,7 @@ fn resource_revision_at(root: &FsPath) -> Result<String> {
         }
         hash.update(revision.trim());
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hex::encode(hash.finalize()))
 }
 fn resources(key: &str, kind: &str, folder: &str) -> Result<Vec<Value>> {
     resources_at(&appdata(key), kind, folder)

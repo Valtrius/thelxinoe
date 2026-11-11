@@ -9,8 +9,8 @@ use aes_gcm::{
     aead::{Aead, Payload},
 };
 use anyhow::{Result, anyhow, bail};
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
-use rand::{RngCore, rngs::OsRng};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,7 +37,7 @@ pub mod lifetime {
 
 pub fn token() -> String {
     let mut bytes = [0; 32];
-    OsRng.fill_bytes(&mut bytes);
+    UnwrapErr(SysRng).fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 pub fn digest(value: &str) -> String {
@@ -67,7 +67,7 @@ impl SecretStore {
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                OsRng.fill_bytes(&mut key);
+                UnwrapErr(SysRng).fill_bytes(&mut key);
                 let mut options = std::fs::OpenOptions::new();
                 options.write(true).create_new(true);
                 #[cfg(unix)]
@@ -87,11 +87,11 @@ impl SecretStore {
     }
     pub fn encrypt(&self, scope: &str, value: &[u8]) -> Result<Vec<u8>> {
         let mut nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let ciphertext = self
             .cipher
             .encrypt(
-                Nonce::from_slice(&nonce),
+                &Nonce::from(nonce),
                 Payload {
                     msg: value,
                     aad: scope.as_bytes(),
@@ -104,9 +104,11 @@ impl SecretStore {
         if value.len() < 28 {
             bail!("Invalid encrypted secret");
         }
+        let nonce =
+            Nonce::try_from(&value[..12]).map_err(|_| anyhow!("Invalid encrypted secret"))?;
         self.cipher
             .decrypt(
-                Nonce::from_slice(&value[..12]),
+                &nonce,
                 Payload {
                     msg: &value[12..],
                     aad: scope.as_bytes(),
@@ -157,7 +159,7 @@ pub async fn password_hash(
 ) -> Result<String> {
     password_work(permit, move || {
         Argon2::default()
-            .hash_password(password.as_bytes(), &SaltString::generate(&mut OsRng))
+            .hash_password(password.as_bytes())
             .map(|v| v.to_string())
             .map_err(|_| anyhow!("Password hashing failed"))
     })
