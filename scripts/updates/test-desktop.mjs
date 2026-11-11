@@ -396,6 +396,22 @@ export async function desktopScenarios({
     },
   );
   await scenario(
+    'A titlebar double click toggles maximize once and the state holds',
+    async () => {
+      const maximized = () =>
+        native.invoke('plugin:window|is_maximized', { label: 'main' });
+      const titlebar = native.page.locator('[data-window-titlebar]');
+      const initial = await maximized();
+      for (const expected of [!initial, initial]) {
+        await titlebar.dblclick();
+        await expect.poll(maximized).toBe(expected);
+        // A second toggle from the same double click lands just after the first.
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        expect(await maximized()).toBe(expected);
+      }
+    },
+  );
+  await scenario(
     'One click downloads, installs and relaunches with credentials and settings preserved',
     async () => {
       await login();

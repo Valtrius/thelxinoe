@@ -44,26 +44,6 @@
     void appWindow?.toggleMaximize();
   }
 
-  function startWindowDrag(event: MouseEvent) {
-    if (event.button !== 0) return;
-    if (event.target instanceof Element && event.target.closest('button'))
-      return;
-    if (event.detail === 2) {
-      toggleMaximize();
-      return;
-    }
-    void appWindow?.startDragging();
-  }
-
-  function draggable(node: HTMLElement) {
-    node.addEventListener('mousedown', startWindowDrag);
-    return {
-      destroy() {
-        node.removeEventListener('mousedown', startWindowDrag);
-      },
-    };
-  }
-
   function close() {
     void appWindow?.close();
   }
@@ -72,7 +52,6 @@
 <header
   data-window-titlebar
   data-tauri-drag-region
-  use:draggable
   class="fixed inset-x-0 top-0 z-200 flex h-8 items-center border-b border-line bg-background/94 pl-3 backdrop-blur-xl select-none [&_button]:focus-visible:-outline-offset-3"
 >
   <div
