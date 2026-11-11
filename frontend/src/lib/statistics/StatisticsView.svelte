@@ -25,7 +25,11 @@
   import { providers, providerEnabled } from '../providers/availability';
   import { display } from '../display.svelte';
 
-  let { user, filters, filtersChanged } = $props<{
+  let {
+    user,
+    filters,
+    filtersChanged,
+  }: {
     user: User;
     filters: { range?: string; platform?: string; scope?: string };
     filtersChanged: (filters: {
@@ -33,7 +37,7 @@
       platform: string;
       scope: string;
     }) => void;
-  }>();
+  } = $props();
   let scope = $state('mine');
   let people = $state<User[]>([]);
 

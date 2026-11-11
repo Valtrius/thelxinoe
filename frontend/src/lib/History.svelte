@@ -40,14 +40,14 @@
     scope = 'mine',
     range = '30d',
     platform = 'all',
-  } = $props<{
+  }: {
     user: User;
     audit?: boolean;
     active?: boolean;
     scope?: string;
     range?: StatisticsRange;
     platform?: StatisticsPlatform;
-  }>();
+  } = $props();
   type Row = {
     id: number | string;
     kind?: string;

@@ -14,11 +14,15 @@
     requested_at: number;
     same_network: boolean;
   };
-  let { request, user, completed } = $props<{
+  let {
+    request,
+    user,
+    completed,
+  }: {
     request: string;
     user: User;
     completed: () => void;
-  }>();
+  } = $props();
   let info = $state<Request | null>(null),
     code = $state(''),
     busy = $state(false),

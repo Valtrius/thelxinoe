@@ -22,14 +22,14 @@
     prepare,
     authenticated,
     initialError = '',
-  } = $props<{
+  }: {
     setup: boolean;
     serverAddress: string;
     options: AuthOptions | null;
     prepare: (server: string) => Promise<boolean>;
     authenticated: (user: User) => Promise<void>;
     initialError?: string;
-  }>();
+  } = $props();
   let username = $state(''),
     password = $state(''),
     confirmation = $state('');

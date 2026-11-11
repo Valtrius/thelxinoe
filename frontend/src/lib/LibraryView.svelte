@@ -35,16 +35,22 @@
     type SortValues,
     unfiltered,
   } from './library-view';
-  let { domain, admin, opened, searchQuery, collectionId, filtersChanged } =
-    $props<{
-      domain: 'Movies' | 'Shows';
-      admin: boolean;
-      /** A card opens its title page. */
-      opened: (id: string) => void;
-      searchQuery?: string;
-      collectionId?: string;
-      filtersChanged: (query: string, collection: string) => void;
-    }>();
+  let {
+    domain,
+    admin,
+    opened,
+    searchQuery,
+    collectionId,
+    filtersChanged,
+  }: {
+    domain: 'Movies' | 'Shows';
+    admin: boolean;
+    /** A card opens its title page. */
+    opened: (id: string) => void;
+    searchQuery?: string;
+    collectionId?: string;
+    filtersChanged: (query: string, collection: string) => void;
+  } = $props();
   type Item = SortValues & {
     id: string;
     kind: string;

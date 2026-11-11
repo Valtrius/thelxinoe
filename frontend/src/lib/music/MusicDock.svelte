@@ -39,10 +39,13 @@
   import { playlistQueue, sortedPlaylistTracks } from './playlist-order';
   import type { PlaylistDetail } from './playlists.svelte';
 
-  let { choice, closed } = $props<{
+  let {
+    choice,
+    closed,
+  }: {
     choice: MediaChoice;
     closed: () => void;
-  }>();
+  } = $props();
   // Replaced ten times a second: only what changed in it may wake what reads it.
   let musicState = $state.raw<MusicState | null>(null),
     error = $state(''),

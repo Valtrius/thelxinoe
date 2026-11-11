@@ -11,12 +11,12 @@
     kind,
     title,
     heading = true,
-  } = $props<{
+  }: {
     id: string;
     kind: string;
     title: string;
     heading?: boolean;
-  }>();
+  } = $props();
   type Candidate = {
     service_id: string;
     service_generation: string;

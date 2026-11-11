@@ -38,13 +38,13 @@
     searching = $bindable(false),
     settings,
     openArtist,
-  } = $props<{
+  }: {
     user: User;
     query: string;
     searching?: boolean;
     settings: () => void;
     openArtist: (id: string) => void;
-  }>();
+  } = $props();
   type Feed = {
     id: string;
     label: string;

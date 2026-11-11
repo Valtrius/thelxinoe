@@ -70,7 +70,7 @@
     changed,
     watchedChanged,
     open = $bindable(false),
-  } = $props<{
+  }: {
     /** The library item; a Sonarr episode or Radarr movie not in the library has none. */
     id: string | null;
     kind: string;
@@ -96,7 +96,7 @@
       through: boolean,
     ) => void;
     open?: boolean;
-  }>();
+  } = $props();
   type Requested = TitleDialogKind | 'releases';
   let loading = $state(false),
     flags = $state<Flags | null>(null),

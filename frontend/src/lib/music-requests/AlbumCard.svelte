@@ -14,7 +14,7 @@
     busy = false,
     selected = false,
     toggle,
-  } = $props<{
+  }: {
     album: Album;
     /** The cover's rendered width, for picking its image size. */
     sizes: string;
@@ -27,7 +27,7 @@
     selected?: boolean;
     /** Picks the album for a request of several. */
     toggle?: () => void;
-  }>();
+  } = $props();
   const status = $derived(album.request?.state);
   const show = () => open(album);
 </script>

@@ -9,7 +9,7 @@
   import SettingRow from './ui/SettingRow.svelte';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import { cardBlockClass } from './ui/styles';
-  let { admin = false } = $props<{ admin?: boolean }>();
+  let { admin = false }: { admin?: boolean } = $props();
   const ids = $props.id();
   const kinds = ['Intro', 'Recap', 'Credits', 'Preview'];
   const choices = ['Ask', 'Auto', 'Ignore'].map((value) => ({

@@ -20,7 +20,13 @@
   import type { Playlist } from './playlists.svelte';
   import { addToPlaylist, addablePlaylists, queueTrack } from './track-actions';
 
-  let { track, play, details, openAlbum, openArtist } = $props<{
+  let {
+    track,
+    play,
+    details,
+    openAlbum,
+    openArtist,
+  }: {
     track: MusicItem;
     play: () => void;
     details: () => void;
@@ -28,7 +34,7 @@
     openAlbum?: () => void;
     /** Left out on the artist's own page. */
     openArtist?: () => void;
-  }>();
+  } = $props();
   let open = $state(false),
     playlists = $state<Playlist[] | null>(null);
   const itemClass =

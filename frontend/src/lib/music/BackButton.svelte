@@ -4,11 +4,14 @@
   import { getAnimationDuration } from '../motion';
   import Button from '../ui/Button.svelte';
 
-  let { label, back } = $props<{
+  let {
+    label,
+    back,
+  }: {
     /** Names the page Back returns to, when it has a known name. */
     label?: string;
     back: () => void;
-  }>();
+  } = $props();
 </script>
 
 <div

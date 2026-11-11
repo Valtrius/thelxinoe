@@ -8,10 +8,13 @@
   import Modal from '../ui/Modal.svelte';
   import Switch from '../ui/Switch.svelte';
   import { formControlClass } from '../ui/styles';
-  let { serviceId, added } = $props<{
+  let {
+    serviceId,
+    added,
+  }: {
     serviceId: string;
     added: () => Promise<void>;
-  }>();
+  } = $props();
   type Field = {
     name: string;
     label: string;

@@ -22,13 +22,19 @@
   import { listSort, listView } from './list-view';
   import { playlists } from './playlists.svelte';
 
-  let { route, user, play, go, updateFilters } = $props<{
+  let {
+    route,
+    user,
+    play,
+    go,
+    updateFilters,
+  }: {
     route: AppRoute;
     user: User;
     play: (choice: MediaChoice) => void;
     go: (route: AppRoute, replace?: boolean) => void;
     updateFilters: (route: AppRoute, replace?: boolean) => void;
-  }>();
+  } = $props();
   const admin = $derived(user.role === 'admin');
   const home = $derived<AppRoute>({
     section: 'Music',

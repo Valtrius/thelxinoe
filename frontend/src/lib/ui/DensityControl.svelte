@@ -8,13 +8,13 @@
     columns,
     onChange,
     variant = 'stack',
-  } = $props<{
+  }: {
     label: 'Poster density' | 'Video density';
     views: string;
     columns: number;
     onChange: (columns: number) => void;
     variant?: 'stack' | 'row';
-  }>();
+  } = $props();
   const cardType = $derived(label === 'Poster density' ? 'poster' : 'video');
   const limits = $derived(CARD_KINDS[cardType]);
 </script>

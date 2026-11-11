@@ -28,7 +28,7 @@
     after = 0,
     autoplay = true,
     play,
-  } = $props<{
+  }: {
     mediaId: string;
     fileId: string;
     /** The episode after this one, once loaded. */
@@ -44,7 +44,7 @@
     /** Whether the countdown starts the next episode by itself. */
     autoplay?: boolean;
     play: (choice: MediaChoice) => void;
-  }>();
+  } = $props();
   let revision = 0;
   $effect(() => {
     const key = [mediaId, fileId];

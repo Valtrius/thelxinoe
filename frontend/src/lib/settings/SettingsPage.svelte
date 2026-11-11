@@ -30,7 +30,7 @@
     sessionEnded,
     switchServer,
     profileChanged,
-  } = $props<{
+  }: {
     user: User;
     route: AppRoute;
     navigate: (name: string) => void;
@@ -38,7 +38,7 @@
     sessionEnded: () => void;
     switchServer: (address: string) => Promise<void>;
     profileChanged: (id: string, avatar: string | null) => void;
-  }>();
+  } = $props();
   const settingsSection = $derived(route.settings);
   const ids = $props.id();
   let serverAddress = $state(untrack(serverUrl));

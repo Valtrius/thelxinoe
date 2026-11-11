@@ -3,7 +3,7 @@
   import { desktopUpdates, desktopUpdate } from './desktop-updates';
   import OrbitAction from './ui/OrbitAction.svelte';
   import VersionCard from './ui/VersionCard.svelte';
-  let { inline = false } = $props<{ inline?: boolean }>();
+  let { inline = false }: { inline?: boolean } = $props();
   let error = $state('');
   let starting = $state(false);
   const status = $derived($desktopUpdates);

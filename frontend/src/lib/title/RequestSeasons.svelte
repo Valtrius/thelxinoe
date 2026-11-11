@@ -6,13 +6,19 @@
   } from '../seerr/RequestButton.svelte';
   import { availability, seasonRequested, type Media } from '../seerr/types';
 
-  let { media, busy, error, request, close } = $props<{
+  let {
+    media,
+    busy,
+    error,
+    request,
+    close,
+  }: {
     media: Media;
     busy: boolean;
     error: string;
     request: (seasons: number[], profile?: ProfileRef) => void;
     close: () => void;
-  }>();
+  } = $props();
   const seasons = $derived(
     (media.seasons ?? []).filter(
       (s: NonNullable<Media['seasons']>[number]) =>

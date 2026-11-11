@@ -49,12 +49,17 @@
     type ServiceConnection,
   } from './ServiceConnections.svelte';
 
-  let { selected, workflow, onSelect, openSettings } = $props<{
+  let {
+    selected,
+    workflow,
+    onSelect,
+    openSettings,
+  }: {
     selected?: string;
     workflow?: 'setup' | 'updates';
     onSelect?: (kind: string) => void;
     openSettings?: (name: string) => void;
-  }>();
+  } = $props();
 
   import {
     definitions,

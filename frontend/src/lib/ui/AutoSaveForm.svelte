@@ -13,7 +13,7 @@
     busy = $bindable(false),
     class: className = '',
     label = 'Preferences',
-  } = $props<{
+  }: {
     value: Value;
     baseline?: Value;
     onsave: (value: Value) => Promise<unknown>;
@@ -23,7 +23,7 @@
     busy?: boolean;
     class?: string;
     label?: string;
-  }>();
+  } = $props();
   let form: HTMLFormElement;
   let error = $state('');
   const copy = (value: Value): Value => JSON.parse(JSON.stringify(value));

@@ -7,11 +7,14 @@
   import type { Playlist } from './playlists.svelte';
   import { addToPlaylist, addablePlaylists } from './track-actions';
 
-  let { tracks, disabled = false } = $props<{
+  let {
+    tracks,
+    disabled = false,
+  }: {
     /** Read when a playlist is chosen, since an artist's tracks can be many. */
     tracks: () => MusicItem[] | Promise<MusicItem[]>;
     disabled?: boolean;
-  }>();
+  } = $props();
   let open = $state(false),
     adding = $state(false),
     playlists = $state<Playlist[] | null>(null);

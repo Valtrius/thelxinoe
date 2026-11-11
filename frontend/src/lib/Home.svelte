@@ -44,13 +44,19 @@
   import VideoCard from './providers/components/youtube/VideoCard.svelte';
   import PlatformIcon from './ui/PlatformIcon.svelte';
 
-  let { user, playing, play, navigate, details } = $props<{
+  let {
+    user,
+    playing,
+    play,
+    navigate,
+    details,
+  }: {
     user: User;
     playing: PlayingMedia[];
     play: (choice: MediaChoice) => Promise<void>;
     navigate: (section: string) => void;
     details: (id: string, kind: string) => void;
-  }>();
+  } = $props();
 
   type Item = {
     id: string;

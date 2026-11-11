@@ -37,13 +37,13 @@
     candidate = false,
     onClose,
     onUpdate,
-  } = $props<{
+  }: {
     initial: RecyclarrConfiguration;
     draft?: YamlFiles;
     candidate?: boolean;
     onClose: () => void;
     onUpdate: (configuration: RecyclarrConfiguration) => void;
-  }>();
+  } = $props();
   let snapshot = $state<RecyclarrConfiguration>(untrack(() => initial));
   let savedFiles = $state<YamlFiles>(
     untrack(() => (candidate ? initial.candidate!.files : initial.files)),

@@ -3,10 +3,13 @@
   import type { Snippet } from 'svelte';
   import { twMerge } from 'tailwind-merge';
   import { compactViewport } from '../responsive';
-  let { children, class: className = '' } = $props<{
+  let {
+    children,
+    class: className = '',
+  }: {
     children: Snippet;
     class?: string;
-  }>();
+  } = $props();
 </script>
 
 <!-- A phone has no room beside the menu, so a submenu opens below its item. -->

@@ -13,10 +13,13 @@
 
 <script lang="ts">
   import { twMerge } from 'tailwind-merge';
-  let { close, class: className = '' } = $props<{
+  let {
+    close,
+    class: className = '',
+  }: {
     close: () => void;
     class?: string;
-  }>();
+  } = $props();
   // A tap opens a dropdown menu on its pointerup, so Chromium sends the tap's
   // click here. Only a press that started on the backdrop closes the menu.
   let pressed = false;

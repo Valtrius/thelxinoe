@@ -1,5 +1,5 @@
 <script lang="ts">
-  let { paused } = $props<{ paused: boolean }>();
+  let { paused }: { paused: boolean } = $props();
 </script>
 
 <!-- The playing track's marker; its bars move while it plays. -->

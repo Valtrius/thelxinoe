@@ -33,7 +33,7 @@
     replace,
     close,
     changed,
-  } = $props<{
+  }: {
     dialog: TitleDialogKind;
     /** A library id, or the `tmdb:` reference of a movie only Radarr lists. */
     id: string;
@@ -48,7 +48,7 @@
     replace?: () => Promise<unknown>;
     close: () => void;
     changed?: () => void;
-  }>();
+  } = $props();
   const present = $derived(files.filter((file: CatalogFile) => file.present));
   // Checking files can be cancelled; deleting them cannot.
   let preparing = $state(false),

@@ -11,12 +11,12 @@
     enabled,
     label,
     onToggle,
-  } = $props<{
+  }: {
     items: T[];
     enabled: number[];
     label: string;
     onToggle: (id: number, enabled: boolean) => void;
-  }>();
+  } = $props();
   const id = $props.id();
   let list: HTMLOListElement;
   let dragControl: HTMLButtonElement;

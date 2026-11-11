@@ -20,7 +20,7 @@
     inactiveLabel,
     request,
     inline = false,
-  } = $props<{
+  }: {
     mediaKind: MediaKind;
     id: number;
     disabled: boolean;
@@ -29,7 +29,7 @@
     /** Inside a modal dialog, profiles must render in it to stay reachable. */
     inline?: boolean;
     request: (profile?: ProfileRef) => void;
-  }>();
+  } = $props();
   let items = $state<Choice[]>([]),
     locked = $state(false),
     loading = $state(false),

@@ -15,11 +15,11 @@
     status,
     timezone,
     compact = false,
-  } = $props<{
+  }: {
     status: TitleStatus;
     timezone: string;
     compact?: boolean;
-  }>();
+  } = $props();
   const text = $derived(statusText(status, timezone));
   const icons = {
     available: CircleCheck,

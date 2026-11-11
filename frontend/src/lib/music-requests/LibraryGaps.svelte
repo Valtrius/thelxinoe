@@ -17,11 +17,14 @@
     type ArtistView,
     type MusicService,
   } from './types';
-  let { id, discography } = $props<{
+  let {
+    id,
+    discography,
+  }: {
     /** The artist's MusicBrainz ID. */
     id: string;
     discography: () => void;
-  }>();
+  } = $props();
   let service = $state<MusicService | null>(null),
     albums = $state<Album[]>([]),
     busy = $state<string | null>(null),

@@ -7,11 +7,11 @@
     id,
     variant = 'secondary',
     class: className = '',
-  } = $props<{
+  }: {
     id: string;
     variant?: 'secondary' | 'player';
     class?: string;
-  }>();
+  } = $props();
   let favorite = $state<boolean | null>(null),
     busy = $state(false);
   // Only another id reads the flags again, not another object holding this one.

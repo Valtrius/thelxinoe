@@ -21,10 +21,13 @@
     serverUpdateCard,
     serverUpdates,
   } from './server-updates';
-  let { installed = '—', inline = false } = $props<{
+  let {
+    installed = '—',
+    inline = false,
+  }: {
     installed?: string;
     inline?: boolean;
-  }>();
+  } = $props();
   const card = $derived(serverUpdateCard($serverUpdates, installed));
   const view = $derived(card.view);
   const icons = {

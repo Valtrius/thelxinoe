@@ -14,13 +14,13 @@
     label = 'Media collection',
     kind = 'poster',
     class: className = '',
-  } = $props<{
+  }: {
     children: Snippet;
     revision?: string;
     label?: string;
     kind?: CardKind;
     class?: string;
-  }>();
+  } = $props();
   let root: HTMLDivElement;
   let width = $state(1200);
   const columns = $derived(

@@ -58,7 +58,7 @@
     advance,
     resizable = false,
     music = false,
-  } = $props<{
+  }: {
     choice: MediaChoice;
     closed: () => void;
     ended?: () => void;
@@ -67,7 +67,7 @@
     resizable?: boolean;
     /** Streamed music keeps the music volume and ignores device rotation. */
     music?: boolean;
-  }>();
+  } = $props();
   const playerId = $props.id();
   const canResize = $derived(resizable && !compactViewport.current);
   let videoAspectRatio = $state(16 / 9);

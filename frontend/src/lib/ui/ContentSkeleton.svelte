@@ -5,12 +5,12 @@
     variant = 'rows',
     count = 4,
     class: className = '',
-  } = $props<{
+  }: {
     label: string;
     variant?: 'rows' | 'settings' | 'statistics' | 'detail';
     count?: number;
     class?: string;
-  }>();
+  } = $props();
 </script>
 
 <div

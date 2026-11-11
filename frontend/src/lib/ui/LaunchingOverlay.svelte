@@ -1,6 +1,6 @@
 <script lang="ts">
   import { LoaderCircle } from '@lucide/svelte';
-  let { label } = $props<{ label: string }>();
+  let { label }: { label: string } = $props();
 </script>
 
 <!-- Covers artwork while its video starts in a desktop MPV window. Later

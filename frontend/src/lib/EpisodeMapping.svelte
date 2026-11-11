@@ -7,7 +7,7 @@
   import { untrack } from 'svelte';
   import Button from './ui/Button.svelte';
 
-  let { id, changed } = $props<{ id: string; changed: () => void }>();
+  let { id, changed }: { id: string; changed: () => void } = $props();
   type Episode = {
     id: string;
     season: number;

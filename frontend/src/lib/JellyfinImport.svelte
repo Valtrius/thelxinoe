@@ -28,9 +28,11 @@
     statTileClass,
   } from './ui/styles';
 
-  let { openSettings } = $props<{
+  let {
+    openSettings,
+  }: {
     openSettings: (name: string, service?: string) => void;
-  }>();
+  } = $props();
 
   type Counts = {
     watched: number;

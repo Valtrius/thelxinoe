@@ -37,7 +37,7 @@
     play,
     changed,
     watchedChanged,
-  } = $props<{
+  }: {
     episode: Episode;
     /** The series name, which episode titles from files may repeat. */
     show: string;
@@ -54,7 +54,7 @@
     play: (episode: Episode, fileId?: string) => void;
     changed: () => void;
     watchedChanged: (media: string, watched: boolean, through: boolean) => void;
-  }>();
+  } = $props();
   let searching = $state(false),
     releases = $state(false);
   const label = $derived(episodeLabel(episode.title, show));

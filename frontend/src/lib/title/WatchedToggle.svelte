@@ -8,14 +8,14 @@
     label,
     busy = false,
     toggle,
-  } = $props<{
+  }: {
     watched: boolean;
     /** How far an unfinished episode has been played, from 0 to 1. */
     progress?: number | null;
     label: string;
     busy?: boolean;
     toggle: () => void;
-  }>();
+  } = $props();
 </script>
 
 <Button

@@ -43,7 +43,7 @@
     settings,
     watchlistId,
     watchlistChanged,
-  } = $props<{
+  }: {
     platform: 'youtube' | 'twitch' | 'kick';
     admin: boolean;
     userId: string;
@@ -52,7 +52,7 @@
     settings: (section: string) => void;
     watchlistId?: number;
     watchlistChanged: (id: number) => void;
-  }>();
+  } = $props();
   const cardColumns = $derived(
     compactViewport.current ? 2 : $appearance.video_columns,
   );

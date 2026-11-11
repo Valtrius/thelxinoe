@@ -9,10 +9,13 @@
     type ServerUpdateStatus,
   } from './server-updates';
   import { dismissToastByKey, showToast } from './providers/toasts';
-  let { playing = false, admin = false } = $props<{
+  let {
+    playing = false,
+    admin = false,
+  }: {
     playing?: boolean;
     admin?: boolean;
-  }>();
+  } = $props();
   let webVersion = $state('');
   // An open page failed to load code the server no longer has.
   let codeMissing = $state(false);

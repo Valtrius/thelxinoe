@@ -16,7 +16,7 @@
   import SettingsCard from '../ui/SettingsCard.svelte';
   import { cardBlockClass, formControlClass } from '../ui/styles';
 
-  let { user } = $props<{ user: User }>();
+  let { user }: { user: User } = $props();
   let users = $state<User[] | null>(null),
     // Who may request without review, keyed by user id. Only people the
     // server lists get a toggle.

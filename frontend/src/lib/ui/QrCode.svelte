@@ -1,6 +1,6 @@
 <script lang="ts">
   import { qrCode } from '../qr';
-  let { value, label } = $props<{ value: string; label: string }>();
+  let { value, label }: { value: string; label: string } = $props();
   const code = $derived(qrCode(value));
 </script>
 

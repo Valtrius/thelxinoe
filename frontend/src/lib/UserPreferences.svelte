@@ -14,10 +14,13 @@
   import ProfilePicture from './ProfilePicture.svelte';
   import AppearanceSettings from './AppearanceSettings.svelte';
   import { display } from './display.svelte';
-  let { user, avatarChanged } = $props<{
+  let {
+    user,
+    avatarChanged,
+  }: {
     user: User;
     avatarChanged: (id: string, avatar: string | null) => void;
-  }>();
+  } = $props();
   type Preferences = {
     timezone: string;
     timezone_override: string | null;

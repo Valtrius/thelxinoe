@@ -4,11 +4,15 @@
   import { refreshAttention } from './attention';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  let { id, kind, changed } = $props<{
+  let {
+    id,
+    kind,
+    changed,
+  }: {
     id: string;
     kind: string;
     changed: () => void;
-  }>();
+  } = $props();
   const deletionLabel = $derived(
     kind === 'show'
       ? 'Delete series files'
