@@ -13,7 +13,7 @@
     expanded = false,
     actions,
     closeLabel = 'Close',
-  } = $props<{
+  }: {
     title: string;
     busy?: boolean;
     onClose: () => void;
@@ -23,7 +23,7 @@
     expanded?: boolean;
     actions?: Snippet;
     closeLabel?: string;
-  }>();
+  } = $props();
   const id = $props.id();
   let dialog: HTMLDialogElement;
   let content: HTMLDivElement;

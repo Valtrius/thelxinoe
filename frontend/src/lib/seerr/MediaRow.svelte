@@ -9,12 +9,16 @@
   import { ChevronLeft, ChevronRight } from '@lucide/svelte';
   import Button from '../ui/Button.svelte';
   import { scrollWithMotion } from '../motion';
-  let { label, children, action } = $props<{
+  let {
+    label,
+    children,
+    action,
+  }: {
     label: string;
     children: Snippet;
     /** A link beside the row's scroll buttons. */
     action?: Snippet;
-  }>();
+  } = $props();
   let rail: HTMLDivElement;
   function scroll(direction: number) {
     scrollWithMotion(rail, {

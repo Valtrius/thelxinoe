@@ -120,9 +120,9 @@ export async function pullFixtureImage(reference) {
 const staged = {};
 export async function stageBuildImages(
   images = [
-    'node:24-bookworm-slim',
-    'rust:1.98-bookworm',
-    'debian:bookworm-slim',
+    'node:26-trixie-slim',
+    'rust:1.99-trixie',
+    'debian:trixie-slim',
     'python:3.11-slim-trixie',
   ],
 ) {
@@ -130,7 +130,7 @@ export async function stageBuildImages(
 }
 /** The pinned images container fixtures start besides this revision's own. */
 export async function stageServiceImages() {
-  await stageBuildImages(['debian:bookworm-slim', 'node:24-bookworm-slim']);
+  await stageBuildImages(['debian:trixie-slim', 'node:26-trixie-slim']);
   for (const image of Object.values(imageManifest.services))
     await pullFixtureImage(image);
   await pullFixtureImage('caddy:2');

@@ -379,7 +379,7 @@ export async function fixture({
         `${directory}:/seed:ro`,
         '-v',
         `${appdata}:/config`,
-        fixtureImage('debian:bookworm-slim'),
+        fixtureImage('debian:trixie-slim'),
         'sh',
         '-c',
         `cp -a /seed/. /config/ && chown -R ${owner} /config`,
@@ -392,7 +392,7 @@ export async function fixture({
         'none',
         '-v',
         `${directory}:/config`,
-        fixtureImage('debian:bookworm-slim'),
+        fixtureImage('debian:trixie-slim'),
         'chown',
         owner,
         '/config',
@@ -525,7 +525,7 @@ export async function fixture({
         `${project}_test`,
         '-v',
         `${resolve('tests/seerr-jellyfin-peer.mjs')}:/peer.mjs:ro`,
-        fixtureImage('node:24-bookworm-slim'),
+        fixtureImage('node:26-trixie-slim'),
         'node',
         '/peer.mjs',
       );
@@ -671,7 +671,7 @@ export async function fixture({
       `THELXINOE_TEST_MOVIE_PATH=${existingLayout ? '/movies/Mapping fixture (2000).mp4' : ''}`,
       '-v',
       `${resolve('tests/service-access-peer.mjs')}:/peer.mjs:ro`,
-      fixtureImage('node:24-bookworm-slim'),
+      fixtureImage('node:26-trixie-slim'),
       'node',
       '/peer.mjs',
     );
@@ -794,7 +794,7 @@ export async function fixture({
   function readAppdata(
     appdata,
     path,
-    image = fixtureImage('debian:bookworm-slim'),
+    image = fixtureImage('debian:trixie-slim'),
   ) {
     return docker(
       'run',
@@ -817,7 +817,7 @@ export async function fixture({
       'none',
       '-v',
       `${appdata}:/config:ro`,
-      fixtureImage('debian:bookworm-slim'),
+      fixtureImage('debian:trixie-slim'),
       'sh',
       '-c',
       "cd /config && find . -type f -print0 | sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1",

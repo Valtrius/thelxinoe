@@ -2,10 +2,13 @@
   import { Film, Tv, Music } from '@lucide/svelte';
   import PlatformIcon from '../ui/PlatformIcon.svelte';
   import type { StatisticsSource } from './types';
-  let { platform, class: className = '' } = $props<{
+  let {
+    platform,
+    class: className = '',
+  }: {
     platform: StatisticsSource;
     class?: string;
-  }>();
+  } = $props();
 </script>
 
 {#if platform === 'movies'}<Film class={className} />

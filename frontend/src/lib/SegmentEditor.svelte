@@ -11,14 +11,14 @@
     episode,
     summary = 'Intro, recap, credits and preview timestamps',
     open = false,
-  } = $props<{
+  }: {
     mediaId: string;
     fileId: string;
     duration: number;
     episode: boolean;
     summary?: string;
     open?: boolean;
-  }>();
+  } = $props();
   type Segment = {
     id: string;
     kind: string;

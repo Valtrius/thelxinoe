@@ -13,13 +13,19 @@
   import { eyebrowTextClass } from '../ui/styles';
   import { trackNumber, type MusicItem } from './library';
 
-  let { track, admin, play, close, changed } = $props<{
+  let {
+    track,
+    admin,
+    play,
+    close,
+    changed,
+  }: {
     track: MusicItem;
     admin: boolean;
     play: (fileId: string) => void;
     close: () => void;
     changed: () => void;
-  }>();
+  } = $props();
   let detail = $state<CatalogItem | null>(null),
     error = $state('');
   $effect(() => {

@@ -380,8 +380,8 @@ export async function createLab({
     keys(lab);
     if (server) {
       await stageBuildImages();
-      await pullFixtureImage(fixtureImage('registry:2'));
-      await pullFixtureImage('node:24-bookworm-slim');
+      await pullFixtureImage(fixtureImage('registry:3'));
+      await pullFixtureImage('node:26-trixie-slim');
       mkdirSync(join(root, 'registry-control'), { recursive: true });
       save(join(root, 'registry-control/mode.json'), { mode: 'base' });
     }
@@ -405,7 +405,7 @@ export async function createLab({
         `app.thelxinoe.update-lab=${id}`,
         '--network',
         `${id}-registry`,
-        fixtureImage('registry:2'),
+        fixtureImage('registry:3'),
       );
       docker(
         'run',
@@ -425,7 +425,7 @@ export async function createLab({
         `${join(repository, 'scripts/updates/registry.mjs')}:/registry.mjs:ro`,
         '-v',
         `${join(root, 'registry-control')}:/control:ro`,
-        fixtureImage('node:24-bookworm-slim'),
+        fixtureImage('node:26-trixie-slim'),
         'node',
         '/registry.mjs',
         'serve',

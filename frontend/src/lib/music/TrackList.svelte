@@ -14,7 +14,7 @@
     details,
     openAlbum,
     openArtist,
-  } = $props<{
+  }: {
     tracks: MusicItem[];
     /** An album's tracklist: numbered, by disc. Other lists show each track's cover and album. */
     album?: boolean;
@@ -22,7 +22,7 @@
     details: (track: MusicItem) => void;
     openAlbum?: (track: MusicItem) => void;
     openArtist?: (track: MusicItem) => void;
-  }>();
+  } = $props();
   const discs = $derived(album && new Set(tracks.map(discNumber)).size > 1);
 </script>
 

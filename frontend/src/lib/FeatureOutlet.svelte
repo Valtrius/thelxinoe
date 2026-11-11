@@ -19,7 +19,7 @@
     sessionEnded,
     switchServer,
     profileChanged,
-  } = $props<{
+  }: {
     route: AppRoute;
     user: User;
     playing: PlayingMedia[];
@@ -31,7 +31,7 @@
     sessionEnded: () => void;
     switchServer: (address: string) => Promise<void>;
     profileChanged: (id: string, avatar: string | null) => void;
-  }>();
+  } = $props();
   let retry = $state(0);
 </script>
 

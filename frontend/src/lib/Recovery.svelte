@@ -6,7 +6,7 @@
   import FormField from './ui/FormField.svelte';
   import Notice from './ui/Notice.svelte';
   import { formControlClass } from './ui/styles';
-  let { token, completed } = $props<{ token: string; completed: () => void }>();
+  let { token, completed }: { token: string; completed: () => void } = $props();
   let username = $state(''),
     password = $state(''),
     confirmation = $state(''),

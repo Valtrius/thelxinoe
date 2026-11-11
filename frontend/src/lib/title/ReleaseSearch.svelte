@@ -16,13 +16,18 @@
     type ReleaseTarget,
   } from './sonarr';
 
-  let { series, target, title, close } = $props<{
+  let {
+    series,
+    target,
+    title,
+    close,
+  }: {
     series: string;
     target: ReleaseTarget;
     /** What is searched for, such as S02E06 · Title. */
     title: string;
     close: () => void;
-  }>();
+  } = $props();
   let releases = $state<Release[] | null>(null),
     error = $state(''),
     query = $state(''),

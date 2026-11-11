@@ -37,7 +37,7 @@ const SUPPLEMENTARY_FILE: &str = "file";
 const QUEUE: &str = "queue";
 fn digest(value: &Value) -> String {
     use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
+    hex::encode(Sha256::digest(value.to_string().as_bytes()))
 }
 
 /// Everything the administrator reviewed, including private Docker evidence.

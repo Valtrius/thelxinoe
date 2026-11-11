@@ -19,7 +19,13 @@
     type MusicService,
     type RequestState,
   } from './types';
-  let { album, service, close, openArtist, requested } = $props<{
+  let {
+    album,
+    service,
+    close,
+    openArtist,
+    requested,
+  }: {
     /** What the opening list knows, shown while the rest loads. */
     album: Album;
     service: MusicService;
@@ -29,7 +35,7 @@
       album: Album,
       request: { id: string; state: RequestState },
     ) => void;
-  }>();
+  } = $props();
   let detail = $state<AlbumDetail | null>(null),
     error = $state(''),
     busy = $state(false);

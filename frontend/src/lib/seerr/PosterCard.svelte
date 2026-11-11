@@ -9,12 +9,16 @@
     kind,
     type Media,
   } from './types';
-  let { item, open, sizes } = $props<{
+  let {
+    item,
+    open,
+    sizes,
+  }: {
     item: Media;
     open: (item: Media) => void;
     /** The poster's rendered width, for picking its image size. */
     sizes: string;
-  }>();
+  } = $props();
   let failed = $state(false);
   const status = $derived(availability(item.mediaInfo?.status));
 </script>

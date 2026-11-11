@@ -3,11 +3,15 @@
   import { ExternalLink } from '@lucide/svelte';
   import { desktop, serverUrl } from '../api';
 
-  let { id, label, path } = $props<{
+  let {
+    id,
+    label,
+    path,
+  }: {
     id: string;
     label: string;
     path: string;
-  }>();
+  } = $props();
   let error = $state('');
   async function open(event: MouseEvent) {
     if (!desktop) return;

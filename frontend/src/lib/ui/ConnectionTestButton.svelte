@@ -9,14 +9,14 @@
     disabled = false,
     label = 'Test connection',
     size = 'form',
-  } = $props<{
+  }: {
     test: () => Promise<boolean | void>;
     onError: (error: unknown) => void;
     succeeded?: boolean;
     disabled?: boolean;
     label?: string;
     size?: 'form' | 'sm';
-  }>();
+  } = $props();
   let running = $state(false);
   $effect(() => {
     if (!succeeded) return;

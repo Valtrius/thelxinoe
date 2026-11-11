@@ -2,10 +2,13 @@
   import { UserRound } from '@lucide/svelte';
   import { twMerge } from 'tailwind-merge';
   import { cover } from './types';
-  let { src, class: className = '' } = $props<{
+  let {
+    src,
+    class: className = '',
+  }: {
     src?: string | null;
     class?: string;
-  }>();
+  } = $props();
   let failed = $state(false);
   const image = $derived(failed ? '' : cover(src));
 </script>

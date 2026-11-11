@@ -7,7 +7,7 @@
   import { scrollWithMotion } from '../motion';
   import { compactViewport } from '../responsive';
 
-  let { label, children } = $props<{ label: string; children: Snippet }>();
+  let { label, children }: { label: string; children: Snippet } = $props();
   // Home cards are sized like the video pages' cards.
   const columns = $derived(
     compactViewport.current ? 2 : $appearance.video_columns,

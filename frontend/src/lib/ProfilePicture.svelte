@@ -11,10 +11,13 @@
   import { Pencil } from '@lucide/svelte';
   import { reveal } from './ui/reveal';
 
-  let { user, changed } = $props<{
+  let {
+    user,
+    changed,
+  }: {
     user: User;
     changed: (id: string, avatar: string | null) => void;
-  }>();
+  } = $props();
   let image = $state.raw<HTMLImageElement | null>(null);
   let zoom = $state(1),
     horizontal = $state(0.5),

@@ -1,8 +1,10 @@
 packages:
   - frontend
 
-onlyBuiltDependencies:
-  - '@tailwindcss/oxide'
-  - '@tauri-apps/cli'
-  - esbuild
-  - msw
+allowBuilds:
+  '@tailwindcss/oxide': true
+  '@tauri-apps/cli': true
+  lfa-ponyfill: false
+
+# CI jobs that only run Node scripts skip installation.
+verifyDepsBeforeRun: false

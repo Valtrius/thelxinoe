@@ -15,7 +15,7 @@
     seek,
     advance,
     autoplay = true,
-  } = $props<{
+  }: {
     mediaId: string;
     fileId: string;
     generation: string;
@@ -28,7 +28,7 @@
     advance?: (next: MediaChoice) => void;
     /** Whether the next episode starts by itself. */
     autoplay?: boolean;
-  }>();
+  } = $props();
   type Segment = { id: string; kind: string; start: number; end: number };
   let items = $state<Segment[]>([]),
     preferences = $state<Record<string, string>>({}),

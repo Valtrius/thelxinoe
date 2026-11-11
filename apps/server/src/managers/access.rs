@@ -445,10 +445,6 @@ async fn web_files(root: &std::path::Path, mut request: Request) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, cache.parse().unwrap());
-    // Release builds ship `.br` and `.gz` copies chosen by Accept-Encoding.
-    response
-        .headers_mut()
-        .append(header::VARY, header::ACCEPT_ENCODING.into());
     response
 }
 

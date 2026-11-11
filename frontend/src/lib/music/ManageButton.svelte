@@ -3,12 +3,17 @@
   import Button from '../ui/Button.svelte';
   import Modal from '../ui/Modal.svelte';
   import MediaOperations from '../MediaOperations.svelte';
-  let { id, kind, title, changed } = $props<{
+  let {
+    id,
+    kind,
+    title,
+    changed,
+  }: {
     id: string;
     kind: string;
     title: string;
     changed: () => void;
-  }>();
+  } = $props();
   let open = $state(false);
 </script>
 

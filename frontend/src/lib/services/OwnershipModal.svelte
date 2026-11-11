@@ -31,14 +31,14 @@
     onClose,
     changed,
     openService,
-  } = $props<{
+  }: {
     serviceId: string;
     transferId?: string | null;
     label: string;
     onClose: () => void;
     changed?: () => Promise<void> | void;
     openService?: () => void;
-  }>();
+  } = $props();
 
   let operation = $state<TransferView | null>(null);
   let loadError = $state('');

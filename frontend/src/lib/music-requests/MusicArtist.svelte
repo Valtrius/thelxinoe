@@ -26,13 +26,18 @@
     type ArtistView,
     type MusicService,
   } from './types';
-  let { user, id, back, openLibrary } = $props<{
+  let {
+    user,
+    id,
+    back,
+    openLibrary,
+  }: {
     user: User;
     /** The artist's MusicBrainz ID. */
     id: string;
     back: () => void;
     openLibrary: (item: string) => void;
-  }>();
+  } = $props();
   let service = $state<MusicService | null>(null),
     view = $state<ArtistView | null>(null),
     error = $state(''),

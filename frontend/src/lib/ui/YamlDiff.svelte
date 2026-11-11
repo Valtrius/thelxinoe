@@ -11,12 +11,12 @@
     after,
     beforeLabel = 'Active configuration',
     afterLabel = 'New defaults',
-  } = $props<{
+  }: {
     before: string;
     after: string;
     beforeLabel?: string;
     afterLabel?: string;
-  }>();
+  } = $props();
   let container: HTMLDivElement;
   let merge = $state<MergeView | null>(null);
   const extensions = [

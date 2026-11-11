@@ -8,10 +8,13 @@
   import Modal from '../ui/Modal.svelte';
   import SortableToggleList from '../ui/SortableToggleList.svelte';
   import { formControlClass } from '../ui/styles';
-  let { serviceId, created } = $props<{
+  let {
+    serviceId,
+    created,
+  }: {
     serviceId: string;
     created: () => Promise<void>;
-  }>();
+  } = $props();
   type Quality = { id: number; name: string; resolution?: number };
   let expanded = $state(false),
     loading = $state(false),

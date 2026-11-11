@@ -6,12 +6,12 @@
     stills,
     class: className = '',
     placeholder,
-  } = $props<{
+  }: {
     /** Pictures of the episode, best first; the next is tried when one fails. */
     stills: string[];
     class?: string | (string | false | null | undefined)[];
     placeholder: Snippet;
-  }>();
+  } = $props();
   // Seasons reload with new lists of the same pictures; only new pictures retry.
   const key = $derived(stills.join('\n'));
   let failed = $state<{ key: string; count: number }>({ key: '', count: 0 });

@@ -92,7 +92,7 @@ async fn original_live_and_seekable_online_video_keep_the_original_frames() {
     // A finite fixture playlist exercises the live branch without depending on
     // an online channel, credentials, CDN availability or a runner's public IP.
     let tools = thelxinoe_tools::Runtime::new(root.join("tools"));
-    tool_runtime::install(&tools, &root.join("tools"));
+    tool_runtime::install_trusting(&tools, &root.join("tools"), &root.join("cert.pem"));
     let pipeline = Pipelines::open(&root.join("cache"), tools.clone())
         .await
         .unwrap();

@@ -17,14 +17,14 @@
     onClose,
     onUpdate,
     onEdit,
-  } = $props<{
+  }: {
     configuration: RecyclarrConfiguration;
     candidate?: boolean;
     provisionId: string;
     onClose: () => void;
     onUpdate: (value: RecyclarrConfiguration) => void;
     onEdit: (files: YamlFiles, candidate: boolean) => void;
-  }>();
+  } = $props();
   let snapshot = $state(untrack(() => configuration));
   let file = $state('recyclarr.yml'),
     error = $state(''),

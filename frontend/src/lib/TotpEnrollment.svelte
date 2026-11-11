@@ -18,11 +18,11 @@
     setup: initial,
     onClose,
     onEnabled,
-  } = $props<{
+  }: {
     setup: TotpSetup;
     onClose: () => void;
     onEnabled: () => void;
-  }>();
+  } = $props();
   let setup = $state(untrack(() => initial));
   let code = $state(''),
     busy = $state(false),

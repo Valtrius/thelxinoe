@@ -8,7 +8,7 @@
     sizes,
     small = false,
     class: className = '',
-  } = $props<{
+  }: {
     src?: string | null;
     title: string;
     artist?: string | null;
@@ -16,7 +16,7 @@
     /** A thumbnail too small for the names; the fallback shows the initial alone. */
     small?: boolean;
     class?: string;
-  }>();
+  } = $props();
   let failed = $state(false);
   const image = $derived(failed ? '' : cover(src));
 </script>

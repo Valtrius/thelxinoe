@@ -9,14 +9,14 @@
     sizes = '12rem',
     lazy = false,
     ...rest
-  } = $props<{
+  }: {
     url?: string | null;
     class?: string;
     sizes?: string;
     /** Wait until the image is close to being seen. */
     lazy?: boolean;
     'data-sidebar-resize'?: string;
-  }>();
+  } = $props();
   let failed = $state(false);
   const source = $derived(artwork(url));
   $effect(() => {

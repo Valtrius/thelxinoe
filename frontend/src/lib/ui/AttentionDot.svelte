@@ -6,11 +6,11 @@
     items = [],
     activity = [],
     class: className = '',
-  } = $props<{
+  }: {
     items?: AttentionItem[];
     activity?: ActivityItem[];
     class?: string;
-  }>();
+  } = $props();
   const severity = $derived(
     items.some((item: AttentionItem) => item.severity === 'error')
       ? 'error'

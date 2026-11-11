@@ -9,9 +9,11 @@
     RecyclarrConfiguration,
     YamlFiles,
   } from './recyclarr-configuration';
-  let { provisionId } = $props<{
+  let {
+    provisionId,
+  }: {
     provisionId: string;
-  }>();
+  } = $props();
   let configuration = $state<RecyclarrConfiguration | null>(null),
     error = $state(''),
     opening = $state(false);

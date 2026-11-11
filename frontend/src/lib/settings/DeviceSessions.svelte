@@ -16,9 +16,11 @@
   import StatusChip from '../ui/StatusChip.svelte';
   import { cardBlockClass } from '../ui/styles';
 
-  let { sessionEnded } = $props<{
+  let {
+    sessionEnded,
+  }: {
     sessionEnded: () => void;
-  }>();
+  } = $props();
   type Session = {
     id: string;
     name: string;

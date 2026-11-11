@@ -24,12 +24,12 @@ notify = "8"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 reqwest.workspace = true
-tower-http = { version = "0.6", features = ["fs", "cors", "set-header", "limit", "compression-br", "compression-gzip"] }
+tower-http = { version = "0.7", features = ["fs", "cors", "set-header", "limit", "compression-br", "compression-gzip"] }
 ipnet = "2"
 chrono-tz = "0.10"
 chrono.workspace = true
 futures-util = "0.3"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 url = "2"
 percent-encoding = "2"
 fs2 = "0.4"
@@ -37,24 +37,24 @@ same-file = "1"
 tower = { version = "0.5", features = ["util"] }
 oauth2 = { version = "5", default-features = false }
 sha2 = "0.11"
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.5.1", default-features = false, features = ["deflate"] }
 process-wrap = { version = "10", default-features = false, features = ["tokio1", "creation-flags", "job-object", "kill-on-drop", "process-group"] }
 tempfile = "3"
-base64 = "0.22"
+base64 = "0.23"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 jpeg-decoder = { version = "0.3.2", default-features = false }
 zune-jpeg = "0.5.15"
-webauthn-rs = { version = "0.5.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
-openidconnect = { version = "4.0.1", default-features = false }
+webauthn-rs = { version = "0.6.2", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+openidconnect = { version = "4.1.0", default-features = false }
 totp-rs = { version = "6.0.0", features = ["otpauth", "gen_secret"] }
-openssl = { version = "0.10.81", features = ["vendored"] }
+openssl = { version = "0.10.82", features = ["vendored"] }
 
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 flate2 = "1"
-brotli = "8"
+brotli = "9"
 
 [target."cfg(windows)".dependencies]
 windows = { version = "0.62", features = ["Win32_System_Threading", "Win32_Storage_FileSystem"] }

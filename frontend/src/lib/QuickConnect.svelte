@@ -8,7 +8,7 @@
   import SettingRow from './ui/SettingRow.svelte';
   import { twMerge } from 'tailwind-merge';
   import { reveal } from './ui/reveal';
-  let { username } = $props<{ username: string }>();
+  let { username }: { username: string } = $props();
   const ids = $props.id();
   let code = $state('');
   let device = $state<{

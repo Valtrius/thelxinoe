@@ -123,15 +123,16 @@ pub(super) fn fixture_audio(directory: &Path, seconds: &str) -> std::path::PathB
     ]);
     path
 }
+/// The proxy address, its task and its self-signed certificate (PEM).
 fn proxy(
     files: std::collections::HashMap<String, Vec<u8>>,
-) -> (String, tokio::task::JoinHandle<()>) {
+) -> (String, tokio::task::JoinHandle<()>, Vec<u8>) {
     proxy_with_redirects(files, std::collections::HashMap::new())
 }
 fn proxy_with_redirects(
     files: std::collections::HashMap<String, Vec<u8>>,
     redirects: std::collections::HashMap<String, String>,
-) -> (String, tokio::task::JoinHandle<()>) {
+) -> (String, tokio::task::JoinHandle<()>, Vec<u8>) {
     let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
     let mut name = X509NameBuilder::new().unwrap();
     name.append_entry_by_text("CN", "r1.googlevideo.com")
@@ -147,9 +148,11 @@ fn proxy_with_redirects(
     cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
         .unwrap();
     cert.sign(&key, MessageDigest::sha256()).unwrap();
+    let cert = cert.build();
+    let pem = cert.to_pem().unwrap();
     let mut tls = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
     tls.set_private_key(&key).unwrap();
-    tls.set_certificate(&cert.build()).unwrap();
+    tls.set_certificate(&cert).unwrap();
     let tls = Arc::new(tls.build());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -233,7 +236,7 @@ fn proxy_with_redirects(
             }
         }
     });
-    (address, task)
+    (address, task, pem)
 }
 fn hashes(path: &Path, track: &str) -> Vec<String> {
     let mut command = Command::new("ffprobe");
@@ -341,11 +344,16 @@ pub(super) fn without_index(file: &[u8]) -> Vec<u8> {
     output
 }
 
-#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
+#[cfg(unix)]
 #[tokio::test]
 async fn jellyfin_live_playback_describes_tracks_and_delivers_playable_hls() {
     let (temp, state, _) = crate::test_support::fixture().await;
-    tool_runtime::install(&state.tools.runtime, &state.config.state.join("tools"));
+    let certificate = temp.path().join("cdn.pem");
+    tool_runtime::install_trusting(
+        &state.tools.runtime,
+        &state.config.state.join("tools"),
+        &certificate,
+    );
     let playlist = temp.path().join("live.m3u8");
     run(&[
         "-v",
@@ -394,7 +402,8 @@ async fn jellyfin_live_playback_describes_tracks_and_delivers_playable_hls() {
             })
         })
         .collect();
-    let (proxy, task) = proxy(files);
+    let (proxy, task, pem) = proxy(files);
+    std::fs::write(&certificate, pem).unwrap();
     let mut prepared = select(
         &json!({"is_live":true,"formats":[
             {"url":"https://r1.googlevideo.com/live.m3u8","height":90,"width":160,"fps":24,
@@ -543,7 +552,7 @@ async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_c
     let qhd = fixture_media(temp.path(), "qhd.mp4", "2560x1440", "60", "libx264");
     let eight = fixture_media(temp.path(), "8k.mp4", "7680x4320", "2", "libvpx-vp9");
     let audio = fixture_audio(temp.path(), "3");
-    let (proxy, task) = proxy(std::collections::HashMap::from([
+    let (proxy, task, _) = proxy(std::collections::HashMap::from([
         ("qhd.mp4".into(), std::fs::read(&qhd).unwrap()),
         ("8k.mp4".into(), std::fs::read(&eight).unwrap()),
         ("audio.m4a".into(), std::fs::read(&audio).unwrap()),
@@ -718,7 +727,7 @@ async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion(
             )
         })
         .into();
-    let (proxy, task) = proxy_with_redirects(files, redirects);
+    let (proxy, task, _) = proxy_with_redirects(files, redirects);
     let video = "pictures001";
     state.db.write("test.fixture",move|db|{db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES ('alice','picture-channel','Picture channel','s',1)",[])?;db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,privacy,duration) VALUES ('alice',?1,'picture-channel','Picture fixture','public',3)",[video])?;Ok(())}).await.unwrap();
     let metadata = json!({"duration":3,"is_live":false,"formats":[

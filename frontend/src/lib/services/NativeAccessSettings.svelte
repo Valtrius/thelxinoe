@@ -3,11 +3,15 @@
   import AutoSaveForm from '../ui/AutoSaveForm.svelte';
   import FormField from '../ui/FormField.svelte';
   import { formControlClass } from '../ui/styles';
-  let { id, url, changed } = $props<{
+  let {
+    id,
+    url,
+    changed,
+  }: {
     id: string;
     url: string;
     changed: () => Promise<void>;
-  }>();
+  } = $props();
   let address = $derived(url);
 </script>
 

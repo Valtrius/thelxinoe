@@ -61,7 +61,16 @@
     type TitleKind,
   } from './catalog';
 
-  let { user, kind, mediaId, tmdb, back, backLabel, play, openTitle } = $props<{
+  let {
+    user,
+    kind,
+    mediaId,
+    tmdb,
+    back,
+    backLabel,
+    play,
+    openTitle,
+  }: {
     user: User;
     kind: TitleKind;
     /** A library id (any level of a series) or a `tmdb:`/`tvdb:` reference. */
@@ -72,7 +81,7 @@
     backLabel: string;
     play: (choice: MediaChoice) => void;
     openTitle: (target: { kind: MediaKind; id: number }) => void;
-  }>();
+  } = $props();
   const admin = $derived(user.role === 'admin');
   let item = $state<CatalogItem | null>(null),
     manager = $state<ManagerTitle | null>(null),

@@ -14,12 +14,12 @@
     hasPassword = true,
     totp = false,
     fresh = false,
-  } = $props<{
+  }: {
     changed: () => void;
     hasPassword?: boolean;
     totp?: boolean;
     fresh?: boolean;
-  }>();
+  } = $props();
   let current = $state(''),
     password = $state(''),
     confirmation = $state(''),

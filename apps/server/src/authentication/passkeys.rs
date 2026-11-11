@@ -155,15 +155,12 @@ async fn finish(
                 .map_err(|_| unknown_passkey())?;
             let user = user.to_string();
             let keys = credentials(&state, &user).await?;
-            if !keys.iter().any(|(_, _, p)| p.cred_id()[..] == *credential) {
-                return Err(unknown_passkey());
-            }
-            let keys: Vec<DiscoverableKey> = keys
+            let (_, _, passkey) = keys
                 .iter()
-                .map(|(_, _, p)| DiscoverableKey::from(p))
-                .collect();
+                .find(|(_, _, p)| p.cred_id()[..] == *credential)
+                .ok_or_else(unknown_passkey)?;
             let authentication = webauthn
-                .finish_discoverable_authentication(&input.credential, pending, &keys)
+                .finish_discoverable_authentication_v2(&input.credential, pending, passkey)
                 .map_err(|_| ApiError::bad("Passkey verification failed"))?;
             (user, authentication)
         }

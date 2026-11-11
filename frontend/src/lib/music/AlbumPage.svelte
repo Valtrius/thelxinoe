@@ -24,7 +24,14 @@
     type MusicItem,
   } from './library';
 
-  let { album, artistName, admin, play, openArtist, focus } = $props<{
+  let {
+    album,
+    artistName,
+    admin,
+    play,
+    openArtist,
+    focus,
+  }: {
     album: CatalogItem;
     artistName: string;
     admin: boolean;
@@ -32,7 +39,7 @@
     openArtist?: () => void;
     /** A track the page was opened for. */
     focus?: string;
-  }>();
+  } = $props();
   let tracks = $state<MusicItem[] | null>(null),
     error = $state(''),
     detailed = $state<MusicItem | null>(null);

@@ -22,7 +22,7 @@
     logout,
     onClose,
     settingsSection = 'account',
-  } = $props<{
+  }: {
     section: Section;
     collapsed: boolean;
     user: User;
@@ -31,7 +31,7 @@
     logout: () => void;
     onClose?: () => void;
     settingsSection?: string;
-  }>();
+  } = $props();
   const library = ['Home', 'Discover', 'Movies', 'Shows', 'Music'] as const;
   const providers = [
     { name: 'YouTube', platform: 'youtube' },

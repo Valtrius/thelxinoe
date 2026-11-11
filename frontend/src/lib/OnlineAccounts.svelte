@@ -18,10 +18,13 @@
   import { cardBlockClass } from './ui/styles';
   import { reveal } from './ui/reveal';
 
-  let { navigate, configureProviders } = $props<{
+  let {
+    navigate,
+    configureProviders,
+  }: {
     navigate: (section: string) => void;
     configureProviders?: () => void;
-  }>();
+  } = $props();
   const linked = [
     ['youtube', 'YouTube'],
     ['twitch', 'Twitch'],

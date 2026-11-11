@@ -10,12 +10,16 @@
     type Artist,
     type MusicService,
   } from './types';
-  let { artist, service, user } = $props<{
+  let {
+    artist,
+    service,
+    user,
+  }: {
     /** Updated in place as monitoring changes. */
     artist: Artist;
     service: MusicService;
     user: User;
-  }>();
+  } = $props();
   let busy = $state(false);
   const current = $derived(artist.request?.state);
   // Lidarr decides once a request has reached it; one on its way counts already.

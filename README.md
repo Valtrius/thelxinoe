@@ -108,7 +108,7 @@ Read-only supplementary mounts, such as a certificate folder or a single custom 
 
 ## Development
 
-Development requires Rust 1.96+, Node 24+ and pnpm 10.33.2, Perl, FFmpeg/FFprobe 7.1+ and Docker with Linux containers.
+Development requires Rust 1.96+, Node 24+ and pnpm 12.18.0, Perl, FFmpeg/FFprobe 7.1+ and Docker with Linux containers.
 
 ```sh
 pnpm install --frozen-lockfile

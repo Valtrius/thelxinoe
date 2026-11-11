@@ -14,10 +14,13 @@
     requestLabel,
     type MusicRequest,
   } from './types';
-  let { user, loaded } = $props<{
+  let {
+    user,
+    loaded,
+  }: {
     user: User;
     loaded: (count: number) => void;
-  }>();
+  } = $props();
   let requests = $state<MusicRequest[]>([]),
     busy = $state(false),
     error = $state('');

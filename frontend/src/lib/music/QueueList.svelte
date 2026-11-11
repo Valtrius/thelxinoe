@@ -7,7 +7,14 @@
 
   const ROW_HEIGHT = 48;
 
-  let { queue, from, index, paused, jump, remove } = $props<{
+  let {
+    queue,
+    from,
+    index,
+    paused,
+    jump,
+    remove,
+  }: {
     queue: MediaChoice[];
     /** The first place of the queue to list. */
     from: number;
@@ -15,7 +22,7 @@
     paused: boolean;
     jump: (at: number) => void;
     remove: (at: number) => void;
-  }>();
+  } = $props();
 
   const count = $derived(Math.max(0, queue.length - from));
   let scrollTop = $state(0);

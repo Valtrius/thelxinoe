@@ -34,14 +34,20 @@
     type MusicItem,
   } from './library';
 
-  let { artist, admin, play, openAlbum, openDiscography } = $props<{
+  let {
+    artist,
+    admin,
+    play,
+    openAlbum,
+    openDiscography,
+  }: {
     artist: CatalogItem;
     admin: boolean;
     play: (choice: MediaChoice) => void;
     openAlbum: (id: string) => void;
     /** Opens the artist's MusicBrainz discography in Discover. */
     openDiscography: (id: string) => void;
-  }>();
+  } = $props();
   const musicbrainz = $derived(
     typeof artist.metadata?.musicbrainz_artist_id === 'string'
       ? artist.metadata.musicbrainz_artist_id

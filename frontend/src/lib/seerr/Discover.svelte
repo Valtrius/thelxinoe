@@ -58,7 +58,7 @@
     searchChanged,
     requestsChanged,
     play,
-  } = $props<{
+  }: {
     user: User;
     play: (choice: MediaChoice) => void;
     settings: () => void;
@@ -73,7 +73,7 @@
     searchQuery?: string;
     searchChanged: (query: string) => void;
     requestsChanged: (requests: boolean) => void;
-  }>();
+  } = $props();
   type Feed = {
     id: string;
     label: string;

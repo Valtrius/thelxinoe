@@ -5,7 +5,7 @@
     label,
     size = 20,
     class: className = '',
-  } = $props<{ label: string; size?: number; class?: string }>();
+  }: { label: string; size?: number; class?: string } = $props();
 </script>
 
 <div

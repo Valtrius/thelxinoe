@@ -28,7 +28,7 @@
     onStatus,
     onSave,
     onFormat,
-  } = $props<{
+  }: {
     files: YamlFiles;
     file: string;
     readonly?: boolean;
@@ -44,7 +44,7 @@
     }) => void;
     onSave: () => void;
     onFormat: () => void;
-  }>();
+  } = $props();
   let container: HTMLDivElement;
   let view = $state<EditorView | null>(null);
   const states = new SvelteMap<string, EditorState>();

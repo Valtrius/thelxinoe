@@ -1,6 +1,6 @@
 # Test commands
 
-Run from the repository root after `pnpm install --frozen-lockfile`. Install Rust 1.96+, Node 24+, pnpm 10.33.2, FFmpeg/FFprobe, Docker (Linux containers) and Playwright Chromium (`pnpm exec playwright install chromium`).
+Run from the repository root after `pnpm install --frozen-lockfile`. Install Rust 1.96+, Node 24+, pnpm 12.18.0, FFmpeg/FFprobe, Docker (Linux containers) and Playwright Chromium (`pnpm exec playwright install chromium`).
 
 Prefer complete application workflows; extend an existing scenario when possible.
 

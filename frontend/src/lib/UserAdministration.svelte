@@ -14,13 +14,19 @@
   import { reveal } from './ui/reveal';
   // `approval` is undefined for people the server does not list for
   // automatic request approval; the row is hidden for them.
-  let { person, approval, currentId, changed, close } = $props<{
+  let {
+    person,
+    approval,
+    currentId,
+    changed,
+    close,
+  }: {
     person: User;
     approval?: boolean;
     currentId: string;
     changed: () => Promise<void>;
     close: () => void;
-  }>();
+  } = $props();
   const ids = $props.id();
   let role = $state<'user' | 'admin'>('user'),
     recoveryUrl = $state(''),

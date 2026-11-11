@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
-ARG BASE_IMAGE=mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
+ARG BASE_IMAGE=mcr.microsoft.com/playwright:v1.65.0-noble@sha256:6e3fb709361521eb27161606e6da6d2674e5e89fa16516cb37d6fdd91372273d
 FROM ${BASE_IMAGE}
-ARG PLAYWRIGHT_VERSION=1.63.0
+ARG PLAYWRIGHT_VERSION=1.65.0
 WORKDIR /opt/playwright
 RUN npm install --no-save --ignore-scripts @playwright/test@${PLAYWRIGHT_VERSION}
 USER pwuser

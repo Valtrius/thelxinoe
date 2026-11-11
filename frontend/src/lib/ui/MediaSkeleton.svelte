@@ -8,13 +8,13 @@
     layout = 'grid',
     shape = 'poster',
     count = layout === 'row' ? 6 : 12,
-  } = $props<{
+  }: {
     label: string;
     heading?: string;
     layout?: 'grid' | 'row' | 'poster-row' | 'feed' | 'posters';
     shape?: 'poster' | 'square' | 'landscape';
     count?: number;
-  }>();
+  } = $props();
 </script>
 
 {#snippet cards()}

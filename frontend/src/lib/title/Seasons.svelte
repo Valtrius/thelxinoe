@@ -51,7 +51,7 @@
     focusEpisode,
     play,
     changed,
-  } = $props<{
+  }: {
     seasons: Season[];
     show: string;
     /** The library id or tmdb:/tvdb: reference the seasons load from. */
@@ -64,7 +64,7 @@
     focusEpisode?: string | null;
     play: (episode: Episode, fileId?: string) => void;
     changed: () => void;
-  }>();
+  } = $props();
   const ids = $props.id();
   const panelMotion = new RowMotion();
   const listMotion = new RowMotion();
@@ -288,7 +288,7 @@
   // Arrow keys move between season tabs, as in any tab list.
   function navigate(event: KeyboardEvent) {
     const order = seasons.map((s: Season) => s.number);
-    const index = order.indexOf(season?.number);
+    const index = season ? order.indexOf(season.number) : -1;
     const target =
       event.key === 'ArrowRight'
         ? order[(index + 1) % order.length]

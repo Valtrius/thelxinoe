@@ -85,10 +85,7 @@ pub async fn recyclarr() -> anyhow::Result<()> {
             }
             state[endpoint] = value;
         }
-        hashes[service] = json!(format!(
-            "{:x}",
-            Sha256::digest(state.to_string().as_bytes())
-        ));
+        hashes[service] = json!(hex::encode(Sha256::digest(state.to_string().as_bytes())));
     }
     println!("{hashes}");
     Ok(())

@@ -1,9 +1,12 @@
 <script lang="ts">
   import LoadingSpinner from './LoadingSpinner.svelte';
-  let { surface, viewport } = $props<{
+  let {
+    surface,
+    viewport,
+  }: {
     surface: HTMLElement;
     viewport: HTMLElement;
-  }>();
+  } = $props();
   let area = $state({ left: 0, top: 0, width: 0, height: 0 });
   // Center on the visible part of the loading area, below anything that stays
   // above it such as the player. When too little of it shows, use the viewport.

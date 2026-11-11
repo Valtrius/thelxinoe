@@ -1,10 +1,13 @@
 <script lang="ts">
   import { LoaderCircle, Play } from '@lucide/svelte';
   import { launchingMedia } from '../native-playback';
-  let { media, size = 15 } = $props<{
+  let {
+    media,
+    size = 15,
+  }: {
     media: string | null | undefined;
     size?: number;
-  }>();
+  } = $props();
 </script>
 
 <!-- A play button's icon spins while its video starts in a desktop MPV window. -->

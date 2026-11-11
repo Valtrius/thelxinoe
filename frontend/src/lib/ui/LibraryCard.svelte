@@ -40,7 +40,7 @@
     caption,
     asVideo = false,
     playing = false,
-  } = $props<{
+  }: {
     item: {
       id: string;
       title: string;
@@ -79,7 +79,7 @@
     asVideo?: boolean;
     /** Frames the card, and counts down its time when `asVideo`. */
     playing?: boolean;
-  }>();
+  } = $props();
   const music = $derived(['artist', 'album', 'track'].includes(item.kind));
   const wide = $derived(landscape || item.kind === 'episode');
   const faded = $derived(

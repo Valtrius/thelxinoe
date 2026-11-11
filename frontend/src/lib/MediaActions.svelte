@@ -6,10 +6,13 @@
   import { api } from './api';
   import Button from './ui/Button.svelte';
 
-  let { id, kind } = $props<{
+  let {
+    id,
+    kind,
+  }: {
     id: string;
     kind: string;
-  }>();
+  } = $props();
   type Flags = { favorite: boolean; watch_later: boolean; watched: boolean };
   let flags = $state<Flags | null>(null),
     error = $state(''),
