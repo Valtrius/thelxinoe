@@ -29,14 +29,15 @@ export function youtubeVideoPresentation(
     'processing',
   ].includes(activeDownload?.status ?? '');
   const isBusy = isPlaying || isLaunching;
+  const unavailable = video.availabilityStatus === 'unavailable';
   const canPlay =
     playerReady &&
-    (video.availabilityStatus !== 'unavailable' || downloadReady) &&
+    (!unavailable || downloadReady) &&
     !video.isUpcoming &&
     !isBusy;
   const canDownload =
     downloadsEnabled &&
-    video.availabilityStatus !== 'unavailable' &&
+    !unavailable &&
     !video.isLive &&
     !video.isUpcoming &&
     !downloadBusy;
@@ -125,6 +126,7 @@ export function youtubeVideoPresentation(
     activeDownload,
     downloadReady,
     downloadPending,
+    unavailable,
     canPlay,
     canDownload,
     isBusy,

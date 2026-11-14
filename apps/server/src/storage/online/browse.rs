@@ -32,7 +32,8 @@ pub(super) async fn list(
     db.read("online.browse.list", move |db| {
         let q=input.query;
         let user=p.user.id;
-        let base="v.user_id=? AND EXISTS(SELECT 1 FROM youtube_subscriptions sub WHERE sub.user_id=v.user_id AND sub.channel_id=v.channel_id AND sub.active=1)";
+        // Videos YouTube no longer serves stay only while a download, pin or watchlist keeps them.
+        let base="v.user_id=? AND EXISTS(SELECT 1 FROM youtube_subscriptions sub WHERE sub.user_id=v.user_id AND sub.channel_id=v.channel_id AND sub.active=1) AND (v.available=1 OR EXISTS(SELECT 1 FROM youtube_downloads kept WHERE kept.video_id=v.video_id AND kept.state='ready') OR EXISTS(SELECT 1 FROM youtube_state kept WHERE kept.user_id=v.user_id AND kept.video_id=v.video_id AND kept.pinned=1) OR EXISTS(SELECT 1 FROM youtube_watchlist_items kept WHERE kept.user_id=v.user_id AND kept.video_id=v.video_id))";
         let mut where_sql=format!("{base} AND (? OR (v.is_short=0 OR v.broadcast<>'none')) AND (? OR v.broadcast<>'live') AND (? OR v.broadcast<>'replay') AND (? OR v.broadcast<>'upcoming')");
         let mut binds:Vec<SqlValue>=vec![user.clone().into(),(q.include_shorts as i64).into(),(q.include_live as i64).into(),(q.include_live_replays as i64).into(),(q.include_upcoming as i64).into()];
         if !q.search.is_empty(){where_sql.push_str(" AND (instr(lower(v.title),lower(?))>0 OR instr(lower(v.channel_title),lower(?))>0)");binds.push(q.search.clone().into());binds.push(q.search.into());}

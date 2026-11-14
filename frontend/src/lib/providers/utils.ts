@@ -128,6 +128,18 @@ export function youtubeThumbnailSet(value?: string | null): string | undefined {
   }
 }
 
+/** Gives a repeated request its own address, so the browser cannot reuse the failure. */
+export function youtubeThumbnailRetry(value: string, attempt: number): string {
+  if (attempt === 0) return value;
+  try {
+    const url = new URL(value, 'https://thelxinoe.invalid');
+    url.searchParams.set('retry', String(attempt));
+    return value.startsWith('/') ? `${url.pathname}${url.search}` : url.href;
+  } catch {
+    return value;
+  }
+}
+
 export function youtubeThumbnailUrl(value?: string | null): string | null {
   if (!value) return null;
   try {

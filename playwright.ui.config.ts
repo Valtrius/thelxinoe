@@ -30,6 +30,7 @@ export default defineConfig({
         'frontend-ownership.spec.ts',
         'navigation.spec.ts',
         'navigation-cache.spec.ts',
+        'youtube-thumbnails.spec.ts',
         'media-deletion.spec.ts',
         'loading.spec.ts',
         'desktop-startup.spec.ts',

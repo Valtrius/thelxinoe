@@ -1,4 +1,4 @@
-use super::{artwork_bytes, sync};
+use super::{fetch_artwork, sync};
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -46,17 +46,24 @@ pub(super) async fn load(
             video,
             width,
             || async {
+                let mut failures = Vec::new();
                 // The medium fallback is wide; hqdefault and sddefault contain baked-in bars.
                 for variant in ["maxresdefault", "mqdefault"] {
-                    if let Ok((_, bytes)) = artwork_bytes(
+                    match fetch_artwork(
                         state,
                         &format!("https://i.ytimg.com/vi/{video}/{variant}.jpg"),
                     )
                     .await
                     {
-                        return Ok(bytes);
+                        Ok((_, bytes)) => return Ok(bytes),
+                        Err(error) => failures.push(format!("{variant}: {error:#}")),
                     }
                 }
+                tracing::warn!(
+                    video,
+                    failures = failures.join("; "),
+                    "YouTube thumbnail could not be fetched"
+                );
                 Err(ApiError::not_found())
             },
         )
@@ -106,7 +113,14 @@ impl Cache {
         })
         .await
         .map_err(anyhow::Error::from)?
-        .map_err(|_| ApiError::not_found())?;
+        .map_err(|error| {
+            tracing::warn!(
+                video,
+                error = format!("{error:#}"),
+                "YouTube thumbnail could not be decoded"
+            );
+            ApiError::not_found()
+        })?;
         let selected = images
             .iter()
             .find(|(size, _)| *size == width)
