@@ -104,26 +104,18 @@ pub(crate) async fn artwork_bytes(
     state: &AppState,
     address: &str,
 ) -> Result<(&'static str, Vec<u8>)> {
-    let address = artwork_url(address).ok_or_else(ApiError::not_found)?;
-    let _slot = state
-        .online
-        .artwork
-        .acquire()
+    fetch_artwork(state, address)
         .await
-        .map_err(|_| ApiError::not_found())?;
-    let response = state
-        .online
-        .http
-        .get(address)
-        .send()
-        .await
-        .map_err(|_| ApiError::not_found())?;
-    let (status, _, bytes) = crate::bounded::response(response)
-        .await
-        .map_err(|_| ApiError::not_found())?;
-    if !status.is_success() {
-        return Err(ApiError::not_found());
-    }
+        .map_err(|_| ApiError::not_found())
+}
+/// Fetches remote artwork, keeping why it failed.
+async fn fetch_artwork(state: &AppState, address: &str) -> anyhow::Result<(&'static str, Vec<u8>)> {
+    let address =
+        artwork_url(address).ok_or_else(|| anyhow::anyhow!("unsupported artwork address"))?;
+    let _slot = state.online.artwork.acquire().await?;
+    let response = state.online.http.get(address).send().await?;
+    let (status, _, bytes) = crate::bounded::response(response).await?;
+    anyhow::ensure!(status.is_success(), "HTTP {status}");
     let mime = if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
         "image/jpeg"
     } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -131,7 +123,7 @@ pub(crate) async fn artwork_bytes(
     } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
         "image/webp"
     } else {
-        return Err(ApiError::not_found());
+        anyhow::bail!("unsupported image format");
     };
     Ok((mime, bytes.to_vec()))
 }

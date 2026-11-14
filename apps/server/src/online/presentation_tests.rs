@@ -230,6 +230,52 @@ async fn feed_filters_sort_and_paginate_before_returning_cards() {
 }
 
 #[tokio::test]
+async fn browse_keeps_unavailable_videos_only_when_downloaded_pinned_or_listed() {
+    let (_temp, state, alice) = fixture().await;
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES('alice','UCaaaaaaaaaaaaaaaaaaaaaa','Channel','s',1)", [])?;
+        for (id, available) in [
+            ("available00", 1),
+            ("removed0000", 0),
+            ("downloaded0", 0),
+            ("pinned00000", 0),
+            ("listed00000", 0),
+        ] {
+            db.execute("INSERT INTO youtube_videos(user_id,video_id,title,channel_id,published_at,is_short,duration,privacy,available) VALUES('alice',?1,?1,'UCaaaaaaaaaaaaaaaaaaaaaa',1,0,600,'public',?2)", params![id, available])?;
+        }
+        db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES('downloaded0','g','ready','{}',1,1)", [])?;
+        db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES('removed0000','g','failed','{}',1,1)", [])?;
+        db.execute("INSERT INTO youtube_state(user_id,video_id,pinned,updated_at) VALUES('alice','pinned00000',1,1)", [])?;
+        let list = crate::online::watchlists::default_list(db, "alice")?;
+        db.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES('alice',?1,'listed00000',0,1)", [list])?;
+        Ok(())
+    }).await.unwrap();
+    let query = json!({"search":"","watchStates":["unwatched","in_progress","watched"],"includeShorts":false,"includeLive":false,"includeLiveReplays":false,"includeUpcoming":false,"channelId":null,"durationFilter":"any","publishedFilter":"any","sortField":"date","sortDirection":"desc","grouping":"none","downloadFilter":"all"});
+    let page = call(
+        &state,
+        "/api/v1/online/youtube/browse",
+        "POST",
+        json!({"query":query,"page":0,"pageSize":20}),
+        &alice,
+    )
+    .await;
+    assert_eq!(page.0, StatusCode::OK, "{:?}", page.2);
+    let mut ids = page.2["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["videoId"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        ["available00", "downloaded0", "listed00000", "pinned00000"]
+    );
+    assert_eq!(page.2["counts"]["all"], 4);
+    assert_eq!(page.2["counts"]["unwatched"], 4);
+}
+
+#[tokio::test]
 async fn download_delete_protects_other_users() {
     let (_temp, state, alice) = fixture().await;
     state.db.write("test.fixture", |db|{

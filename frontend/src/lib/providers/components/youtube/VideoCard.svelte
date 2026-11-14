@@ -22,12 +22,8 @@
     YoutubeWatchlist,
     YoutubeVideo,
   } from '../../types';
-  import {
-    relativeTime,
-    youtubeAvatarSet,
-    youtubeThumbnailUrl,
-    youtubeThumbnailSet,
-  } from '../../utils';
+  import YoutubeThumbnail from './YoutubeThumbnail.svelte';
+  import { relativeTime, youtubeAvatarSet } from '../../utils';
 
   let {
     actions,
@@ -96,7 +92,14 @@
   const downloadLabel = $derived(presentation.downloadLabel);
   const downloadFormatLabel = $derived(presentation.downloadFormatLabel);
   const readyDownloadTitle = $derived(presentation.readyDownloadTitle);
-  const thumbnailUrl = $derived(youtubeThumbnailUrl(video.thumbnailUrl));
+  const signalShown = $derived(
+    isLaunching ||
+      isPlaying ||
+      video.isLive ||
+      video.isUpcoming ||
+      video.isLiveReplay ||
+      presentation.unavailable,
+  );
 
   let thumbnailAspectRatio = $state(16 / 9);
 
@@ -149,24 +152,21 @@
     aria-label={`${primaryLabel}: ${video.title}`}
     onclick={() => actions.onPlay(video)}
   >
-    {#if thumbnailUrl}
-      <img
-        class={`size-full object-contain ${mediaCardThumbnailClass}`}
-        src={thumbnailUrl}
-        srcset={youtubeThumbnailSet(thumbnailUrl)}
-        sizes="auto, 350px"
-        alt=""
-        loading="lazy"
-        onload={updateThumbnailRatio}
-      />
-    {:else}
-      <span
-        class="absolute inset-0 bg-[repeating-linear-gradient(135deg,transparent_0_18px,color-mix(in_srgb,var(--accent)_7%,transparent)_18px_19px)]"
-      ></span>
-      <span class="absolute bottom-4 left-4 font-mono text-4xl text-white/10"
-        >{video.videoId.slice(0, 4).toUpperCase()}</span
-      >
-    {/if}
+    <YoutubeThumbnail
+      url={presentation.unavailable ? null : video.thumbnailUrl}
+      class={`size-full object-contain ${mediaCardThumbnailClass}`}
+      sizes="auto, 350px"
+      onload={updateThumbnailRatio}
+    >
+      {#snippet fallback()}
+        <span
+          class="absolute inset-0 bg-[repeating-linear-gradient(135deg,transparent_0_18px,color-mix(in_srgb,var(--accent)_7%,transparent)_18px_19px)]"
+        ></span>
+        <span class="absolute bottom-4 left-4 font-mono text-4xl text-white/10"
+          >{video.videoId.slice(0, 4).toUpperCase()}</span
+        >
+      {/snippet}
+    </YoutubeThumbnail>
     <span
       class="absolute inset-0 bg-linear-to-t from-black/45 via-transparent to-transparent"
     ></span>
@@ -182,6 +182,9 @@
         >Launching</span
       >{:else if isPlaying}<span
         class={`${signalBadgeClass} absolute top-2 left-2`}>Playing</span
+      >{:else if presentation.unavailable}<span
+        class={`${signalBadgeClass} absolute top-2 left-2`}
+        title="No longer available on YouTube">Unavailable</span
       >{:else if video.isLive}<span
         class={`${signalBadgeClass} absolute top-2 left-2`}>Live</span
       >{:else if video.isUpcoming}<span
@@ -190,11 +193,11 @@
         class={`${signalBadgeClass} absolute top-2 left-2`}>Replay</span
       >{/if}
     {#if downloadReady && activeDownload}<span
-        class={`${downloadBadgeClass} absolute left-2 flex items-center gap-1 ${isLaunching || isPlaying || video.isLive || video.isUpcoming || video.isLiveReplay ? 'top-10' : 'top-2'}`}
+        class={`${downloadBadgeClass} absolute left-2 flex items-center gap-1 ${signalShown ? 'top-10' : 'top-2'}`}
         title={readyDownloadTitle ?? undefined}
         ><Download class="size-3" />{downloadFormatLabel ?? 'Downloaded'}</span
       >{:else if downloadLabel}<span
-        class={`${downloadBadgeClass} absolute left-2 ${isLaunching || isPlaying || video.isLive || video.isUpcoming || video.isLiveReplay ? 'top-10' : 'top-2'}`}
+        class={`${downloadBadgeClass} absolute left-2 ${signalShown ? 'top-10' : 'top-2'}`}
         title={activeDownload?.errorMessage ?? downloadLabel}
         >{downloadLabel}</span
       >{/if}

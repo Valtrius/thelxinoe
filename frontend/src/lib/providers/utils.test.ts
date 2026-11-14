@@ -3,6 +3,7 @@ import {
   twitchPreview,
   twitchPreviewSet,
   youtubeAvatarSet,
+  youtubeThumbnailRetry,
   youtubeThumbnailSet,
 } from './utils';
 
@@ -24,6 +25,26 @@ describe('image sizes', () => {
       youtubeThumbnailSet('/api/v1/catalog/movie/artwork?grant=secret'),
     ).toBeUndefined();
     expect(youtubeThumbnailSet(null)).toBeUndefined();
+  });
+  it('gives each thumbnail retry its own address across sizes', () => {
+    const path =
+      '/api/v1/online/youtube/videos/abcdefghijk/artwork?grant=secret';
+    expect(youtubeThumbnailRetry(path, 0)).toBe(path);
+    for (const prefix of ['', 'https://media.example']) {
+      const retry = youtubeThumbnailRetry(`${prefix}${path}`, 2);
+      expect(retry).toBe(`${prefix}${path}&retry=2`);
+      expect(youtubeThumbnailSet(retry)).toBe(
+        [320, 640, 1280]
+          .map((width) => `${retry}&width=${width} ${width}w`)
+          .join(', '),
+      );
+    }
+    expect(
+      youtubeThumbnailRetry(
+        'https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg',
+        1,
+      ),
+    ).toBe('https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg?retry=1');
   });
   it('sizes Twitch previews from the API template or a stored size', () => {
     const stored =

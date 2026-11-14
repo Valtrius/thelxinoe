@@ -9,11 +9,8 @@
   import { withNativePosition } from '../../../native-playback';
   import { Download, Eye, EyeOff, Trash2, X } from '@lucide/svelte';
   import type { YoutubeDownloadEvent, YoutubeVideo } from '../../types';
-  import {
-    formatClock,
-    youtubeThumbnailUrl,
-    youtubeThumbnailSet,
-  } from '../../utils';
+  import YoutubeThumbnail from './YoutubeThumbnail.svelte';
+  import { formatClock } from '../../utils';
 
   let {
     actions: videoActions,
@@ -99,18 +96,13 @@
       class="relative w-[min(10rem,42%)] shrink-0 overflow-hidden bg-[linear-gradient(130deg,#121923,#080b10_60%)]"
       style={`aspect-ratio:${thumbnailAspectRatio}`}
     >
-      {#if video.thumbnailUrl}
-        <img
-          class="size-full object-contain"
-          src={youtubeThumbnailUrl(video.thumbnailUrl)}
-          srcset={youtubeThumbnailSet(video.thumbnailUrl)}
-          sizes="auto, 160px"
-          loading="lazy"
-          alt=""
-          draggable="false"
-          onload={updateThumbnailRatio}
-        />
-      {/if}
+      <YoutubeThumbnail
+        url={presentation.unavailable ? null : video.thumbnailUrl}
+        class="size-full object-contain"
+        sizes="auto, 160px"
+        draggable="false"
+        onload={updateThumbnailRatio}
+      />
       {#if isLaunching}<LaunchingOverlay
           label={`Starting ${video.title}`}
         />{/if}
