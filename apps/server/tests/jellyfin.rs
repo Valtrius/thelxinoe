@@ -1248,6 +1248,10 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
         for (id,kind,parent) in [("artist","artist",None),("album","album",Some("artist")),("one","track",Some("album")),("two","track",Some("album"))] {
             db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES (?1,'music',?2,?3,?1,?1,1)",rusqlite::params![id,kind,parent])?;
         }
+        for track in ["one", "two"] {
+            db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,'music',?1,'g',1,'m',?1,'{}',1)",[track])?;
+            db.execute("INSERT INTO media_sources VALUES (?1,?1)",[track])?;
+        }
         db.execute("INSERT INTO playlists(id,owner_id,name,access,created_at,updated_at) VALUES ('mix','alice','Shared mix','read',1,1)",[])?;
         for (position,media) in ["two","one"].iter().enumerate() {
             db.execute("INSERT INTO playlist_items(playlist_id,media_id,position,added_at) VALUES ('mix',?1,?2,1)",rusqlite::params![media,position as i64])?;
@@ -1338,7 +1342,10 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
         tx.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('long','shows','show','long','Long',1)",[])?;
         tx.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('long-1','shows','season','long','long-1','Season 1',1,1)",[])?;
         for number in 1..=600 {
-            tx.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'shows','episode','long-1',?1,?2,?3,?3)",rusqlite::params![format!("long-e{number}"),format!("Episode {number:03}"),number])?;
+            let id = format!("long-e{number}");
+            tx.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'shows','episode','long-1',?1,?2,?3,?3)",rusqlite::params![id,format!("Episode {number:03}"),number])?;
+            tx.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,'shows',?1,'g',1,'m',?1,'{}',1)",[&id])?;
+            tx.execute("INSERT INTO media_sources VALUES (?1,?1)",[&id])?;
         }
         tx.execute("INSERT INTO playlists(id,owner_id,name,access,created_at,updated_at) VALUES ('long-mix','alice','Long mix','read',1,1)",[])?;
         for position in 0..150 {
@@ -1425,8 +1432,19 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
         .await;
         assert_eq!(status, StatusCode::OK, "{data}");
         assert_eq!(data["IsFavorite"], true);
-        let (_, other) = call(&state, &format!("/Items/{id}"), "GET", Value::Null, &bob).await;
-        assert_eq!(other["UserData"]["IsFavorite"], false);
+        // Listed, as the fixture's files do not exist for a single item's media sources.
+        let path = if id == "one" {
+            "/Items?Ids=one".to_owned()
+        } else {
+            format!("/Items/{id}")
+        };
+        let (_, other) = call(&state, &path, "GET", Value::Null, &bob).await;
+        let other = if id == "one" {
+            &other["Items"][0]
+        } else {
+            &other
+        };
+        assert_eq!(other["UserData"]["IsFavorite"], false, "{id}");
     }
     let (status, data) = call(&state, "/UserPlayedItems/one", "POST", Value::Null, &alice).await;
     assert_eq!(status, StatusCode::OK, "{data}");
@@ -3195,8 +3213,7 @@ INSERT INTO edition_progress(user_id,media_id,edition,position,duration,updated_
             .collect::<Vec<_>>(),
         [
             (json!("2015-11-20T08:00:00Z"), json!({"Tvdb":"5311261"})),
-            (json!("2015-11-27T00:00:00Z"), json!({})),
-            (Value::Null, json!({}))
+            (json!("2015-11-27T00:00:00Z"), json!({}))
         ]
     );
     // Only a resume position has a percentage: a played episode stopped near its end shows
@@ -3215,8 +3232,7 @@ INSERT INTO edition_progress(user_id,media_id,edition,position,duration,updated_
             .collect::<Vec<_>>(),
         [
             (json!(true), json!(0), None),
-            (json!(false), json!(27_000_000_000_i64), Some(json!(50.0))),
-            (json!(false), json!(0), None)
+            (json!(false), json!(27_000_000_000_i64), Some(json!(50.0)))
         ]
     );
     // Playable unwatched episodes; a series leaves out its specials.
@@ -3231,6 +3247,96 @@ INSERT INTO edition_progress(user_id,media_id,edition,position,duration,updated_
         );
     }
     assert!(episodes[0]["UserData"].get("UnplayedItemCount").is_none());
+}
+#[tokio::test]
+async fn lists_leave_out_what_has_no_file_left_on_disk() {
+    let (_temp, state, _) = fixture().await;
+    state.db.write("test.fixture", |db| {
+        db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('shows','Shows','shows','/shows'),('music','Music','music','/music');")?;
+        // A series whose files were all deleted, one that lost a season, and an artist with
+        // nothing left beside one that still has a track.
+        for (id, root, kind, parent, number, present) in [
+            ("gone", "shows", "show", None, None, None),
+            ("gone-1", "shows", "season", Some("gone"), Some(1), None),
+            ("g1", "shows", "episode", Some("gone-1"), Some(1), Some(false)),
+            ("g2", "shows", "episode", Some("gone-1"), Some(2), Some(false)),
+            ("kept", "shows", "show", None, None, None),
+            ("kept-1", "shows", "season", Some("kept"), Some(1), None),
+            ("k1", "shows", "episode", Some("kept-1"), Some(1), Some(true)),
+            ("kept-2", "shows", "season", Some("kept"), Some(2), None),
+            ("k2", "shows", "episode", Some("kept-2"), Some(1), Some(false)),
+            ("lost", "music", "artist", None, None, None),
+            ("lost-album", "music", "album", Some("lost"), None, None),
+            ("lt", "music", "track", Some("lost-album"), Some(1), Some(false)),
+            ("found", "music", "artist", None, None, None),
+            ("found-album", "music", "album", Some("found"), None, None),
+            ("ft", "music", "track", Some("found-album"), Some(1), Some(true)),
+        ] {
+            db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,?2,?3,?4,?1,?1,?5,1)", rusqlite::params![id, root, kind, parent, number])?;
+            if let Some(present) = present {
+                db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,present,scanned_at) VALUES (?1,?2,?1,'g',1,'m',?1,'{}',?3,1)", rusqlite::params![id, root, present])?;
+                db.execute("INSERT INTO media_sources VALUES (?1,?1)", [id])?;
+            }
+        }
+        Ok(())
+    }).await.unwrap();
+    let token = login(&state, "alice", DEVICE).await;
+    let alice = [("X-Emby-Token", token.as_str())];
+    for (path, expected) in [
+        (
+            "/Items?IncludeItemTypes=Series&Recursive=true",
+            ["kept"].as_slice(),
+        ),
+        ("/Items?Recursive=true&SearchTerm=gone", &[]),
+        ("/Items?Ids=gone,g1,k1,k2", &["k1"]),
+        ("/Items?ParentId=kept", &["kept-1"]),
+        ("/Shows/kept/Seasons", &["kept-1"]),
+        ("/Shows/kept/Episodes", &["k1"]),
+        ("/Shows/gone/Episodes", &[]),
+        (
+            "/Items?IncludeItemTypes=MusicArtist&Recursive=true",
+            &["found"],
+        ),
+        (
+            "/Items?IncludeItemTypes=MusicAlbum,Audio&Recursive=true",
+            &["found-album", "ft"],
+        ),
+    ] {
+        let expected = expected.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let total = expected.len() as u64;
+        assert_eq!(
+            list(&state, path, &alice).await,
+            (expected, total),
+            "{path}"
+        );
+    }
+    let (status, latest) = call(
+        &state,
+        "/Items/Latest?ParentId=shows",
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{latest}");
+    let mut latest = latest
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    latest.sort_unstable();
+    assert_eq!(latest, ["k1", "kept", "kept-1"]);
+    // A series counts only the seasons it still lists.
+    let (_, page) = call(&state, "/Items?Ids=kept", "GET", Value::Null, &alice).await;
+    assert_eq!(page["Items"][0]["ChildCount"], 1);
+    // A client can still open an item it remembers.
+    let (status, item) = call(&state, "/Items/gone", "GET", Value::Null, &alice).await;
+    assert_eq!(status, StatusCode::OK, "{item}");
+    assert_eq!(
+        (item["Name"].as_str(), item["ChildCount"].as_i64()),
+        (Some("gone"), Some(0))
+    );
 }
 #[tokio::test]
 async fn videos_without_artwork_show_a_still_from_their_file() {
