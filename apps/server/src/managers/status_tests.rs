@@ -1998,7 +1998,17 @@ async fn jellyfin_items_show_their_title_backdrop_and_logo() {
         assert_eq!(child["ParentLogoItemId"], "show");
         assert_eq!(child["ParentLogoImageTag"], grant);
     }
-    let plain = item("movie-plain").await;
+    // Lists leave out a movie without a file; it has no media sources to read either.
+    assert_eq!(item("movie-plain").await, Value::Null);
+    let (status, _, plain) = call(
+        &state,
+        &format!("/Items/movie-plain?api_key={token}"),
+        "GET",
+        Value::Null,
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{plain}");
     assert_eq!(plain["BackdropImageTags"], json!([]));
     assert!(plain["ImageTags"].get("Logo").is_none());
     assert!(plain.get("ParentBackdropItemId").is_none());

@@ -2,6 +2,21 @@
 use super::*;
 use thelxinoe_database::Database;
 
+/// Whether the item under the given alias has a file on disk, or is a series, season,
+/// artist or album holding one. An item outlives its files to keep its watch state, but
+/// Jellyfin drops an item whose files are gone, so its clients never list one.
+macro_rules! on_disk {
+    ($m:literal) => {
+        concat!(
+            "(EXISTS(SELECT 1 FROM media_sources ds JOIN media_files df ON df.id=ds.file_id WHERE ds.media_id=",
+            $m,
+            ".id AND df.present=1) OR EXISTS(SELECT 1 FROM media d1 WHERE d1.parent_id=",
+            $m,
+            ".id AND (EXISTS(SELECT 1 FROM media_sources ds JOIN media_files df ON df.id=ds.file_id WHERE ds.media_id=d1.id AND df.present=1) OR EXISTS(SELECT 1 FROM media d2 JOIN media_sources ds ON ds.media_id=d2.id JOIN media_files df ON df.id=ds.file_id WHERE d2.parent_id=d1.id AND df.present=1))))"
+        )
+    };
+}
+
 pub(super) async fn views(server: String, db: &Database) -> anyhow::Result<Vec<Value>> {
     db.read("jellyfin.catalog.views", move |db| {
         let mut items = db.prepare("SELECT id,name,kind FROM library_roots ORDER BY name")?.query_map([], |r| {
@@ -149,6 +164,10 @@ fn media_filter(
     };
     if let Some(id) = id {
         conditions.push(format!("m.id={}", bind(id)));
+    } else {
+        // An item asked for by its ID stays readable, so a client can still show or mark
+        // one it remembers.
+        conditions.push(on_disk!("m").into());
     }
     if let Some(parent) = parent {
         let arg = bind(parent);
@@ -417,9 +436,13 @@ pub(super) async fn display_preferences(
     }).await
 }
 
-pub(super) const SELECT: &str = "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.created_at,m.root_id,COALESCE(u.favorite,0),COALESCE(u.watched,0),COALESCE(ep.position,0),COALESCE(ep.duration,0),p.kind,p.sort_number,pc.title,p.parent_id,gc.title,(SELECT f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.edition,f.id LIMIT 1),(SELECT COUNT(*) FROM media ch WHERE ch.parent_id=m.id),COUNT(*) OVER(),\
+pub(super) const SELECT: &str = concat!(
+    "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.created_at,m.root_id,COALESCE(u.favorite,0),COALESCE(u.watched,0),COALESCE(ep.position,0),COALESCE(ep.duration,0),p.kind,p.sort_number,pc.title,p.parent_id,gc.title,(SELECT f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.edition,f.id LIMIT 1),(SELECT COUNT(*) FROM media ch WHERE ch.parent_id=m.id AND ",
+    on_disk!("ch"),
+    "),COUNT(*) OVER(),\
     CASE m.kind WHEN 'show' THEN (SELECT COUNT(*) FROM media s JOIN media e ON e.parent_id=s.id LEFT JOIN media_state es ON es.media_id=e.id AND es.user_id=?1 WHERE s.parent_id=m.id AND s.kind='season' AND COALESCE(s.sort_number,1)>0 AND e.kind='episode' AND COALESCE(es.watched,0)=0 AND EXISTS(SELECT 1 FROM media_sources es_source JOIN media_files es_file ON es_file.id=es_source.file_id WHERE es_source.media_id=e.id AND es_file.present=1)) \
-    WHEN 'season' THEN (SELECT COUNT(*) FROM media e LEFT JOIN media_state es ON es.media_id=e.id AND es.user_id=?1 WHERE e.parent_id=m.id AND e.kind='episode' AND COALESCE(es.watched,0)=0 AND EXISTS(SELECT 1 FROM media_sources es_source JOIN media_files es_file ON es_file.id=es_source.file_id WHERE es_source.media_id=e.id AND es_file.present=1)) END";
+    WHEN 'season' THEN (SELECT COUNT(*) FROM media e LEFT JOIN media_state es ON es.media_id=e.id AND es.user_id=?1 WHERE e.parent_id=m.id AND e.kind='episode' AND COALESCE(es.watched,0)=0 AND EXISTS(SELECT 1 FROM media_sources es_source JOIN media_files es_file ON es_file.id=es_source.file_id WHERE es_source.media_id=e.id AND es_file.present=1)) END"
+);
 const FROM: &str = "FROM media m JOIN media_cards c ON c.id=m.id LEFT JOIN media_state u ON u.media_id=m.id AND u.user_id=?1 LEFT JOIN edition_progress ep ON ep.rowid=(SELECT rowid FROM edition_progress WHERE media_id=m.id AND user_id=?1 ORDER BY updated_at DESC,edition LIMIT 1) LEFT JOIN media p ON p.id=m.parent_id LEFT JOIN media_cards pc ON pc.id=p.id LEFT JOIN media_cards gc ON gc.id=p.parent_id";
 
 /// External identities under Jellyfin's provider names; values are always strings.
