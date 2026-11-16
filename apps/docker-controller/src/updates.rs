@@ -201,6 +201,7 @@ async fn update_image(
     requested: Option<String>,
     current: &str,
 ) -> Result<String> {
+    let discovered = requested.is_some();
     let image = match (templates::pinned_image(t)?, requested) {
         (Some(pinned), Some(requested)) if pinned != requested => {
             return Err(conflict(
@@ -212,7 +213,9 @@ async fn update_image(
         (None, Some(_)) => return Err(conflict("The requested image isn't one of this service's")),
         (None, None) => crate::stack::stable_image(t).await?,
     };
-    if image == current {
+    // Explicit discovery must not schedule the installed image again. Manual
+    // preflight without discovery also qualifies configuration on that image.
+    if discovered && image == current {
         return Err(conflict("The service already runs this image"));
     }
     Ok(image)
@@ -1202,6 +1205,23 @@ mod tests {
                 "{requested}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn preflight_without_discovery_can_qualify_the_installed_image() {
+        let fixture = crate::test_support::Docker::new();
+        fixture
+            .scope(async {
+                let radarr = templates::find("radarr").unwrap();
+                let running = format!("lscr.io/linuxserver/radarr@sha256:{}", "b".repeat(64));
+                assert_eq!(update_image(radarr, None, &running).await.unwrap(), running);
+                assert!(
+                    update_image(radarr, Some(running.clone()), &running)
+                        .await
+                        .is_err()
+                );
+            })
+            .await;
     }
 
     #[test]
