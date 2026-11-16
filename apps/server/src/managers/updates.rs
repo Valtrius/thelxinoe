@@ -266,7 +266,8 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
 }
 async fn run_locked(state: &AppState, key: &str, action: &str) -> Result<()> {
     let lookup = key.to_owned();
-    let (service, stage, authorized, discovered) = storage::run_locked(lookup, &state.db).await?;
+    let (service, stage, authorized, discovered, automatic) =
+        storage::run_locked(lookup, &state.db).await?;
     if !authorized {
         return Err(ApiError::forbidden());
     }
@@ -315,6 +316,7 @@ async fn run_locked(state: &AppState, key: &str, action: &str) -> Result<()> {
             // Install what the scheduler and the administrator saw, not whatever the tag
             // points to by now.
             body["candidate"] = json!(discovered);
+            body["automatic"] = json!(automatic);
         }
         controller(state, &path, Some(body)).await?;
     }

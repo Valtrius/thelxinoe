@@ -499,27 +499,34 @@ async fn automatic_scheduling_uses_cached_discovery_at_window_open_and_worker_re
 }
 
 #[tokio::test]
-async fn preflight_asks_for_the_discovered_image() {
-    let (_temp, state, _cookie) = fixture().await;
-    let service = managed(&state, "notify").await;
-    check_releases(&state, false).await.unwrap();
-    let key = enqueue(&state, &service, Some("alice".into()))
-        .await
-        .unwrap();
-    state.managers.docker.lock().unwrap().extend([
-        (
-            "stack".into(),
-            json!({"items":[{"id":service,"kind":"radarr","image":"repository@old","existence":"present","phase":"active","drift":false,"running":false}]}),
-        ),
-        ("stack/updates".into(), json!({ "items": [] })),
-        (format!("stack/{service}/preflight"), json!({})),
-    ]);
-    // The fixed fake controller never journals the attempt, so only the request matters.
-    let _ = run_locked(&state, &key, "preflight").await;
-    assert_eq!(
-        state.managers.docker.lock().unwrap()[&format!("posted/stack/{service}/preflight")]["candidate"],
-        "repository@new"
-    );
+async fn preflight_sends_the_discovered_image_and_the_persisted_trigger() {
+    for automatic in [false, true] {
+        for installed in ["repository@old", "repository@new"] {
+            let (_temp, state, _cookie) = fixture().await;
+            let service = managed(&state, "notify").await;
+            check_releases(&state, false).await.unwrap();
+            let actor = if automatic {
+                None
+            } else {
+                Some("alice".into())
+            };
+            let key = enqueue(&state, &service, actor).await.unwrap();
+            state.managers.docker.lock().unwrap().extend([
+                (
+                    "stack".into(),
+                    json!({"items":[{"id":service,"kind":"radarr","image":installed,"existence":"present","phase":"active","drift":false,"running":false}]}),
+                ),
+                ("stack/updates".into(), json!({ "items": [] })),
+                (format!("stack/{service}/preflight"), json!({})),
+            ]);
+            // The fixed fake controller never journals the attempt, so only the request matters.
+            let _ = run_locked(&state, &key, "preflight").await;
+            let calls = state.managers.docker.lock().unwrap();
+            let body = &calls[&format!("posted/stack/{service}/preflight")];
+            assert_eq!(body["candidate"], "repository@new");
+            assert_eq!(body["automatic"], automatic);
+        }
+    }
 }
 
 #[tokio::test]
