@@ -34,6 +34,16 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
             message.into(),
         ));
     }
+    // Tests read the last body posted to a path under "posted/stack{path}".
+    #[cfg(test)]
+    if let Some(body) = &body {
+        state
+            .managers
+            .docker
+            .lock()
+            .unwrap()
+            .insert(format!("posted/stack{path}"), body.clone());
+    }
     #[cfg(test)]
     if let Some(value) = state
         .managers

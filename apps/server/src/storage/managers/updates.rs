@@ -113,11 +113,12 @@ pub(super) async fn run_job_write_jobs(job_id: String, db: &Database) -> anyhow:
     .await
 }
 
+/// The attempt's service, stage, authorization and the service's discovered candidate.
 pub(super) async fn run_locked(
     lookup: String,
     db: &Database,
-) -> anyhow::Result<(String, String, bool)> {
-    db.read("managers.updates.run_locked", move|db|Ok(db.query_row("SELECT service_id,state,automatic=1 OR EXISTS(SELECT 1 FROM users WHERE id=actor_id AND role='admin') FROM service_updates WHERE id=?1",[lookup],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,bool>(2)?)))?)).await
+) -> anyhow::Result<(String, String, bool, Option<String>)> {
+    db.read("managers.updates.run_locked", move|db|Ok(db.query_row("SELECT u.service_id,u.state,u.automatic=1 OR EXISTS(SELECT 1 FROM users WHERE id=u.actor_id AND role='admin'),p.candidate FROM service_updates u LEFT JOIN service_update_policy p ON p.service_id=u.service_id WHERE u.id=?1",[lookup],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,bool>(2)?,r.get::<_,Option<String>>(3)?)))?)).await
 }
 
 pub(super) async fn reconnect(

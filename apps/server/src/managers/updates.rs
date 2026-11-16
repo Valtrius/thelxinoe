@@ -209,14 +209,21 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         && ["queued", "queued-activate"].contains(&automatic.5.as_str())
         && action != "recover"
     {
-        let backup = crate::backups::holds_updates(state)
+        let wait = if crate::backups::holds_updates(state)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e.2))?;
-        let wait = backup
-            || mode != "automatic"
-            || !crate::timezones::in_server_window(state, start, end).await?
-            || idle(state, &automatic.1).await.is_err();
-        if wait {
+            .map_err(|e| anyhow::anyhow!("{}", e.2))?
+        {
+            Some("Waiting for the automatic backup to finish".to_owned())
+        } else if mode != "automatic" {
+            Some("Waiting for the Automatic update policy".to_owned())
+        } else if !crate::timezones::in_server_window(state, start, end).await? {
+            Some("Waiting for the maintenance window".to_owned())
+        } else if let Err(error) = idle(state, &automatic.1).await {
+            Some(format!("Waiting for an idle service: {}", error.2))
+        } else {
+            None
+        };
+        if let Some(reason) = wait {
             let job_id = job.id.clone();
             storage::run_job_write_jobs(job_id, &state.db).await?;
             progress(
@@ -228,14 +235,7 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
                     "queued"
                 },
                 None,
-                Some(
-                    if backup {
-                        "Waiting for the automatic backup to finish"
-                    } else {
-                        "Waiting for Automatic policy, maintenance window and an idle service"
-                    }
-                    .into(),
-                ),
+                Some(reason),
             )
             .await
             .map_err(|e| anyhow::anyhow!("{}", e.2))?;
@@ -266,7 +266,7 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
 }
 async fn run_locked(state: &AppState, key: &str, action: &str) -> Result<()> {
     let lookup = key.to_owned();
-    let (service, stage, authorized) = storage::run_locked(lookup, &state.db).await?;
+    let (service, stage, authorized, discovered) = storage::run_locked(lookup, &state.db).await?;
     if !authorized {
         return Err(ApiError::forbidden());
     }
@@ -312,6 +312,9 @@ async fn run_locked(state: &AppState, key: &str, action: &str) -> Result<()> {
         if action == "preflight" {
             // The replacement is built later from this preflight's journal.
             body["timezone"] = json!(crate::timezones::server_zone_name(&state.db).await?);
+            // Install what the scheduler and the administrator saw, not whatever the tag
+            // points to by now.
+            body["candidate"] = json!(discovered);
         }
         controller(state, &path, Some(body)).await?;
     }
