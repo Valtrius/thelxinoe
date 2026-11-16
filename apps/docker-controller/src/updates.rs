@@ -189,6 +189,37 @@ pub(super) struct Preflight {
     operation_id: String,
     #[serde(default)]
     timezone: Option<String>,
+    /// The image the server discovered. Servers from earlier releases send none.
+    #[serde(default)]
+    candidate: Option<String>,
+    #[serde(default)]
+    automatic: bool,
+}
+/// Discovery and preflight would resolve the tag at different times, and a tag pushed in
+/// between made each committed attempt differ from the discovered image the scheduler
+/// compares, so it updated the service again every minute of its window.
+async fn update_image(
+    t: templates::Template,
+    requested: Option<String>,
+    current: &str,
+    automatic: bool,
+) -> Result<String> {
+    let image = match (templates::pinned_image(t)?, requested) {
+        (Some(pinned), Some(requested)) if pinned != requested => {
+            return Err(conflict(
+                "This image is no longer the curated release; check for updates again",
+            ));
+        }
+        (Some(pinned), _) => pinned,
+        (None, Some(requested)) if templates::pins_template_image(t, &requested) => requested,
+        (None, Some(_)) => return Err(conflict("The requested image isn't one of this service's")),
+        (None, None) => crate::stack::stable_image(t).await?,
+    };
+    // Manual preflight also qualifies configuration on the installed image.
+    if automatic && image == current {
+        return Err(conflict("The service already runs this image"));
+    }
+    Ok(image)
 }
 pub(super) async fn preflight(
     State(runtime): State<Runtime>,
@@ -219,7 +250,7 @@ pub(super) async fn preflight(
     }
     let raw = verified(&s, &d).await?;
     let t = templates::find(&s.kind).ok_or_else(unavailable)?;
-    let candidate = crate::stack::stable_image(t).await?;
+    let candidate = update_image(t, input.candidate, &s.image, input.automatic).await?;
     let mut u = Update {
         id: input.operation_id,
         service: s.id.clone(),
@@ -1147,6 +1178,61 @@ mod tests {
             rollback(&deployment, &mut update).await.unwrap_err().0,
             StatusCode::CONFLICT
         );
+    }
+
+    #[tokio::test]
+    async fn automatic_preflight_installs_the_discovered_image_and_never_the_running_one() {
+        let radarr = templates::find("radarr").unwrap();
+        let digest = |n: char| format!("sha256:{}", n.to_string().repeat(64));
+        let discovered = format!("lscr.io/linuxserver/radarr@{}", digest('a'));
+        let running = format!("lscr.io/linuxserver/radarr@{}", digest('b'));
+        assert_eq!(
+            update_image(radarr, Some(discovered.clone()), &running, true)
+                .await
+                .unwrap(),
+            discovered
+        );
+        for requested in [
+            discovered.clone(),
+            format!("lscr.io/linuxserver/sonarr@{}", digest('c')),
+            "lscr.io/linuxserver/radarr:latest".to_owned(),
+        ] {
+            assert_eq!(
+                update_image(radarr, Some(requested.clone()), &discovered, true)
+                    .await
+                    .unwrap_err()
+                    .0,
+                StatusCode::CONFLICT,
+                "{requested}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_preflight_can_qualify_the_installed_image_with_or_without_discovery() {
+        let fixture = crate::test_support::Docker::new();
+        fixture
+            .scope(async {
+                let radarr = templates::find("radarr").unwrap();
+                let running = format!("lscr.io/linuxserver/radarr@sha256:{}", "b".repeat(64));
+                assert_eq!(
+                    update_image(radarr, None, &running, false).await.unwrap(),
+                    running
+                );
+                assert_eq!(
+                    update_image(radarr, Some(running.clone()), &running, false)
+                        .await
+                        .unwrap(),
+                    running
+                );
+                let foreign = format!("lscr.io/linuxserver/sonarr@sha256:{}", "b".repeat(64));
+                assert!(
+                    update_image(radarr, Some(foreign), &running, false)
+                        .await
+                        .is_err()
+                );
+            })
+            .await;
     }
 
     #[test]

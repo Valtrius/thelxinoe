@@ -194,6 +194,9 @@ impl DockerContext {
         if path == "/containers/json?all=true" {
             return Ok(Value::Array(e.containers.values().map(|c|json!({"Id":c["Id"],"Names":[c["Name"]],"Labels":c["Config"]["Labels"]})).collect()));
         }
+        if path == "/distribution/lscr.io/linuxserver/radarr:latest/json" {
+            return Ok(json!({"Descriptor":{"digest":format!("sha256:{}", "b".repeat(64))}}));
+        }
         if path.starts_with("/images/") {
             return Ok(
                 json!({"Config":{},"Os":"linux","Architecture":"amd64","RepoDigests":[

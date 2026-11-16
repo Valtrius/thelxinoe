@@ -220,12 +220,29 @@ async fn manager_idle(c: &Connection<'_>, selected: Option<&[i64]>) -> Result<()
         ("sonarr", Some(ids)) => Some(("seriesIds", ids)),
         _ => None,
     };
-    let mut query = vec![("pageSize", "1".to_owned())];
+    let mut query = vec![(
+        "pageSize",
+        if selected.is_some() { "1" } else { "1000" }.to_owned(),
+    )];
     if let Some((name, ids)) = filter {
         query.extend(ids.iter().map(|id| (name, id.to_string())));
     }
     let queue = c.call(reqwest::Method::GET, "queue", &query, None).await?;
-    if queue["totalRecords"].as_u64() != Some(0) {
+    let busy = match (queue["totalRecords"].as_u64(), queue["records"].as_array()) {
+        (Some(0), _) => false,
+        // A download the manager can't import waits for someone and outlasts a restart
+        // unchanged, so it must not hold a restart or an update back forever.
+        (Some(total), Some(records)) if selected.is_none() && records.len() as u64 == total => {
+            records.iter().any(|record| {
+                !matches!(
+                    record["trackedDownloadState"].as_str(),
+                    Some("importBlocked" | "importFailed")
+                )
+            })
+        }
+        _ => true,
+    };
+    if busy {
         return Err(ApiError::conflict(if filter.is_some() {
             "Manager has a download queued for this title"
         } else {

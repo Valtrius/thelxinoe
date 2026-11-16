@@ -120,6 +120,18 @@ pub fn sources(t: Template) -> Vec<String> {
     sources
 }
 
+/// A digest-pinned reference to one of the template's repositories.
+pub(crate) fn pins_template_image(t: Template, reference: &str) -> bool {
+    reference
+        .split_once('@')
+        .is_some_and(|(repository, digest)| {
+            sources(t).iter().any(|source| source == repository)
+                && digest.starts_with("sha256:")
+                && digest.len() == 71
+                && digest[7..].bytes().all(|b| b.is_ascii_hexdigit())
+        })
+}
+
 pub(crate) fn pinned_image(template: Template) -> crate::docker::Result<Option<String>> {
     let Ok(raw) = std::env::var("THELXINOE_CURATED_IMAGES") else {
         return Ok(None);
@@ -138,12 +150,7 @@ pub(crate) fn pinned_image(template: Template) -> crate::docker::Result<Option<S
     for (kind, value) in entries {
         let curated = find(kind).ok_or_else(invalid)?;
         let reference = value.as_str().ok_or_else(invalid)?;
-        let (repository, digest) = reference.split_once('@').ok_or_else(invalid)?;
-        if !sources(curated).iter().any(|source| source == repository)
-            || !digest.starts_with("sha256:")
-            || digest.len() != 71
-            || !digest[7..].bytes().all(|b| b.is_ascii_hexdigit())
-        {
+        if !pins_template_image(curated, reference) {
             return Err(invalid());
         }
     }

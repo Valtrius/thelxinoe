@@ -737,6 +737,8 @@ async fn auto_delete_waits_at_least_a_day() {
 struct Upstream {
     /// The movies or series with a download in the queue.
     queued: std::sync::Mutex<Vec<i64>>,
+    /// The movies or series with a finished download the manager can't import.
+    stuck: std::sync::Mutex<Vec<i64>>,
     /// While set, the manager's library can't be read.
     down: std::sync::atomic::AtomicBool,
     /// Whether each coming read of the commands finds one running, and `busy` after those.
@@ -776,11 +778,15 @@ impl Upstream {
             .map(|(_, id)| id.parse::<i64>().unwrap())
             .collect::<Vec<_>>();
         let queued = self.queued.lock().unwrap();
-        let total = queued
+        let stuck = self.stuck.lock().unwrap();
+        let records = queued
             .iter()
-            .filter(|id| ids.is_empty() || ids.contains(id))
-            .count();
-        Json(json!({"totalRecords":total}))
+            .map(|id| (id, "downloading"))
+            .chain(stuck.iter().map(|id| (id, "importBlocked")))
+            .filter(|(id, _)| ids.is_empty() || ids.contains(id))
+            .map(|(_, state)| json!({"trackedDownloadState":state}))
+            .collect::<Vec<_>>();
+        Json(json!({"totalRecords":records.len(),"records":records}))
     }
     fn count(&self, counter: &std::sync::atomic::AtomicUsize) {
         counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1075,6 +1081,20 @@ async fn only_a_download_of_the_same_movie_holds_its_deletion() {
     );
     delete_locked(&state, &candidate, None, true).await.unwrap();
     assert!(!file.exists());
+    server.abort();
+}
+
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
+#[tokio::test]
+async fn a_download_the_manager_cannot_import_holds_its_deletion_but_no_restart() {
+    let (_temp, state, upstream, file, candidate, server) = scheduled_movie().await;
+    make_due(&state).await;
+    upstream.stuck.lock().unwrap().push(1);
+    operations::ensure_idle(&state, "radarr").await.unwrap();
+    assert!(delete_locked(&state, &candidate, None, true).await.is_err());
+    assert!(file.exists());
+    upstream.queued.lock().unwrap().push(2);
+    assert!(operations::ensure_idle(&state, "radarr").await.is_err());
     server.abort();
 }
 

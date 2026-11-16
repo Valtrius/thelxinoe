@@ -498,6 +498,58 @@ async fn automatic_scheduling_uses_cached_discovery_at_window_open_and_worker_re
     );
 }
 
+#[tokio::test]
+async fn preflight_sends_the_discovered_image_and_the_persisted_trigger() {
+    for automatic in [false, true] {
+        for installed in ["repository@old", "repository@new"] {
+            let (_temp, state, _cookie) = fixture().await;
+            let service = managed(&state, "notify").await;
+            check_releases(&state, false).await.unwrap();
+            let actor = if automatic {
+                None
+            } else {
+                Some("alice".into())
+            };
+            let key = enqueue(&state, &service, actor).await.unwrap();
+            state.managers.docker.lock().unwrap().extend([
+                (
+                    "stack".into(),
+                    json!({"items":[{"id":service,"kind":"radarr","image":installed,"existence":"present","phase":"active","drift":false,"running":false}]}),
+                ),
+                ("stack/updates".into(), json!({ "items": [] })),
+                (format!("stack/{service}/preflight"), json!({})),
+            ]);
+            // The fixed fake controller never journals the attempt, so only the request matters.
+            let _ = run_locked(&state, &key, "preflight").await;
+            let calls = state.managers.docker.lock().unwrap();
+            let body = &calls[&format!("posted/stack/{service}/preflight")];
+            assert_eq!(body["candidate"], "repository@new");
+            assert_eq!(body["automatic"], automatic);
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_automatic_attempt_says_why_its_service_is_not_idle() {
+    let (_temp, state, _cookie) = fixture().await;
+    managed(&state, "automatic").await;
+    allow_maintenance_now(&state).await;
+    check_releases(&state, false).await.unwrap();
+    schedule_updates(&state).await.unwrap();
+    let queue = thelxinoe_jobs::Queue(state.db.clone());
+    let job = queue.claim_services().await.unwrap().unwrap();
+    assert!(!run_job(&state, &job).await.unwrap());
+    let value = storage::list(&state.db).await.unwrap();
+    assert_eq!(value["items"][0]["state"], "queued");
+    let reason = value["items"][0]["error"].as_str().unwrap();
+    assert!(
+        reason
+            .strip_prefix("Waiting for an idle service: ")
+            .is_some_and(|why| !why.is_empty()),
+        "{reason}"
+    );
+}
+
 // A registry outage at window open must not hold an image back until a newer one appears.
 #[tokio::test]
 async fn automatic_attempts_retry_unverified_candidates_in_a_later_window_only() {
