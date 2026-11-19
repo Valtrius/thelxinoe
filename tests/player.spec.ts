@@ -2317,7 +2317,55 @@ test('fullscreen shortcut exits while the entry event is still pending', async (
   });
 });
 
-test('web player supports YouTube playback shortcuts and left/right-click pause', async ({
+for (const paused of [false, true]) {
+  test(`right-click allows the browser menu and double-click toggles fullscreen while playback stays ${paused ? 'paused' : 'playing'}`, async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await fixture(page);
+    await decoded(page);
+    const video = page.locator('video');
+    const point = { x: 100, y: 100 };
+    const player = page.getByRole('region', { name: 'Media player' });
+    if (paused)
+      await player.getByRole('button', { name: 'Pause', exact: true }).click();
+    await expect(video).toHaveJSProperty('paused', paused);
+    await video.evaluate((element) => {
+      document.addEventListener(
+        'contextmenu',
+        (event) => {
+          element.dataset.contextMenu = event.defaultPrevented
+            ? 'blocked'
+            : 'allowed';
+        },
+        { once: true },
+      );
+      // Catch transient playback changes even if the second click undoes them.
+      element.addEventListener(
+        element.paused ? 'play' : 'pause',
+        () => {
+          element.dataset.playbackChanged = 'true';
+        },
+        { once: true },
+      );
+    });
+    await video.click({ button: 'right', position: point });
+    await expect(video).toHaveAttribute('data-context-menu', 'allowed');
+    for (const fullscreen of [true, false]) {
+      await video.dblclick({ position: point });
+      await expect
+        .poll(() =>
+          player.evaluate((element) => document.fullscreenElement === element),
+        )
+        .toBe(fullscreen);
+    }
+    await page.clock.runFor(500);
+    await expect(video).toHaveJSProperty('paused', paused);
+    expect(await video.getAttribute('data-playback-changed')).toBeNull();
+  });
+}
+
+test('web player supports YouTube playback shortcuts and single-click play and pause', async ({
   page,
 }, info) => {
   const state = await fixture(page, { subtitles: true });
@@ -2350,18 +2398,8 @@ test('web player supports YouTube playback shortcuts and left/right-click pause'
   await expect
     .poll(() => video.evaluate((element) => element.paused))
     .toBe(false);
-  await video.click({ button: 'right', position: { x: 100, y: 100 } });
-  await expect
-    .poll(() => video.evaluate((element) => element.paused))
-    .toBe(true);
-  await video.click({ button: 'right', position: { x: 100, y: 100 } });
-  await expect
-    .poll(() => video.evaluate((element) => element.paused))
-    .toBe(false);
-  await video.click({ button: 'right', position: { x: 100, y: 100 } });
-  await expect
-    .poll(() => video.evaluate((element) => element.paused))
-    .toBe(true);
+  await page.keyboard.press('k');
+  await expect(video).toHaveJSProperty('paused', true);
 
   await video.evaluate((element) => {
     element.currentTime = 20;
@@ -2663,7 +2701,7 @@ test.describe('touch video playback', () => {
     expect(state.errors).toEqual([]);
   });
 
-  test('tapping the center reveals hidden controls before toggling playback', async ({
+  test('surface taps toggle controls and the play button alone toggles touch playback', async ({
     page,
   }, testInfo) => {
     const state = await fixture(page);
@@ -2676,22 +2714,28 @@ test.describe('touch video playback', () => {
     await expect(controls).toHaveCSS('opacity', '1');
     await expect(video).toHaveJSProperty('paused', false);
     await video.tap({ position: { x: 195, y: 100 } });
-    await expect(video).toHaveJSProperty('paused', true);
-    await expect(
-      page.getByRole('button', { name: 'Play', exact: true }),
-    ).toBeVisible();
+    await expect(controls).toHaveCSS('opacity', '0');
+    await expect(video).toHaveJSProperty('paused', false);
+
+    // A tap where the hidden Pause button sits must only reveal it.
+    const pause = page.getByRole('button', { name: 'Pause', exact: true });
+    const box = (await pause.boundingBox())!;
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
     await expect(controls).toHaveCSS('opacity', '1');
+    await expect(video).toHaveJSProperty('paused', false);
+    await pause.tap();
+    await expect(video).toHaveJSProperty('paused', true);
+    await page.locator('.player-header h2').tap();
+    await expect(controls).toHaveCSS('opacity', '0');
+    await video.tap({ position: { x: 195, y: 100 } });
+    await expect(controls).toHaveCSS('opacity', '1');
+    await expect(video).toHaveJSProperty('paused', true);
     await testInfo.attach('Paused touch video', {
       body: await page.screenshot({
         path: testInfo.outputPath('tap-paused.png'),
       }),
       contentType: 'image/png',
     });
-    await video.tap({ position: { x: 195, y: 100 } });
-    await expect(video).toHaveJSProperty('paused', false);
-
-    await page.getByRole('button', { name: 'Pause', exact: true }).tap();
-    await expect(video).toHaveJSProperty('paused', true);
     await page.getByRole('button', { name: 'Play', exact: true }).tap();
     await expect(video).toHaveJSProperty('paused', false);
     await expect(page.locator('.volume-controls')).toHaveCount(0);
