@@ -8,6 +8,7 @@ use std::sync::Mutex;
 #[derive(Default)]
 struct Radarr {
     movies: Vec<Value>,
+    movie_lists: usize,
     files: Vec<Value>,
     /// Where each movie file is on the test's disk.
     disk: Vec<(i64, std::path::PathBuf)>,
@@ -17,7 +18,9 @@ struct Radarr {
 type Shared = Arc<Mutex<Radarr>>;
 
 async fn list_movies(State(r): State<Shared>) -> Json<Value> {
-    Json(json!(r.lock().unwrap().movies))
+    let mut r = r.lock().unwrap();
+    r.movie_lists += 1;
+    Json(json!(r.movies))
 }
 async fn get_movie(
     State(r): State<Shared>,
@@ -260,6 +263,48 @@ async fn library() -> Library {
 
 #[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
+async fn a_preview_naming_a_removed_manager_requires_a_new_confirmation() {
+    let library = library().await;
+    super::super::bindings::reconcile(&library.state)
+        .await
+        .unwrap();
+    let prepared =
+        operations::prepare_operation(&library.state, None, "one".into(), "delete".into())
+            .await
+            .unwrap();
+    library
+        .state
+        .db
+        .write("test.disable_manager", |db| {
+            db.execute(
+                "UPDATE manager_services SET enabled=0,operational=0 WHERE id='radarr'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let refused = operations::execute_locked(
+        &library.state,
+        prepared.0["id"].as_str().unwrap().to_owned(),
+        None,
+        false,
+        Default::default(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.1, "media_selection_changed");
+    assert!(library.file.exists());
+    assert!(library.radarr.lock().unwrap().changes.is_empty());
+    assert_eq!(
+        operations::targets(&library.state, "one").await.unwrap()[0].ownership,
+        "unmanaged"
+    );
+    library.server.abort();
+}
+
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
+#[tokio::test]
 async fn deleted_or_unmonitored_movies_can_leave_radarr_and_its_lists() {
     let Library {
         _temp,
@@ -280,6 +325,36 @@ async fn deleted_or_unmonitored_movies_can_leave_radarr_and_its_lists() {
     assert_eq!(removal.0, StatusCode::CONFLICT, "{}", removal.2);
     assert!(removal.2.to_string().contains("still has files"));
     assert!(file.exists());
+
+    // The catalog still lists this file as unmanaged. Preview takes that snapshot
+    // locally. Confirmation discovers the Radarr claim and requires a fresh preview.
+    let lists = radarr.lock().unwrap().movie_lists;
+    let stale = call(
+        &state,
+        "/api/v1/admin/media/operations",
+        "POST",
+        json!({"media_id":"one","action":"delete"}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(stale.0, StatusCode::OK, "{}", stale.2);
+    assert_eq!(stale.2["files"], 1);
+    assert_eq!(radarr.lock().unwrap().movie_lists, lists);
+    let refused = call(
+        &state,
+        &format!(
+            "/api/v1/admin/media/operations/{}/execute",
+            stale.2["id"].as_str().unwrap()
+        ),
+        "POST",
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.2);
+    assert_eq!(refused.2["error"]["code"], "media_selection_changed");
+    assert!(file.exists());
+    assert!(radarr.lock().unwrap().changes.is_empty());
 
     // Deleting the files can also exclude the movie and remove it from Radarr.
     let prepared = call(

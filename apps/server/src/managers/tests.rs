@@ -358,6 +358,42 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
 }
 
 #[tokio::test]
+async fn deletion_preview_counts_a_shared_episode_file_once_and_requires_its_whole_selection() {
+    let (_temp, state, _) = fixture().await;
+    state.db.write("test.shared_episodes", |db| {
+        db.execute_batch("
+            INSERT INTO library_roots(id,name,kind,path) VALUES ('tv','TV','shows','/tv');
+            INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES
+                ('show','tv','show',NULL,'show','Show',1),
+                ('e1','tv','episode','show','e1','First',1),
+                ('e2','tv','episode','show','e2','Second',1);
+            INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at)
+                VALUES ('file','tv','/tv/double.mkv','first',1,'1','hash','{}',1);
+            INSERT INTO media_sources VALUES ('e1','file'),('e2','file');
+        ")?;
+        Ok(())
+    }).await.unwrap();
+    let preview = |media: &str| {
+        operations::prepare_operation(&state, None, media.to_owned(), "delete".into())
+    };
+    assert_eq!(preview("e1").await.unwrap_err().0, StatusCode::CONFLICT);
+    assert_eq!(preview("absent").await.unwrap_err().0, StatusCode::CONFLICT);
+    assert_eq!(preview("show").await.unwrap().0["files"], 1);
+    let count = state
+        .db
+        .read("test.proposals", |db| {
+            Ok(
+                db.query_row("SELECT COUNT(*) FROM media_operations", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
 async fn deletion_rechecks_keep_and_file_replacement_and_never_retries_completed_work() {
     let (temp, state, alice) = fixture().await;
     state
@@ -392,7 +428,7 @@ async fn deletion_rechecks_keep_and_file_replacement_and_never_retries_completed
     state.db.write("test.fixture", move|db|{
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Fixture','movies',?1)",[root.to_string_lossy().as_ref()])?;
         db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('movie','root','movie','fixture','Fixture',1)",[])?;
-        db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('file','root',?1,'generation',?2,?3,?4,'{}',1)",params![stored,meta.len() as i64,modified,hash])?;
+        db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES ('file','root',?1,'generation',?2,?3,?4,'{}','unmanaged',1)",params![stored,meta.len() as i64,modified,hash])?;
         db.execute("INSERT INTO media_sources VALUES ('movie','file')",[])?;Ok(())
     }).await.unwrap();
     let body = json!({"media_id":"movie","action":"delete"});

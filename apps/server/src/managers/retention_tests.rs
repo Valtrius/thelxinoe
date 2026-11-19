@@ -1303,6 +1303,7 @@ async fn prepared_season() -> (
     tokio::task::JoinHandle<()>,
 ) {
     let (temp, state, upstream, files, server) = season_on_sonarr().await;
+    bindings::reconcile(&state).await.unwrap();
     let operation = operations::prepare_operation(&state, None, "season".into(), "delete".into())
         .await
         .unwrap()
