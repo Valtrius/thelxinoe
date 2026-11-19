@@ -155,8 +155,9 @@
   const fullscreen = $derived(nativeFullscreen || viewportFullscreen);
   let rotationFullscreen = false;
   let fullscreenRevision = 0;
-  let tapTimer: ReturnType<typeof setTimeout> | undefined;
-  let sideTap: { side: -1 | 1; time: number; seeking: boolean } | undefined;
+  let clickTimer: ReturnType<typeof setTimeout> | undefined;
+  let pausedBeforeClick = true;
+  let sideTap: { side: -1 | 1; time: number } | undefined;
   let tapSeek:
     { revision: number; target: number; resume: boolean } | undefined;
   // The held seek-bar value while dragging, for the labels that follow it.
@@ -194,12 +195,7 @@
   });
   const loading = $derived(!error && (busy || buffering));
   const controlsShown = $derived(
-    controlsVisible ||
-      paused ||
-      loading ||
-      !!error ||
-      controlFocused ||
-      !!optionMenu,
+    controlsVisible || loading || !!error || controlFocused || !!optionMenu,
   );
   let hls: Hls | undefined,
     sequence = 0,
@@ -217,13 +213,12 @@
     }
   });
   $effect(() => {
-    // Restart the idle delay when playback resumes or a blocking overlay closes.
-    if (!paused && !loading && !controlFocused && !optionMenu && !error)
-      untrack(revealControls);
+    if (!loading && !controlFocused && !optionMenu && !error) revealControls();
   });
   function revealControls() {
     controlsVisible = true;
     clearTimeout(hideTimer);
+    if (paused) return;
     hideTimer = setTimeout(() => {
       if (
         touch ||
@@ -325,11 +320,6 @@
       window.removeEventListener('keydown', escape, true);
     };
   });
-  function clearSideTap() {
-    clearTimeout(tapTimer);
-    tapTimer = undefined;
-    sideTap = undefined;
-  }
   // The previous shape is kept while the next item loads; audio-only streams
   // have no dimensions and use the default video shape.
   function updateAspectRatio() {
@@ -340,31 +330,42 @@
         : 16 / 9;
   }
   function tapVideo(event: MouseEvent) {
-    const revealOnly = tapRevealsControls;
-    tapRevealsControls = false;
-    revealControls();
-    if (!touchDevice.current || !touch) {
-      if (!revealOnly) void toggle();
+    if (!touch) {
+      if (event.target !== player || event.button !== 0) return;
+      revealControls();
+      if (event.detail === 2) {
+        clearTimeout(clickTimer);
+        // The OS may recognize a double-click after our single-click delay.
+        if (paused !== pausedBeforeClick) void toggle();
+        void toggleFullscreen();
+      } else if (event.detail <= 1) {
+        clearTimeout(clickTimer);
+        pausedBeforeClick = paused;
+        clickTimer = setTimeout(() => void toggle(), 350);
+      }
       return;
     }
+    if (
+      isInteractiveTarget(event.target) ||
+      (event.target instanceof Element && event.target.closest('[role="menu"]'))
+    )
+      return;
+
     const bounds = player.getBoundingClientRect();
     const fraction = (event.clientX - bounds.left) / bounds.width;
-    if (fraction >= 1 / 3 && fraction <= 2 / 3) {
-      clearSideTap();
-      if (!revealOnly) void toggle();
-      return;
-    }
-    const side = fraction < 1 / 3 ? -1 : 1;
+    const side = fraction < 1 / 3 ? -1 : fraction > 2 / 3 ? 1 : 0;
     const now = performance.now();
-    const repeat = sideTap?.side === side && now - sideTap.time <= 300;
-    clearTimeout(tapTimer);
-    sideTap = { side, time: now, seeking: repeat };
-    if (repeat) void seekByTap(side * 10);
-    tapTimer = setTimeout(() => {
-      const pause = !sideTap?.seeking && !revealOnly;
-      clearSideTap();
-      if (pause) void toggle();
-    }, 300);
+    const repeat = side && sideTap?.side === side && now - sideTap.time <= 300;
+    sideTap = side ? { side, time: now } : undefined;
+    if (repeat && active && !active.live) {
+      revealControls();
+      void seekByTap(side * 10);
+    } else if (tapRevealsControls) {
+      revealControls();
+    } else {
+      clearTimeout(hideTimer);
+      controlsVisible = false;
+    }
   }
   async function seekByTap(seconds: number) {
     if (!active || active.live) return;
@@ -706,7 +707,8 @@
     preparation.abort();
     preparation = new AbortController();
     waitingTools = false;
-    clearSideTap();
+    clearTimeout(clickTimer);
+    sideTap = undefined;
     tapSeek = undefined;
     const revision = ++generation;
     busy = true;
@@ -1053,11 +1055,12 @@
     generation++;
     clearInterval(timer);
     clearInterval(stallTimer);
+    clearTimeout(clickTimer);
     clearTimeout(hideTimer);
-    clearSideTap();
     void stop();
   });
   async function toggle() {
+    clearTimeout(clickTimer);
     if (!active || busy) return;
     if (holding) {
       // Pausing while a seek waits for media keeps playback paused.
@@ -1119,6 +1122,7 @@
   }}
 />
 
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions (The region delegates surface taps. Keyboard users reveal the controls by focusing them and activate native buttons.) -->
 <section
   id={playerId}
   popover={viewportFullscreen ? 'manual' : undefined}
@@ -1143,7 +1147,8 @@
     preparation.abort();
     generation++;
     fullscreenRevision++;
-    clearSideTap();
+    clearTimeout(clickTimer);
+    sideTap = undefined;
     tapSeek = undefined;
     player?.pause();
   }}
@@ -1160,25 +1165,21 @@
   tabindex="-1"
   onpointermove={(event) => {
     touch = event.pointerType !== 'mouse';
-    revealControls();
+    if (!touch) revealControls();
   }}
   onpointerdown={(event) => {
     touch = event.pointerType !== 'mouse';
     tapRevealsControls = touch && !controlsShown;
     controlFocused = false;
-    if (isInteractiveTarget(event.target)) clearSideTap();
-    if (event.button === 0 && !isInteractiveTarget(event.target))
+    const interactive = isInteractiveTarget(event.target);
+    if (interactive || !touch) sideTap = undefined;
+    if (event.button === 0 && !interactive)
       container.focus({ preventScroll: true });
-    revealControls();
+    if (!touch || interactive) revealControls();
   }}
-  oncontextmenu={(event) => {
-    if (isInteractiveTarget(event.target)) return;
-    event.preventDefault();
-    void toggle();
-    revealControls();
-  }}
+  onclick={tapVideo}
   onfocusin={(event) => {
-    if (rotationFullscreen && event.target === container) return;
+    if ((rotationFullscreen || touch) && event.target === container) return;
     controlFocused =
       event.target !== container &&
       event.target instanceof HTMLElement &&
@@ -1196,7 +1197,6 @@
     data-sidebar-resize="video"
     bind:this={player}
     playsinline
-    onclick={tapVideo}
     ontimeupdate={update}
     onprogress={mediaProgress}
     onloadstart={waiting}
@@ -1381,7 +1381,7 @@
         size="icon"
         variant="player"
         data-sidebar-resize="xy-pos"
-        class="player-button shrink-0"
+        class="player-button shrink-0 touch:size-11"
         aria-label={paused ? 'Play' : 'Pause'}
         title={paused ? 'Play' : 'Pause'}
         disabled={busy || !active}

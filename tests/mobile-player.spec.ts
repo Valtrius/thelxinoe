@@ -226,7 +226,7 @@ test.describe('mobile player gestures', () => {
     viewport: { width: 390, height: 844 },
   });
 
-  test('side taps reveal controls, defer pause, and seek ten seconds for every additional tap', async ({
+  test('single side taps toggle controls and repeated side taps seek ten seconds each', async ({
     page,
   }, info) => {
     await page.clock.install();
@@ -262,9 +262,11 @@ test.describe('mobile player gestures', () => {
     await expect(video).toHaveJSProperty('paused', false);
     expect(await currentTime()).toBeLessThan(beforeReveal + 3);
     await side(false);
-    await page.clock.runFor(100);
+    await expect(controls).toHaveCSS('opacity', '0');
+    await page.clock.runFor(450);
     await expect(video).toHaveJSProperty('paused', false);
-    await page.clock.runFor(250);
+    await side(false);
+    await page.getByRole('button', { name: 'Pause', exact: true }).tap();
     await expect(video).toHaveJSProperty('paused', true);
     const beforeSeek = await currentTime();
     await side(false);
@@ -272,10 +274,6 @@ test.describe('mobile player gestures', () => {
     await side(false);
     await expect.poll(currentTime).toBeCloseTo(beforeSeek - 20, 0);
     await page.clock.runFor(450);
-    await expect(video).toHaveJSProperty('paused', true);
-    await video.tap({ position: { x: 195, y: 95 } });
-    await expect(video).toHaveJSProperty('paused', false);
-    await page.getByRole('button', { name: 'Pause', exact: true }).tap();
     await expect(video).toHaveJSProperty('paused', true);
     await page.screenshot({
       path: info.outputPath('mobile-seek-gestures.png'),
@@ -407,7 +405,7 @@ test.describe('mobile player gestures', () => {
     ).toBeVisible();
     await rotate(false);
     // Native fullscreen is also allowed when rotation follows a recent tap.
-    await video.tap({ position: { x: 195, y: 100 } });
+    await page.getByRole('button', { name: 'Pause', exact: true }).tap();
     await expect(video).toHaveJSProperty('paused', true);
     await page.getByRole('button', { name: 'Play', exact: true }).tap();
     await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
