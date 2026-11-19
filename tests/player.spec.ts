@@ -8,6 +8,7 @@ import {
   unlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createServer, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { freezeClock } from './helpers/clock';
 import { responseGate } from './helpers/response-gate';
@@ -383,6 +384,7 @@ async function fixture(
     volumeSaves: [] as number[],
     savedHeight: options.playerHeight ?? null,
     fail: options.fail ?? false,
+    stalled: options.stalled ?? false,
     toolsPreparing: !!options.tools,
     toolsFailed: false,
     resolvePreparing: false,
@@ -845,14 +847,14 @@ async function fixture(
       if (url.pathname.endsWith('.m3u8'))
         return route.fulfill({
           contentType: 'application/vnd.apple.mpegurl',
-          body: options.stalled
+          body: state.stalled
             ? '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4,\nsegment.ts\n'
             : '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:60\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:60,\nsegment.ts\n#EXT-X-ENDLIST\n',
         });
       return route.fulfill({
         contentType: url.pathname.endsWith('.ts') ? 'video/mp2t' : 'video/mp4',
         body: url.pathname.endsWith('.ts')
-          ? options.stalled
+          ? state.stalled
             ? shortSegment
             : segment
           : file,
@@ -3089,6 +3091,7 @@ test('YouTube scrolls beneath its toolbar and Kick uses page scrolling', async (
 test('failed streams can retry and closing during preparation stops a late session', async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
   const state = await fixture(page, { fail: true });
   await expect(page.getByRole('alert')).toContainText(
     'The stream is temporarily unavailable',
@@ -3176,29 +3179,125 @@ test('buffered HLS resumes without rebuilding its pipeline and quality changes p
   expect(state.errors).toEqual([]);
 });
 
-test('An online stream that stops supplying media offers recovery', async ({
+test('a stalled native video request is retried before metadata arrives', async ({
   page,
-}, testInfo) => {
+}) => {
   await page.clock.install();
-  await fixture(page, { mode: 'remux', stalled: true });
-  await decoded(page);
-  // The player gives up after 30 seconds without media. One second at a time,
-  // so the stream's reads still answer between its timers.
-  const retry = page.getByRole('button', { name: 'Retry playback' });
-  await expect(async () => {
-    await page.clock.fastForward(1000);
-    await expect(retry).toBeVisible({ timeout: 100 });
-  }).toPass({ intervals: [100], timeout: 45000 });
-  await expect(page.getByRole('alert')).toContainText(
-    'stopped supplying media',
-  );
-  await testInfo.attach('stalled-stream', {
-    body: await page.screenshot({
-      path: '.local/player-ui/stalled-stream.png',
-    }),
-    contentType: 'image/png',
+  const state = await fixture(page, { hold: true });
+  let requests = 0;
+  await page.route('**/fixture/video.mp4', (route) => {
+    if (++requests > 1) return route.fallback();
   });
+  state.metadata.release();
+  state.preparation.release();
+  state.media.release();
+  await expect.poll(() => requests).toBe(1);
+  await page.clock.runFor(32000);
+  await decoded(page);
+  expect(requests).toBeGreaterThan(1);
+  expect(state.starts).toHaveLength(1);
 });
+
+test('a slow HLS fragment keeps downloading while the playhead waits', async ({
+  page,
+}) => {
+  // Supply bytes over a real socket so Chromium reports partial XHR progress.
+  let response: ServerResponse | undefined;
+  let requests = 0;
+  const server = createServer((_, res) => {
+    requests++;
+    response = res;
+    res.writeHead(200, {
+      'Content-Type': 'video/mp2t',
+      'Content-Length': segment.length,
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.write(segment.subarray(0, 65536));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Missing media server port');
+    const url = `http://127.0.0.1:${address.port}/slow.ts`;
+    const network = await page.context().newCDPSession(page);
+    await network.send('Network.enable');
+    let requestId = '',
+      bytes = 0;
+    network.on('Network.responseReceived', (event) => {
+      if (event.response.url === url) requestId = event.requestId;
+    });
+    network.on('Network.dataReceived', (event) => {
+      if (event.requestId === requestId) bytes += event.dataLength;
+    });
+    await page.clock.install();
+    const state = await fixture(page, { hold: true, mode: 'remux' });
+    await page.context().grantPermissions(['local-network-access'], {
+      origin: new URL(page.url()).origin,
+    });
+    await page.route('**/fixture/index.m3u8', (route) =>
+      route.fulfill({
+        contentType: 'application/vnd.apple.mpegurl',
+        body: `#EXTM3U\n#EXT-X-TARGETDURATION:60\n#EXTINF:60,\n${url}\n#EXT-X-ENDLIST\n`,
+      }),
+    );
+    state.metadata.release();
+    state.preparation.release();
+    state.media.release();
+    for (let chunk = 1; chunk <= 5; chunk++) {
+      await expect.poll(() => bytes).toBeGreaterThanOrEqual(chunk * 65536);
+      await page.clock.fastForward(10000);
+      response!.write(segment.subarray(chunk * 65536, (chunk + 1) * 65536));
+    }
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    response!.end(segment.subarray(6 * 65536));
+    await decoded(page);
+    expect(requests).toBe(1);
+    expect(state.seeks).toEqual([]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+for (const live of [false, true])
+  test(`Retry playback recovers a stalled ${live ? 'live stream' : 'video'} after its stop report hangs`, async ({
+    page,
+  }, testInfo) => {
+    await page.clock.install();
+    const state = await fixture(page, { mode: 'remux', stalled: true, live });
+    await decoded(page);
+    // Let playlist reads settle between watchdog ticks.
+    const retry = page.getByRole('button', { name: 'Retry playback' });
+    await expect(async () => {
+      await page.clock.fastForward(1000);
+      await expect(retry).toBeVisible({ timeout: 100 });
+    }).toPass({ intervals: [100], timeout: 45000 });
+    await expect(page.getByRole('alert')).toContainText(
+      'stopped supplying media',
+    );
+    await testInfo.attach('stalled-stream', {
+      body: await page.screenshot({
+        path: '.local/player-ui/stalled-stream.png',
+      }),
+      contentType: 'image/png',
+    });
+    state.stalled = false;
+    // A stop request on the old connection never answers.
+    await page.route('**/playback/fixture/progress', (route) => {
+      if (route.request().postDataJSON().state !== 'stopped')
+        return route.fallback();
+    });
+    await retry.click();
+    await expect.poll(() => state.starts.length).toBe(2);
+    const resumed = state.starts[1].position;
+    if (live) expect(resumed).toBe(0);
+    else expect(resumed).toBeGreaterThan(0);
+    await expect
+      .poll(() => page.locator('video').evaluate((v) => v.currentTime))
+      .toBeGreaterThan(resumed + 0.2);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+  });
 
 test('Original playback shows its decoded resolution', async ({
   page,
