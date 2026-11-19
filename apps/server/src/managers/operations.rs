@@ -19,7 +19,14 @@ pub(super) async fn targets(state: &AppState, media: &str) -> Result<Vec<Target>
     let media = media.to_owned();
     storage::targets(media, &state.db)
         .await
-        .map_err(ApiError::from)
+        .map_err(selection_error)
+}
+fn selection_error(error: anyhow::Error) -> ApiError {
+    if error.is::<storage::SharedFile>() {
+        ApiError::conflict(error.to_string())
+    } else {
+        error.into()
+    }
 }
 #[derive(Deserialize)]
 struct Prepare {
@@ -42,6 +49,14 @@ pub(super) async fn prepare_operation(
 ) -> Result<Json<Value>> {
     let action: MediaAction = serde_json::from_value(json!(action))
         .map_err(|_| ApiError::bad("Unknown media operation"))?;
+    if let MediaAction::Delete = action {
+        let key = id();
+        let files = storage::prepare_deletion(&state.db, key.clone(), media_id, actor)
+            .await
+            .map_err(selection_error)?
+            .ok_or_else(|| ApiError::conflict("No current files belong to this target"))?;
+        return Ok(Json(json!({"id":key,"state":"pending","files":files})));
+    }
     let observed = bindings::observe(state, bindings::ALL).await?;
     let _lease = state.media_operations.write().await;
     let _manager = state.managers.guard.lock().await;
@@ -521,6 +536,13 @@ async fn execute(
     let options = options.map(|Json(options)| options).unwrap_or_default();
     execute_locked(&state, key, Some(p.user.id), false, options).await
 }
+fn stale_selection() -> ApiError {
+    ApiError(
+        axum::http::StatusCode::CONFLICT,
+        "media_selection_changed",
+        "The selected files or their ownership changed. Review the selection before confirming again.".into(),
+    )
+}
 pub(super) async fn execute_locked(
     state: &AppState,
     key: String,
@@ -543,7 +565,12 @@ pub(super) async fn execute_locked(
     let captured: Vec<Target> = serde_json::from_str(&saved).map_err(|_| unavailable())?;
     // Waiting on a manager is the usual reason a deletion can't run. Asking first spares each
     // retry the whole-library read and file hashing below.
-    managers_idle(state, &captured).await?;
+    if automatic
+        || action != "delete"
+        || storage::preview_managers_current(&state.db, saved).await?
+    {
+        managers_idle(state, &captured).await?;
+    }
     if automatic {
         bindings::reconcile_retained(state).await?;
     } else {
@@ -559,10 +586,9 @@ pub(super) async fn execute_locked(
         .await;
     let current = targets(state, &media).await?;
     if current != captured {
-        return Err(ApiError::conflict(
-            "File set, generation or ownership changed; prepare a new operation",
-        ));
+        return Err(stale_selection());
     }
+    validate_ownership(&current, &action)?;
     protected_or_active(state, &media, &current).await?;
     super::retention::revalidate_operation(state, &key, automatic).await?;
     let mut proofs = Vec::new();
@@ -595,9 +621,7 @@ pub(super) async fn execute_locked(
         .services(&services.iter().map(String::as_str).collect::<Vec<_>>())
         .await;
     if targets(state, &media).await? != current {
-        return Err(ApiError::conflict(
-            "File set, generation or ownership changed; prepare a new operation",
-        ));
+        return Err(stale_selection());
     }
     protected_or_active(state, &media, &current).await?;
     super::retention::revalidate_operation(state, &key, automatic).await?;

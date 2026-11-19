@@ -8,6 +8,7 @@
   import SegmentEditor from '../SegmentEditor.svelte';
   import EpisodeMapping from '../EpisodeMapping.svelte';
   import { appearance } from '../appearance';
+  import { ApiError } from '../api';
   import { startActivity } from '../activity';
   import { refreshAttention } from '../attention';
   import {
@@ -76,12 +77,20 @@
 
   onMount(() => {
     if ((dialog !== 'delete' && dialog !== 'replace') || kept) return;
-    preparing = true;
-    prepareOperation(id, 'delete')
-      .then((operation) => (pending = operation))
-      .catch((caught) => (error = String(caught)))
-      .finally(() => (preparing = false));
+    void prepareDeletion();
   });
+
+  async function prepareDeletion() {
+    pending = null;
+    preparing = true;
+    try {
+      pending = await prepareOperation(id, 'delete');
+    } catch (caught) {
+      error = String(caught);
+    } finally {
+      preparing = false;
+    }
+  }
 
   async function confirmDelete() {
     if (dialog !== 'remove' && !pending) return;
@@ -104,6 +113,12 @@
       close();
     } catch (caught) {
       error = String(caught);
+      if (
+        pending &&
+        caught instanceof ApiError &&
+        caught.code === 'media_selection_changed'
+      )
+        await prepareDeletion();
     } finally {
       busy = false;
       finish();

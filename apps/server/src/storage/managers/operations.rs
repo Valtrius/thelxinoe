@@ -1,12 +1,23 @@
 //! Database operations for managers.operations.
 use crate::managers::{
     bindings,
-    domain::{PreparedOperation, Target},
+    domain::{MediaAction, PreparedOperation, Target, ValidatedSelection},
 };
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use thelxinoe_core::now;
 use thelxinoe_database::Database;
+
+#[derive(Debug)]
+pub(super) struct SharedFile;
+impl std::fmt::Display for SharedFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "A file also belongs to media outside this selection. Select all titles that share it.",
+        )
+    }
+}
+impl std::error::Error for SharedFile {}
 
 pub(super) async fn targets(media: String, db: &Database) -> anyhow::Result<Vec<Target>> {
     db.read("managers.operations.targets", move |db| {
@@ -18,18 +29,83 @@ pub(in crate::managers) fn load_targets(
     db: &rusqlite::Connection,
     media: &str,
 ) -> anyhow::Result<Vec<Target>> {
-    let files=db.prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM media WHERE id=?1 UNION ALL SELECT m.id FROM media m JOIN tree t ON m.parent_id=t.id) SELECT DISTINCT f.id,f.generation,f.path,l.path,f.size,f.modified,f.fingerprint,f.ownership FROM tree JOIN media_sources ms ON ms.media_id=tree.id JOIN media_files f ON f.id=ms.file_id JOIN library_roots l ON l.id=f.root_id WHERE f.present=1 ORDER BY f.id")?.query_map([&media],|r|Ok(Target{id:r.get(0)?,generation:r.get(1)?,path:r.get(2)?,root:r.get(3)?,size:r.get::<_,i64>(4)? as u64,modified:r.get(5)?,fingerprint:r.get(6)?,ownership:r.get(7)?,claims:vec![]}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut selected = db.prepare(
+        "WITH RECURSIVE tree(id) AS (
+             SELECT id FROM media WHERE id=?1
+             UNION ALL SELECT m.id FROM media m JOIN tree t ON m.parent_id=t.id
+         )
+         SELECT f.id,f.generation,f.path,l.path,f.size,f.modified,f.fingerprint,f.ownership,
+                EXISTS(SELECT 1 FROM media_sources WHERE file_id=f.id AND media_id NOT IN (SELECT id FROM tree))
+         FROM media_files f JOIN library_roots l ON l.id=f.root_id
+         WHERE f.present=1 AND f.id IN (
+             SELECT file_id FROM media_sources WHERE media_id IN (SELECT id FROM tree)
+         ) ORDER BY f.id"
+    )?;
+    let mut claims = db.prepare("SELECT service_id,service_generation,manager_file_id,entity_id,manager_path,external_id,members FROM manager_bindings WHERE file_id=?1 AND generation=?2 ORDER BY service_id")?;
+    let mut rows = selected.query([media])?;
     let mut output = Vec::new();
-    for mut file in files {
-        let outside:bool=db.query_row("WITH RECURSIVE tree(id) AS (SELECT id FROM media WHERE id=?1 UNION ALL SELECT m.id FROM media m JOIN tree t ON m.parent_id=t.id) SELECT EXISTS(SELECT 1 FROM media_sources WHERE file_id=?2 AND media_id NOT IN (SELECT id FROM tree))",params![media,file.id],|r|r.get(0))?;
-        anyhow::ensure!(
-            !outside,
-            "A file also belongs to media outside this target; choose the complete logical unit"
-        );
-        file.claims=db.prepare("SELECT service_id,service_generation,manager_file_id,entity_id,manager_path,external_id,members FROM manager_bindings WHERE file_id=?1 AND generation=?2 ORDER BY service_id")?.query_map(params![file.id,file.generation],|r|Ok(bindings::Claim{service_id:r.get(0)?,service_generation:r.get(1)?,manager_file_id:r.get(2)?,entity_id:r.get(3)?,manager_path:r.get(4)?,external_id:r.get(5)?,members:serde_json::from_str(&r.get::<_,String>(6)?).unwrap_or_default(),server_path:file.path.clone()}))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        output.push(file);
+    while let Some(row) = rows.next()? {
+        let outside: bool = row.get(8)?;
+        anyhow::ensure!(!outside, SharedFile);
+        let id: String = row.get(0)?;
+        let generation: String = row.get(1)?;
+        let path: String = row.get(2)?;
+        let file_claims = claims
+            .query_map(params![id, generation], |r| {
+                Ok(bindings::Claim {
+                    service_id: r.get(0)?,
+                    service_generation: r.get(1)?,
+                    manager_file_id: r.get(2)?,
+                    entity_id: r.get(3)?,
+                    manager_path: r.get(4)?,
+                    external_id: r.get(5)?,
+                    members: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
+                    server_path: path.clone(),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        output.push(Target {
+            id,
+            generation,
+            path,
+            root: row.get(3)?,
+            size: row.get::<_, i64>(4)? as u64,
+            modified: row.get(5)?,
+            fingerprint: row.get(6)?,
+            ownership: row.get(7)?,
+            claims: file_claims,
+        });
     }
     Ok(output)
+}
+
+pub(super) async fn prepare_deletion(
+    db: &Database,
+    id: String,
+    media_id: String,
+    actor: Option<String>,
+) -> anyhow::Result<Option<usize>> {
+    db.write("managers.operations.prepare_deletion", move |db| {
+        let tx = db.transaction()?;
+        let files = load_targets(&tx, &media_id)?;
+        let count = files.len();
+        if count == 0 {
+            return Ok(None);
+        }
+        insert_operation(
+            &tx,
+            &PreparedOperation {
+                id,
+                actor,
+                media_id,
+                action: MediaAction::Delete,
+                selection: ValidatedSelection { files },
+            },
+        )?;
+        tx.commit()?;
+        Ok(Some(count))
+    })
+    .await
 }
 
 pub(super) async fn prepare_locked(
@@ -55,6 +131,13 @@ pub(in crate::managers) fn insert_prepared(
     for claim in operation.selection.files.iter().flat_map(|f| &f.claims) {
         anyhow::ensure!(db.query_row("SELECT EXISTS(SELECT 1 FROM manager_services WHERE id=?1 AND generation=?2 AND operational=1)",params![claim.service_id,claim.service_generation],|r|r.get::<_,bool>(0))?,"Manager configuration changed before proposal persistence");
     }
+    insert_operation(db, operation)
+}
+
+fn insert_operation(
+    db: &rusqlite::Connection,
+    operation: &PreparedOperation,
+) -> anyhow::Result<()> {
     db.execute(
         "INSERT INTO media_operations VALUES (?1,?2,?3,?4,'pending',?5,?6,?6,NULL)",
         params![
@@ -116,6 +199,25 @@ pub(super) async fn execute_locked_read_media_operations(
                 .optional()?)
         },
     )
+    .await
+}
+
+/// Whether the idle preflight can still use the managers named in a local preview.
+pub(super) async fn preview_managers_current(
+    db: &Database,
+    targets: String,
+) -> anyhow::Result<bool> {
+    db.read("managers.operations.preview_managers_current", move |db| {
+        Ok(db.query_row(
+            "SELECT NOT EXISTS(
+                SELECT 1 FROM json_each(?1) f, json_each(f.value,'$.claims') c
+                WHERE NOT EXISTS(SELECT 1 FROM manager_services s WHERE s.operational=1
+                    AND s.id=c.value->>'service_id' AND s.generation=c.value->>'service_generation')
+            )",
+            [targets],
+            |row| row.get(0),
+        )?)
+    })
     .await
 }
 

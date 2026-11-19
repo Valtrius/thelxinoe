@@ -262,6 +262,48 @@ test('a deletion prepared after its dialog closed is never offered', async ({
   }
 });
 
+test('a stale deletion preview shows the new count and waits for confirmation', async ({
+  page,
+}) => {
+  const fixture = await installSeries(page);
+  await openSeries(page);
+  const dialog = await deletion(page, 'season');
+  const confirm = dialog.getByRole('button', {
+    name: 'Delete season files',
+    exact: true,
+  });
+  await expect(
+    dialog.getByText('Delete 2 files', { exact: false }),
+  ).toBeVisible();
+  await page.route(
+    '**/api/v1/admin/media/operations/operation-0/execute',
+    (route) => {
+      fixture.items.find((item) => item.id === 'episode-1-2')!.available =
+        false;
+      return route.fulfill({
+        status: 409,
+        json: {
+          error: {
+            code: 'media_selection_changed',
+            message: 'The selected files changed.',
+          },
+        },
+      });
+    },
+  );
+  await confirm.click();
+  await expect(dialog.getByRole('alert')).toHaveText(
+    'The selected files changed.',
+  );
+  await expect(
+    dialog.getByText('Delete 1 file from disk', { exact: false }),
+  ).toBeVisible();
+  expect(fixture.executed).toEqual([]);
+  await confirm.click();
+  await expect(dialog).toHaveCount(0);
+  expect(fixture.executed).toEqual(['season-1']);
+});
+
 test('a rejected season deletion shows the error and keeps episodes playable', async ({
   page,
 }, testInfo) => {
