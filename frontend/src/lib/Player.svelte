@@ -599,6 +599,11 @@
     if (active && player)
       bufferedTo = player.currentTime + bufferedAhead() + active.timeline_start;
   }
+  function mediaProgress() {
+    updateBuffered();
+    // Native media can receive bytes before it exposes a playable range.
+    if (!hls) stalledSince = undefined;
+  }
   function fraction(at: number) {
     const duration = active?.duration ?? 0;
     return duration > 0 ? Math.max(0, Math.min(1, at / duration)) : 0;
@@ -626,13 +631,28 @@
   let activity = new PlaybackActivity();
   let stalledSince: number | undefined;
   let lastPlaybackTime = 0;
+  let lastBufferedEnd = 0;
+  let awaitingAutoplay = false;
+  let reloadedAfterStall = false;
+  const received = new WeakMap<object, number>();
+  function receivingFragments() {
+    if (!hls) return false;
+    const { main, audio } = hls.inFlightFragments;
+    let progress = false;
+    for (const frag of [main.frag, audio?.frag]) {
+      if (!frag) continue;
+      const loaded = frag.stats.loaded;
+      if (loaded > (received.get(frag) ?? 0)) progress = true;
+      received.set(frag, loaded);
+    }
+    return progress;
+  }
   const stallTimer = setInterval(() => {
     release();
     if (
       !active ||
       busy ||
-      !buffering ||
-      (player.paused && !holding) ||
+      (player.paused && !holding && !awaitingAutoplay) ||
       error ||
       player.ended
     ) {
@@ -640,10 +660,25 @@
       lastPlaybackTime = player?.currentTime ?? 0;
       return;
     }
-    if (player.currentTime !== lastPlaybackTime) stalledSince = undefined;
+    const bufferedEnd = player.currentTime + bufferedAhead();
+    const downloading = receivingFragments();
+    if (
+      downloading ||
+      bufferedEnd > lastBufferedEnd ||
+      player.currentTime !== lastPlaybackTime
+    )
+      stalledSince = undefined;
+    lastBufferedEnd = bufferedEnd;
     lastPlaybackTime = player.currentTime;
     stalledSince ??= performance.now();
     if (performance.now() - stalledSince >= 30000) {
+      if (!reloadedAfterStall) {
+        const revision = generation;
+        void attach(active.url, position, true, true).catch((e) => {
+          if (generation === revision) error = String(e);
+        });
+        return;
+      }
       error =
         'The stream stopped supplying media. Try seeking or reopening this item.';
       holding = false;
@@ -663,7 +698,10 @@
     const current = choice;
     untrack(() => void open(current));
   });
-  async function open(current: MediaChoice) {
+  let retryPosition: number | undefined;
+  async function open(current: MediaChoice, retry = false) {
+    if (!retry) retryPosition = undefined;
+    else if (active) retryPosition = active.live ? 0 : position;
     container.focus({ preventScroll: true });
     preparation.abort();
     preparation = new AbortController();
@@ -674,11 +712,11 @@
     busy = true;
     buffering = true;
     optionMenu = null;
-    info = null;
+    if (!retry) info = null;
     error = '';
     await stop();
     if (revision !== generation) return;
-    position = 0;
+    position = retryPosition ?? 0;
     videoSide = 0;
     const pending = {
       signal: preparation.signal,
@@ -687,6 +725,10 @@
       },
     };
     try {
+      if (retry && info) {
+        await start(retryPosition, revision);
+        return;
+      }
       if (current.resolveYoutube)
         await playbackRequest(
           () =>
@@ -760,12 +802,23 @@
     if (revision !== generation) return;
     await attach(result.url, result.position, autoplay);
   }
-  async function attach(url: string, at: number, autoplay = true) {
+  async function attach(
+    url: string,
+    at: number,
+    autoplay = true,
+    recovering = false,
+  ) {
     if (!active || !player) return;
     buffering = true;
     const session = active;
+    stalledSince = undefined;
+    lastBufferedEnd = 0;
+    reloadedAfterStall = recovering;
+    awaitingAutoplay = autoplay;
+    holding = false;
     const play = () => {
       if (active !== session) return;
+      awaitingAutoplay = false;
       void player.play().catch(() => {
         // A seek before playback starts interrupts this request; it resumes
         // when the seek has enough media.
@@ -790,6 +843,7 @@
       }
       gain!.gain.value = replayGain(active.probe, active.replay_gain);
       await audioContext?.resume();
+      if (active !== session) return;
     }
     hls?.destroy();
     hls = undefined;
@@ -803,14 +857,17 @@
       player.src = mediaUrl(url);
       player.onloadedmetadata = () => {
         if (active !== session) return;
-        player.currentTime = Math.max(0, at - session.timeline_start);
+        if (!session.live)
+          player.currentTime = Math.max(0, at - session.timeline_start);
         if (autoplay) play();
       };
     } else {
       hls = new Hls({
         enableWorker: false,
-        startPosition: Math.max(0, at - active.timeline_start),
-        liveSyncDurationCount: 1000,
+        startPosition: session.live
+          ? -1
+          : Math.max(0, at - session.timeline_start),
+        ...(session.live ? {} : { liveSyncDurationCount: 1000 }),
         maxLiveSyncPlaybackRate: 1,
         maxBufferLength: 30,
       });
@@ -840,6 +897,7 @@
       });
     }
   }
+  let progressRequests = new AbortController();
   function report(state: string) {
     if (!active) return Promise.resolve();
     const id = active.id;
@@ -849,11 +907,19 @@
       state,
       active_seconds: activity.seconds(),
     };
+    const signal = state === 'stopped' ? undefined : progressRequests.signal;
     reporting = reporting
       .catch(() => {})
       // Progress reports never hold back the page being opened.
       .then(() =>
-        inBackground(() => api(`/playback/${id}/progress`, 'POST', data)),
+        inBackground(() =>
+          api(
+            `/playback/${id}/progress`,
+            'POST',
+            data,
+            signal ?? AbortSignal.timeout(5000),
+          ),
+        ),
       )
       .catch((e) => {
         if (active?.id !== id || !sessionRefused(e)) return;
@@ -864,6 +930,8 @@
   }
   async function stop() {
     activity.setActive(false);
+    progressRequests.abort();
+    progressRequests = new AbortController();
     const stopped = active ? report('stopped') : Promise.resolve();
     active = null;
     paused = true;
@@ -952,7 +1020,11 @@
     }
   }
   function update() {
-    if (active && !busy)
+    if (
+      active &&
+      !busy &&
+      player.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+    )
       position = Math.min(
         active.live ? Number.POSITIVE_INFINITY : active.duration,
         player.currentTime + active.timeline_start,
@@ -1126,7 +1198,7 @@
     playsinline
     onclick={tapVideo}
     ontimeupdate={update}
-    onprogress={updateBuffered}
+    onprogress={mediaProgress}
     onloadstart={waiting}
     onwaiting={waiting}
     onseeking={waiting}
@@ -1206,14 +1278,21 @@
 
   {#if error}
     <div
-      class="player-status pointer-events-none absolute inset-[68px_20px_92px] flex flex-col items-center justify-center gap-3 text-center [text-shadow:0_1px_4px_#000]"
+      class={[
+        'player-status pointer-events-none absolute z-[3] flex items-center justify-center gap-3 text-center [text-shadow:0_1px_4px_#000]',
+        playerHeight < 240
+          ? 'inset-[38px_8px_64px]'
+          : 'inset-[68px_20px_92px] flex-col',
+      ]}
       data-sidebar-resize="xy"
       data-sidebar-resize-origin
       role="alert"
     >
-      <span class="inline-flex" data-sidebar-resize="xy-pos"
-        ><AlertCircle size={28} /></span
-      >
+      {#if playerHeight >= 240}
+        <span class="inline-flex" data-sidebar-resize="xy-pos"
+          ><AlertCircle size={28} /></span
+        >
+      {/if}
       <p
         class="m-0 max-w-120 wrap-anywhere text-[13px]"
         data-sidebar-resize="xy-pos"
@@ -1221,9 +1300,9 @@
         {error}
       </p>
       <button
-        class="retry-button focus-visible:outline-2 focus-visible:outline-offset-2 pointer-events-auto border border-line-strong bg-surface-strong px-3 py-1.5 text-foreground [text-shadow:none]"
+        class="retry-button shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 pointer-events-auto border border-line-strong bg-surface-strong px-3 py-1.5 text-foreground [text-shadow:none]"
         data-sidebar-resize="xy-pos"
-        onclick={() => void open(choice)}>Retry playback</button
+        onclick={() => void open(choice, true)}>Retry playback</button
       >
     </div>
   {:else if loading}
