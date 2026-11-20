@@ -2387,6 +2387,8 @@ test('web player supports YouTube playback shortcuts and single-click play and p
   await expect
     .poll(() => video.evaluate((element) => element.paused))
     .toBe(true);
+  // Only touch shows the larger Play/Pause button over the picture.
+  await expect(page.locator('.center-playback')).toHaveCount(0);
   await video.click({ position: { x: 100, y: 100 } });
   await expect
     .poll(() => video.evaluate((element) => element.paused))
@@ -2703,7 +2705,7 @@ test.describe('touch video playback', () => {
     expect(state.errors).toEqual([]);
   });
 
-  test('surface taps toggle controls and the play button alone toggles touch playback', async ({
+  test('surface taps toggle controls and only the play buttons toggle touch playback', async ({
     page,
   }, testInfo) => {
     const state = await fixture(page);
@@ -2715,7 +2717,8 @@ test.describe('touch video playback', () => {
     await video.tap({ position: { x: 195, y: 100 } });
     await expect(controls).toHaveCSS('opacity', '1');
     await expect(video).toHaveJSProperty('paused', false);
-    await video.tap({ position: { x: 195, y: 100 } });
+    // The centered Play/Pause button covers the middle while controls show.
+    await video.tap({ position: { x: 250, y: 100 } });
     await expect(controls).toHaveCSS('opacity', '0');
     await expect(video).toHaveJSProperty('paused', false);
 
@@ -2759,9 +2762,95 @@ test.describe('touch video playback', () => {
     });
     await expect(page.locator('.player-controls:hover')).toHaveCount(1);
     await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
+    // A tap where the hidden center button sits only reveals the controls.
     await video.tap({ position: { x: 195, y: 100 } });
     await expect(controls).toHaveCSS('opacity', '1');
     await expect(video).toHaveJSProperty('paused', false);
+
+    const center = page.locator('.center-playback');
+    await expect(center).toHaveCSS('opacity', '1');
+    const centerBox = (await center.boundingBox())!;
+    const videoBox = (await video.boundingBox())!;
+    expect(centerBox.width).toBeGreaterThanOrEqual(64);
+    expect(centerBox.x + centerBox.width / 2).toBeCloseTo(
+      videoBox.x + videoBox.width / 2,
+      0,
+    );
+    await center.tap();
+    await expect(video).toHaveJSProperty('paused', true);
+    await expect(
+      page.getByRole('button', { name: 'Play', exact: true }),
+    ).toBeVisible();
+    await expect(center).toHaveCSS('opacity', '1');
+    await center.tap();
+    await expect(video).toHaveJSProperty('paused', false);
+    await expect(controls).toHaveCSS('opacity', '1');
+    await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
+    await expect(center).toHaveCSS('opacity', '0');
+    await expect(center).toHaveCSS('pointer-events', 'none');
+    expect(state.errors).toEqual([]);
+  });
+
+  test('the center play button fits between the header and controls of a short picture', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    const state = await fixture(page);
+    await decoded(page);
+    const video = page.locator('video');
+    const controls = page.locator('.player-controls');
+    const center = page.locator('.center-playback');
+    await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
+    await video.tap({ position: { x: 20, y: 20 } });
+    await expect(center).toHaveCSS('opacity', '1');
+
+    const box = (await center.boundingBox())!;
+    const close = (await page
+      .getByRole('button', { name: 'Close player' })
+      .boundingBox())!;
+    const seek = (await page
+      .getByRole('slider', { name: 'Playback position' })
+      .boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(40);
+    expect(box.y).toBeGreaterThanOrEqual(close.y + close.height);
+    expect(box.y + box.height).toBeLessThanOrEqual(seek.y);
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(video).toHaveJSProperty('paused', true);
+    await expect(controls).toHaveCSS('opacity', '1');
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(video).toHaveJSProperty('paused', false);
+
+    // An open menu keeps the button shown beneath its backdrop, which takes
+    // the tap and closes the menu.
+    await page.getByRole('button', { name: 'Quality', exact: true }).tap();
+    await expect(page.getByRole('menu', { name: 'Quality' })).toBeVisible();
+    await expect(center).toHaveCSS('opacity', '1');
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(page.getByRole('menu', { name: 'Quality' })).toHaveCount(0);
+    await expect(video).toHaveJSProperty('paused', false);
+
+    // A picture wider than 16:9 letterboxes so the button still fits.
+    const player = page.getByRole('region', { name: 'Media player' });
+    await video.evaluate((element: HTMLVideoElement) => {
+      Object.defineProperty(element, 'videoWidth', { value: 2400 });
+      Object.defineProperty(element, 'videoHeight', { value: 1000 });
+      element.dispatchEvent(new Event('resize'));
+    });
+    await expect
+      .poll(async () => {
+        const { width, height } = (await player.boundingBox())!;
+        return height / width;
+      })
+      .toBeCloseTo(9 / 16, 2);
+    await video.tap({ position: { x: 20, y: 20 } });
+    await expect(center).toHaveCSS('opacity', '1');
+    const wide = (await center.boundingBox())!;
+    expect(wide.height).toBeGreaterThanOrEqual(40);
+    await page.touchscreen.tap(
+      wide.x + wide.width / 2,
+      wide.y + wide.height / 2,
+    );
+    await expect(video).toHaveJSProperty('paused', true);
     expect(state.errors).toEqual([]);
   });
 });
