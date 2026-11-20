@@ -2776,10 +2776,6 @@ test.describe('touch video playback', () => {
       videoBox.x + videoBox.width / 2,
       0,
     );
-    expect(centerBox.y + centerBox.height / 2).toBeCloseTo(
-      videoBox.y + videoBox.height / 2,
-      0,
-    );
     await center.tap();
     await expect(video).toHaveJSProperty('paused', true);
     await expect(
@@ -2792,6 +2788,37 @@ test.describe('touch video playback', () => {
     await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
     await expect(center).toHaveCSS('opacity', '0');
     await expect(center).toHaveCSS('pointer-events', 'none');
+    expect(state.errors).toEqual([]);
+  });
+
+  test('the center play button fits between the header and controls of a short picture', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    const state = await fixture(page);
+    await decoded(page);
+    const video = page.locator('video');
+    const controls = page.locator('.player-controls');
+    const center = page.locator('.center-playback');
+    await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
+    await video.tap({ position: { x: 20, y: 20 } });
+    await expect(center).toHaveCSS('opacity', '1');
+
+    const box = (await center.boundingBox())!;
+    const close = (await page
+      .getByRole('button', { name: 'Close player' })
+      .boundingBox())!;
+    const seek = (await page
+      .getByRole('slider', { name: 'Playback position' })
+      .boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(40);
+    expect(box.y).toBeGreaterThanOrEqual(close.y + close.height);
+    expect(box.y + box.height).toBeLessThanOrEqual(seek.y);
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(video).toHaveJSProperty('paused', true);
+    await expect(controls).toHaveCSS('opacity', '1');
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(video).toHaveJSProperty('paused', false);
     expect(state.errors).toEqual([]);
   });
 });

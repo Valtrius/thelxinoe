@@ -110,6 +110,10 @@
   }
   let player = $state<HTMLVideoElement>() as HTMLVideoElement;
   let container = $state<HTMLElement>() as HTMLElement;
+  let header = $state<HTMLElement>(),
+    controls = $state<HTMLElement>();
+  // The picture between the header and control rows, without their gradients.
+  let centerBounds = $state({ top: 0, bottom: 0 });
   const interrupted =
     'Playback interrupted. Try seeking or reopening this item.';
   // The session whose stream already restarted after it died.
@@ -214,6 +218,20 @@
   });
   $effect(() => {
     if (!loading && !controlFocused && !optionMenu && !error) revealControls();
+  });
+  $effect(() => {
+    if (!header || !controls || !touchDevice.current) return;
+    const [top, bottom] = [header, controls];
+    const measure = () =>
+      (centerBounds = {
+        top: top.offsetHeight - parseFloat(getComputedStyle(top).paddingBottom),
+        bottom:
+          bottom.offsetHeight - parseFloat(getComputedStyle(bottom).paddingTop),
+      });
+    const observer = new ResizeObserver(measure);
+    observer.observe(top);
+    observer.observe(bottom);
+    return () => observer.disconnect();
   });
   function revealControls() {
     controlsVisible = true;
@@ -1251,6 +1269,7 @@
   {/if}
 
   <div
+    bind:this={header}
     class={[
       'player-header absolute inset-x-0 top-0 z-[2] flex items-center gap-4 bg-[linear-gradient(color-mix(in_srgb,var(--background)_40%,transparent),color-mix(in_srgb,var(--background)_10%,transparent)_60%,transparent)] px-4 pt-3 pb-9 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-2 max-[600px]:pb-7',
       !controlsShown && 'pointer-events-none opacity-0',
@@ -1329,10 +1348,12 @@
             : 'Buffering…'}
       </p>
     </div>
-  {:else if touchDevice.current && active}
-    <!-- A larger touch target for the Play/Pause control in the bar, which assistive technology already reaches. -->
+  {:else if touchDevice.current && active && !optionMenu && playerHeight - centerBounds.top - centerBounds.bottom >= 48}
+    <!-- A larger touch target for the Play/Pause control in the bar, which assistive technology already reaches. It fits between the header and control rows and sits above their gradients. -->
     <div
-      class="pointer-events-none absolute inset-0 z-[2] flex items-center justify-center"
+      class="pointer-events-none absolute inset-x-0 z-[3] flex items-center justify-center py-1"
+      style:top={`${centerBounds.top}px`}
+      style:bottom={`${centerBounds.bottom}px`}
       data-sidebar-resize="xy"
       data-sidebar-resize-origin
     >
@@ -1340,13 +1361,12 @@
         size="icon"
         variant="player"
         data-sidebar-resize="xy-pos"
-        class={`center-playback size-16 rounded-full bg-background/45 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none ${controlsShown ? 'pointer-events-auto' : 'opacity-0'}`}
+        class={`center-playback aspect-square size-auto h-full max-h-16 rounded-full bg-background/45 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none [&_svg]:size-1/2 ${controlsShown ? 'pointer-events-auto' : 'opacity-0'}`}
         aria-hidden="true"
         tabindex={-1}
         onclick={() => void toggle()}
       >
-        {#if paused}<Play size={32} fill="currentColor" />{:else}<Pause
-            size={32}
+        {#if paused}<Play fill="currentColor" />{:else}<Pause
             fill="currentColor"
           />{/if}
       </Button>
@@ -1374,6 +1394,7 @@
   {/if}
 
   <div
+    bind:this={controls}
     class={[
       'player-controls absolute inset-x-0 bottom-0 z-[2] bg-[linear-gradient(transparent,color-mix(in_srgb,var(--background)_12%,transparent)_40%,color-mix(in_srgb,var(--background)_45%,transparent))] px-4 pt-[30px] pb-2.5 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-6 max-[600px]:pb-1.5',
       !controlsShown && 'pointer-events-none opacity-0',
