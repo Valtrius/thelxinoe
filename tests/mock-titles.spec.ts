@@ -1096,6 +1096,51 @@ function playbackRequests(page: Page) {
   return { starts, stops };
 }
 
+test.describe('touch up next', () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
+
+  test('the up next prompt takes taps over the center play button', async ({
+    page,
+  }) => {
+    const errors = track(page);
+    const { starts } = playbackRequests(page);
+    await page.goto('/#library/shows/show-0');
+    const { player, upNext, at } = await playEpisode(
+      page,
+      'Play episode 4: Homeward',
+      'Beyond the Horizon · Homeward',
+    );
+    await at(79);
+    const next = upNext.getByRole('button', {
+      name: 'Play S02E01 · First Contact',
+      exact: true,
+    });
+    await expect(next).toBeVisible();
+    // Any key reveals the controls, and with them the center button.
+    await player.focus();
+    await page.keyboard.press('Shift');
+    const center = player.locator('.center-playback');
+    await expect(center).toHaveCSS('opacity', '1');
+    // Tap where the prompt and the center button overlap.
+    const prompt = (await next.boundingBox())!;
+    const button = (await center.boundingBox())!;
+    const left = Math.max(prompt.x, button.x);
+    const right = Math.min(prompt.x + prompt.width, button.x + button.width);
+    const top = Math.max(prompt.y, button.y);
+    const bottom = Math.min(prompt.y + prompt.height, button.y + button.height);
+    expect(right).toBeGreaterThan(left);
+    expect(bottom).toBeGreaterThan(top);
+    await page.touchscreen.tap((left + right) / 2, (top + bottom) / 2);
+    await expect(
+      player.getByRole('heading', {
+        name: 'Beyond the Horizon · First Contact',
+      }),
+    ).toBeVisible({ timeout: 5000 });
+    await expect.poll(() => starts).toEqual(['episode-3', 'episode-4']);
+    expect(errors).toEqual([]);
+  });
+});
+
 test('a finishing episode offers the next one from its credits, across seasons, until canceled', async ({
   page,
 }, info) => {

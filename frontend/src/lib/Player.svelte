@@ -1155,7 +1155,10 @@
     ? undefined
     : `${boundedHeight}px`}
   style:aspect-ratio={compactViewport.current && !fullscreen
-    ? videoAspectRatio
+    ? touchDevice.current
+      ? // Wider pictures letterbox so the center play button fits.
+        Math.min(videoAspectRatio, 16 / 9)
+      : videoAspectRatio
     : undefined}
   style:max-height={compactViewport.current && !fullscreen
     ? '60dvh'
@@ -1272,7 +1275,9 @@
     bind:this={header}
     class={[
       'player-header absolute inset-x-0 top-0 z-[2] flex items-center gap-4 bg-[linear-gradient(color-mix(in_srgb,var(--background)_40%,transparent),color-mix(in_srgb,var(--background)_10%,transparent)_60%,transparent)] px-4 pt-3 pb-9 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-2 max-[600px]:pb-7',
-      !controlsShown && 'pointer-events-none opacity-0',
+      controlsShown
+        ? 'touch:pointer-events-none touch:*:pointer-events-auto'
+        : 'pointer-events-none opacity-0',
     ]}
   >
     <h2
@@ -1348,10 +1353,10 @@
             : 'Buffering…'}
       </p>
     </div>
-  {:else if touchDevice.current && active && !optionMenu && playerHeight - centerBounds.top - centerBounds.bottom >= 48}
-    <!-- A larger touch target for the Play/Pause control in the bar, which assistive technology already reaches. It fits between the header and control rows and sits above their gradients. -->
+  {:else if touchDevice.current && active && playerHeight - centerBounds.top - centerBounds.bottom >= 48}
+    <!-- A larger touch target for the Play/Pause control in the bar, which assistive technology already reaches. It fits between the header and control rows, beneath prompts and menus. -->
     <div
-      class="pointer-events-none absolute inset-x-0 z-[3] flex items-center justify-center py-1"
+      class="pointer-events-none absolute inset-x-0 flex items-center justify-center py-1"
       style:top={`${centerBounds.top}px`}
       style:bottom={`${centerBounds.bottom}px`}
       data-sidebar-resize="xy"
@@ -1397,7 +1402,9 @@
     bind:this={controls}
     class={[
       'player-controls absolute inset-x-0 bottom-0 z-[2] bg-[linear-gradient(transparent,color-mix(in_srgb,var(--background)_12%,transparent)_40%,color-mix(in_srgb,var(--background)_45%,transparent))] px-4 pt-[30px] pb-2.5 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-6 max-[600px]:pb-1.5',
-      !controlsShown && 'pointer-events-none opacity-0',
+      controlsShown
+        ? 'touch:pointer-events-none touch:*:pointer-events-auto'
+        : 'pointer-events-none opacity-0',
     ]}
   >
     {#if !active?.live}

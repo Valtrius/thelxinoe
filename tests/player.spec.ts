@@ -2819,6 +2819,38 @@ test.describe('touch video playback', () => {
     await expect(controls).toHaveCSS('opacity', '1');
     await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
     await expect(video).toHaveJSProperty('paused', false);
+
+    // An open menu keeps the button shown beneath its backdrop, which takes
+    // the tap and closes the menu.
+    await page.getByRole('button', { name: 'Quality', exact: true }).tap();
+    await expect(page.getByRole('menu', { name: 'Quality' })).toBeVisible();
+    await expect(center).toHaveCSS('opacity', '1');
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(page.getByRole('menu', { name: 'Quality' })).toHaveCount(0);
+    await expect(video).toHaveJSProperty('paused', false);
+
+    // A picture wider than 16:9 letterboxes so the button still fits.
+    const player = page.getByRole('region', { name: 'Media player' });
+    await video.evaluate((element: HTMLVideoElement) => {
+      Object.defineProperty(element, 'videoWidth', { value: 2400 });
+      Object.defineProperty(element, 'videoHeight', { value: 1000 });
+      element.dispatchEvent(new Event('resize'));
+    });
+    await expect
+      .poll(async () => {
+        const { width, height } = (await player.boundingBox())!;
+        return height / width;
+      })
+      .toBeCloseTo(9 / 16, 2);
+    await video.tap({ position: { x: 20, y: 20 } });
+    await expect(center).toHaveCSS('opacity', '1');
+    const wide = (await center.boundingBox())!;
+    expect(wide.height).toBeGreaterThanOrEqual(40);
+    await page.touchscreen.tap(
+      wide.x + wide.width / 2,
+      wide.y + wide.height / 2,
+    );
+    await expect(video).toHaveJSProperty('paused', true);
     expect(state.errors).toEqual([]);
   });
 });
