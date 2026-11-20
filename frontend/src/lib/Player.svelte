@@ -1329,6 +1329,28 @@
             : 'Buffering…'}
       </p>
     </div>
+  {:else if touchDevice.current && active}
+    <!-- A larger touch target for the Play/Pause control in the bar, which assistive technology already reaches. -->
+    <div
+      class="pointer-events-none absolute inset-0 z-[2] flex items-center justify-center"
+      data-sidebar-resize="xy"
+      data-sidebar-resize-origin
+    >
+      <Button
+        size="icon"
+        variant="player"
+        data-sidebar-resize="xy-pos"
+        class={`center-playback size-16 rounded-full bg-background/45 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none ${controlsShown ? 'pointer-events-auto' : 'opacity-0'}`}
+        aria-hidden="true"
+        tabindex={-1}
+        onclick={() => void toggle()}
+      >
+        {#if paused}<Play size={32} fill="currentColor" />{:else}<Pause
+            size={32}
+            fill="currentColor"
+          />{/if}
+      </Button>
+    </div>
   {/if}
 
   {#if active?.file_id && active.generation}
