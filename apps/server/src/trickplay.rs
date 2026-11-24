@@ -1,4 +1,4 @@
-//! Seek-bar previews of library videos: thumbnail sheets in Jellyfin's trickplay layout,
+//! Trickplay of library videos: thumbnail sheets in Jellyfin's trickplay layout,
 //! taken from keyframes by a background worker and kept per file version in the cache. Each
 //! sheet is taken on its own and kept, so a file interrupted by playback, a scan or a restart
 //! continues from its last sheet.
@@ -129,7 +129,7 @@ pub(crate) async fn jellyfin(
         .collect())
 }
 
-/// The web player's previews of a file version, or null before it has any.
+/// The player's trickplay of a file version, or null before it has any.
 pub(crate) async fn web(state: &AppState, p: &Principal, source: &Source) -> Result<Value> {
     let version = name(&source.id, &source.generation);
     let Some(info) = read(&root(state).join(&version)).await else {

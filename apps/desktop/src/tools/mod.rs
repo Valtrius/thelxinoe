@@ -72,7 +72,7 @@ impl ToolManager {
         lock.try_lock_exclusive().map_err(|_| {
             AppError::configuration(
                 "tools_in_use",
-                "Another Thelxinoe instance owns the tool manager.",
+                "Another Thelxinoe instance is managing the desktop tools.",
                 "Close the other instance, then retry.",
             )
         })?;

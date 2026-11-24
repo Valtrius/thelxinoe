@@ -1,17 +1,17 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import type { HTMLButtonAttributes } from 'svelte/elements';
+  import type { Provider } from '../../availability';
 
-  type Platform = 'youtube' | 'twitch' | 'kick';
   type Props = Omit<HTMLButtonAttributes, 'class'> & {
-    platform: Platform;
+    provider: Provider;
     children: Snippet;
     element?: HTMLButtonElement | null;
     class?: string;
   };
 
   let {
-    platform,
+    provider,
     children,
     element = $bindable(null),
     class: className = '',
@@ -19,7 +19,7 @@
     ...rest
   }: Props = $props();
 
-  const platformClass: Record<Platform, string> = {
+  const providerClass: Record<Provider, string> = {
     youtube:
       'hover:border-[#ff747b]/55 hover:text-[#ff747b] focus-visible:border-[#ff747b]/55 focus-visible:text-[#ff747b]',
     twitch:
@@ -31,7 +31,7 @@
 <button
   bind:this={element}
   {type}
-  class={`grid size-8 place-items-center border border-line-strong bg-background/82 text-muted [backdrop-filter:blur(5px)] disabled:cursor-not-allowed disabled:opacity-45 [&_svg]:size-4 ${platformClass[platform]} ${className}`}
+  class={`grid size-8 place-items-center border border-line-strong bg-background/82 text-muted [backdrop-filter:blur(5px)] disabled:cursor-not-allowed disabled:opacity-45 [&_svg]:size-4 ${providerClass[provider]} ${className}`}
   {...rest}
 >
   {@render children()}

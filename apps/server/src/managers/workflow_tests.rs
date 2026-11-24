@@ -649,7 +649,7 @@ async fn recreated_container_is_followed_only_with_the_same_name_mounts_and_api_
     assert_eq!(test.0, StatusCode::OK, "{}", test.2);
     assert_eq!(connected(&state, &key).await.unwrap().container, followed);
 
-    // Different storage must be reviewed before Thelxinoe uses the replacement.
+    // Different storage must be reviewed before Thelxinoe uses the recreated container.
     let changed = "d".repeat(64);
     recreate(
         &state,

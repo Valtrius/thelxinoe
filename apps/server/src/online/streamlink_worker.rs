@@ -76,15 +76,12 @@ impl Pool {
         match result {
             Ok(Ok(value)) => {
                 *slot = Some(worker);
-                ensure!(
-                    value["formats"].is_array(),
-                    "Public stream extraction failed"
-                );
+                ensure!(value["formats"].is_array(), "Public extraction failed");
                 Ok(value)
             }
             _ => {
                 worker.stop().await;
-                bail!("Public stream extraction failed or timed out")
+                bail!("Public extraction failed or timed out")
             }
         }
     }

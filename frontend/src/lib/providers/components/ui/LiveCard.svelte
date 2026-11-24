@@ -9,7 +9,7 @@
   } from '../../../ui/styles';
 
   let {
-    platform,
+    provider,
     streamId,
     channelSlug,
     displayName,
@@ -29,7 +29,7 @@
     shortcuts,
     metadata,
   }: {
-    platform: 'twitch' | 'kick';
+    provider: 'twitch' | 'kick';
     streamId?: string;
     channelSlug?: string;
     displayName: string;
@@ -63,7 +63,7 @@
       text: 'text-[#72ff43]',
     },
   };
-  const tone = $derived(tones[platform]);
+  const tone = $derived(tones[provider]);
 </script>
 
 <article

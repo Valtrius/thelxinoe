@@ -6,13 +6,13 @@ use thelxinoe_auth::lifetime;
 pub(crate) enum Cookie<'a> {
     /// The web session.
     Session,
-    /// A browser remembered after two-step sign-in, so it skips the code.
+    /// A remembered device: a browser that skips the authenticator app code.
     Remember,
     /// A browser that has signed in before, which others' failed guesses can't lock out.
     Known,
     /// Ties an identity-provider sign-in to the browser that started it.
     Oidc,
-    /// Ties YouTube account linking to the browser that started it.
+    /// Ties connecting a YouTube account to the browser that started it.
     YoutubeLink,
     /// A service's browser grant, sent only under the service's mount path.
     Service { id: &'a str, mount: &'a str },

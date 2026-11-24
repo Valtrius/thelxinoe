@@ -1,4 +1,4 @@
-//! Constrained managed-service lifecycle over the private controller socket.
+//! Constrained lifecycle of Owned media services over the private controller socket.
 use crate::{
     docker::{Failure, Result, engine, request, unavailable},
     identity::Identity,
@@ -115,7 +115,7 @@ fn id(value: &str) -> Result<()> {
     if value.len() == 36 && value.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
         Ok(())
     } else {
-        Err(bad("Invalid managed service ID"))
+        Err(bad("Invalid service ID"))
     }
 }
 fn service_path(key: &str) -> std::path::PathBuf {
@@ -203,7 +203,7 @@ fn deployment_has_kind(containers: &Value, deployment: &str, kind: &str) -> Resu
 }
 async fn ensure_kind_available(d: &Deployment, kind: &str) -> Result<Value> {
     if services()?.iter().any(|service| service.kind == kind) || transfer::active_kind(kind)? {
-        return Err(conflict("This service already has a managed installation"));
+        return Err(conflict("Thelxinoe already owns a service of this kind"));
     }
     let containers = engine("/containers/json?all=true").await?;
     let mut active = containers.clone();
@@ -230,7 +230,7 @@ async fn ensure_kind_available(d: &Deployment, kind: &str) -> Result<Value> {
                 .is_some_and(|id| retained.iter().any(|old| old == id))
         });
     if deployment_has_kind(&active, &d.id, kind)? {
-        return Err(conflict("This service already has a managed installation"));
+        return Err(conflict("Thelxinoe already owns a service of this kind"));
     }
     Ok(containers)
 }
@@ -438,7 +438,7 @@ struct Install {
     #[serde(default)]
     timezone: Option<String>,
 }
-/// The `TZ` of a managed container: the server's time zone, or UTC when it sent none.
+/// The `TZ` of an Owned service's container: the server's time zone, or UTC when it sent none.
 fn zone_env(zone: Option<&str>) -> String {
     let zone = zone.filter(|zone| {
         zone.len() <= 64
@@ -546,7 +546,7 @@ async fn install(
         .await?;
         if policy::media_source(&server).map_err(conflict)? != d.media_source {
             return Err(conflict(
-                "Server media mounts changed after deployment initialization; reconcile the deployment layout before installing managed services",
+                "Server media mounts changed after deployment initialization; reconcile the deployment layout before installing media services",
             ));
         }
     }
@@ -677,7 +677,7 @@ async fn action(
         "start" => "start",
         "stop" => "stop?t=30",
         "restart" => "restart?t=30",
-        _ => return Err(bad("Unsupported managed lifecycle action")),
+        _ => return Err(bad("Unsupported lifecycle action")),
     };
     s.phase = "changing".into();
     save(&s)?;

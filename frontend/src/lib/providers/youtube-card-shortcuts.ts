@@ -8,7 +8,7 @@ export const youtubeCardShortcutOptions = [
   { id: 'watch_toggle', label: 'Mark watched or unwatched' },
   { id: 'copy_url', label: 'Copy YouTube URL' },
   { id: 'open_browser', label: 'Open in browser' },
-  { id: 'pin_download', label: 'Pin or unpin download' },
+  { id: 'pin_download', label: 'Pin or unpin' },
   { id: 'delete_download', label: 'Delete download' },
   { id: 'add_watch_later', label: 'Add or remove from Watch Later' },
 ] as const satisfies ReadonlyArray<{

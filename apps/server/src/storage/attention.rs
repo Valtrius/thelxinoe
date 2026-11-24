@@ -16,7 +16,7 @@ fn collect(
     if admin {
         let sql = "SELECT 'job:'||id,'error','A background job failed.','jobs',id,CAST(completed_at AS TEXT)||':'||attempts,1 FROM jobs WHERE state='failed' AND completed_at>?1
           AND NOT EXISTS(SELECT 1 FROM acquisition_requests r WHERE jobs.kind='manager.request' AND r.id=jobs.subject AND r.state IN ('available','requested','denied','cancelled'))
-          UNION ALL SELECT 'service:'||id,'error','An integration is unavailable.','services',kind,generation,0 FROM manager_services WHERE enabled=1 AND error IS NOT NULL
+          UNION ALL SELECT 'service:'||id,'error','A media service is unavailable.','services',kind,generation,0 FROM manager_services WHERE enabled=1 AND error IS NOT NULL
           UNION ALL SELECT 'support:'||id,'error','A support service is unavailable.','services',kind,generation,0 FROM support_services WHERE error IS NOT NULL
           UNION ALL SELECT 'update:'||u.id,CASE WHEN u.state IN ('runtime-failure','recovery-required') THEN 'error' ELSE 'warning' END,'A service update needs attention.','services',s.kind,u.state||':'||u.updated_at,0 FROM service_updates u JOIN stack_provisions s ON s.id=u.service_id WHERE u.state IN ('blocked','failed','incompatible','unable-to-verify','runtime-failure','recovery-required')
           AND NOT EXISTS(SELECT 1 FROM service_updates n WHERE n.service_id=u.service_id AND (n.created_at>u.created_at OR (n.created_at=u.created_at AND n.rowid>u.rowid)))

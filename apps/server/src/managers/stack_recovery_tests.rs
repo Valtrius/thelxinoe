@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 
 #[tokio::test]
 async fn removal_requires_confirmation_from_controller_and_erases_configuration() {
-    let (_temp, state, cookie, key) = managed("radarr").await;
+    let (_temp, state, cookie, key) = owned("radarr").await;
     let route = format!("/api/v1/admin/stack/{key}/action");
     for can_remove in [false, true] {
         state.managers.docker.lock().unwrap().extend([
@@ -63,11 +63,11 @@ async fn removal_requires_confirmation_from_controller_and_erases_configuration(
     assert_eq!(response.0, StatusCode::OK, "{}", response.2);
 }
 
-async fn managed(kind: &'static str) -> (tempfile::TempDir, AppState, String, String) {
+async fn owned(kind: &'static str) -> (tempfile::TempDir, AppState, String, String) {
     let (temp, state, cookie) = fixture().await;
     let key = id();
     let insert_key = key.clone();
-    state.db.write("test.managed", move |db| {
+    state.db.write("test.owned", move |db| {
         db.execute("UPDATE users SET role='admin' WHERE id='alice'",[])?;
         let table = if kind == "radarr" { "manager_services" } else { "support_services" };
         db.execute(&format!("INSERT INTO {table}(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,operational) VALUES ('integration','Saved service',?1,'old',7878,'old-generation',X'01','/media','1',1,1)"),[kind])?;
@@ -81,7 +81,7 @@ async fn managed(kind: &'static str) -> (tempfile::TempDir, AppState, String, St
 #[tokio::test]
 async fn stopped_actions_skip_api_checks_but_unknown_or_running_services_do_not() {
     for kind in ["radarr", "prowlarr"] {
-        let (_temp, state, cookie, key) = managed(kind).await;
+        let (_temp, state, cookie, key) = owned(kind).await;
         for action in ["stop", "restart"] {
             for (observation, expected) in [
                 (
@@ -137,7 +137,7 @@ async fn stopped_actions_skip_api_checks_but_unknown_or_running_services_do_not(
 #[tokio::test]
 async fn accepted_replacement_reconnects_both_records_and_queues_api_verification() {
     for kind in ["radarr", "prowlarr"] {
-        let (_temp, state, cookie, key) = managed(kind).await;
+        let (_temp, state, cookie, key) = owned(kind).await;
         state.managers.docker.lock().unwrap().extend([
             (
                 "stack".into(),
@@ -195,7 +195,7 @@ async fn accepted_replacement_reconnects_both_records_and_queues_api_verificatio
 
 #[tokio::test]
 async fn retirement_preserves_history_and_releases_the_kind_for_a_new_installation() {
-    let (_temp, state, cookie, key) = managed("radarr").await;
+    let (_temp, state, cookie, key) = owned("radarr").await;
     state.db.write("test.request",|db| {
         db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES ('request','alice','integration','old-generation','42','Retained request','pending',1,1)",[])?;
         Ok(())
@@ -309,7 +309,7 @@ async fn retirement_preserves_history_and_releases_the_kind_for_a_new_installati
         verified: true,
         setup,
     };
-    // A plain connection can't take over the kind while its installation is set up.
+    // A plain connection can't claim the kind while its install is being set up.
     assert!(
         !super::super::storage::register_with_actor_write_stack_provisions(
             &state.db,
@@ -340,7 +340,7 @@ async fn retirement_preserves_history_and_releases_the_kind_for_a_new_installati
 
 #[tokio::test]
 async fn retirement_rejects_unknown_or_present_containers_without_changing_setup() {
-    let (_temp, state, cookie, key) = managed("radarr").await;
+    let (_temp, state, cookie, key) = owned("radarr").await;
     for existence in ["unknown", "present"] {
         state.managers.docker.lock().unwrap().insert(
             "stack".into(),
@@ -372,7 +372,7 @@ async fn retirement_rejects_unknown_or_present_containers_without_changing_setup
 
 #[tokio::test]
 async fn another_service_can_be_removed_while_one_service_is_busy() {
-    let (_temp, state, cookie, key) = managed("radarr").await;
+    let (_temp, state, cookie, key) = owned("radarr").await;
     let other = id();
     let insert = other.clone();
     state.db.write("test.concurrent_service", move |db| {
@@ -475,7 +475,7 @@ async fn fresh_server_rejects_recovery_of_unregistered_controller_records() {
 
 #[tokio::test]
 async fn matching_server_record_keeps_missing_container_recovery_available() {
-    let (_temp, state, cookie, key) = managed("radarr").await;
+    let (_temp, state, cookie, key) = owned("radarr").await;
     state.managers.docker.lock().unwrap().insert(
         "stack".into(),
         json!({"items":[{
@@ -492,7 +492,7 @@ async fn matching_server_record_keeps_missing_container_recovery_available() {
 
 #[tokio::test]
 async fn a_recreated_transferred_service_is_reverified_under_its_own_authority() {
-    let (_temp, state, _cookie, key) = managed("radarr").await;
+    let (_temp, state, _cookie, key) = owned("radarr").await;
     // A completed transfer: transferred provenance and no installation job of its own.
     let transferred = key.clone();
     state

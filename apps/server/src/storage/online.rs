@@ -14,7 +14,7 @@ pub(super) async fn configuration(
             )
             .optional()?
             .is_some_and(|v| v == "true");
-        let budget = db
+        let quota = db
             .query_row(
                 "SELECT value FROM settings WHERE key='youtube_daily_quota'",
                 [],
@@ -57,7 +57,7 @@ pub(super) async fn configuration(
             })
             .map(str::to_owned)
             .collect();
-        Ok((downloads, budget, network, quality, codecs))
+        Ok((downloads, quota, network, quality, codecs))
     })
     .await
 }

@@ -556,7 +556,7 @@
   {#if !customized}<p
       class="shrink-0 border-b border-line bg-accent-soft px-4 py-2 text-xs text-muted"
     >
-      Defaults update with Recyclarr upgrades.
+      Defaults change with Recyclarr service updates.
     </p>{/if}
   {#if error}<div
       class="shrink-0 border-b border-line px-4 py-2 text-xs text-danger"
@@ -650,7 +650,7 @@
         : validating
           ? 'Validating with Recyclarr…'
           : candidate
-            ? 'Candidate changes apply with the upgrade.'
+            ? 'Candidate changes apply with the service update.'
             : 'Changes apply on the next sync.'}</span
     >
     <div class="flex gap-2">

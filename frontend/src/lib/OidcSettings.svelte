@@ -59,8 +59,8 @@
 
 <SettingsCard
   id="server-identity"
-  title="OpenID Connect"
-  description="Let people sign in through your identity provider. The sign-in button label appears on the sign-in page."
+  title="Identity provider"
+  description="Let users sign in through your OpenID Connect identity provider. The sign-in button label appears on the sign-in page."
   padded
 >
   {#snippet badge()}
@@ -138,7 +138,7 @@
           /></FormField
         >{:else}<Notice variant="callout" class="col-span-full mb-0"
           >Set THELXINOE_PUBLIC_URL to the authentication hostname before
-          enabling OIDC.</Notice
+          enabling the identity provider.</Notice
         >{/if}
     </div>
     <div class="flex flex-wrap items-center gap-2">

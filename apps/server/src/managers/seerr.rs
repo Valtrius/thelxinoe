@@ -155,7 +155,7 @@ async fn user(c: &Connection<'_>, principal: &Principal) -> Result<i64> {
 
 async fn user_locked(c: &Connection<'_>, principal: &Principal) -> Result<i64> {
     let email = format!("{}@thelxinoe.invalid", principal.user.id);
-    // Numeric IDs belong to the current upstream database, never to our integration record.
+    // Numeric IDs belong to the current upstream database, never to our connection record.
     // Resolve the stable account identity even when the container and API key are unchanged.
     let found = call(
         c,
@@ -318,7 +318,7 @@ async fn recommendations(
         mark_library(&state, public(c.get(&path).await?)).await?,
     ))
 }
-/// Marks the movies and series the library already lists, own files or Radarr and
+/// Marks the movies and shows the library already lists, own files or Radarr and
 /// Sonarr titles alike.
 async fn mark_library(state: &AppState, mut page: Value) -> Result<Value> {
     let Some(results) = page.get_mut("results").and_then(Value::as_array_mut) else {
@@ -597,7 +597,7 @@ async fn request(
     let selected = if let Some(existing) = existing {
         if input.profile.is_some() && requested != Some(existing) {
             return Err(ApiError::conflict(
-                "This series already has a profile; change it in Sonarr",
+                "This show already has a profile; change it in Sonarr",
             ));
         }
         existing
@@ -840,7 +840,7 @@ INSERT INTO media_sources VALUES ('film','file');")?;
                 {"id":603,"mediaType":"movie","title":"Film"},
                 {"id":1399,"mediaType":"tv","name":"Show"},
                 {"id":1396,"mediaType":"tv","name":"Other","mediaInfo":{"tvdbId":81189}},
-                // A movie and a series may share a TMDB id.
+                // A movie and a show may share a TMDB id.
                 {"id":603,"mediaType":"tv","name":"Not the film"},
                 {"id":603,"mediaType":"person","name":"Someone"},
                 {"id":1399,"name":"Recommended show"},

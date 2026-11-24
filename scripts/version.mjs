@@ -15,7 +15,7 @@ for (const file of [
       data.version = version;
       writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
     } else
-      throw new Error(`${file}: expected shared product version ${version}`);
+      throw new Error(`${file}: expected shared release version ${version}`);
   }
 }
 // The release compose file follows `latest` and needs no version.
@@ -31,7 +31,7 @@ for (const file of [
   );
   if (text !== next) {
     if (process.argv.includes('--write')) writeFileSync(file, next);
-    else throw new Error(`${file}: expected shared product version ${version}`);
+    else throw new Error(`${file}: expected shared release version ${version}`);
   }
 }
 const rustLock = readFileSync('Cargo.lock', 'utf8');
@@ -41,7 +41,7 @@ const nextLock = rustLock.replace(
 );
 if (rustLock !== nextLock) {
   if (!process.argv.includes('--write'))
-    throw new Error('Cargo.lock: product versions are out of sync');
+    throw new Error('Cargo.lock: release versions are out of sync');
   writeFileSync('Cargo.lock', nextLock);
 }
 const dockerfile = readFileSync('Dockerfile', 'utf8');
@@ -51,7 +51,7 @@ const nextDockerfile = dockerfile.replace(
 );
 if (dockerfile !== nextDockerfile) {
   if (!process.argv.includes('--write'))
-    throw new Error('Dockerfile: product version is out of sync');
+    throw new Error('Dockerfile: release version is out of sync');
   writeFileSync('Dockerfile', nextDockerfile);
 }
 // A release ships the current database schema, which then never changes: pin its digest.
@@ -74,4 +74,4 @@ if (process.argv.includes('--write')) {
     writeFileSync(pins, `${pinned}${digest}  ${schema}.sql\n`);
   }
 }
-console.log(`Product version ${version}`);
+console.log(`Release version ${version}`);

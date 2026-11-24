@@ -176,7 +176,7 @@
     tapRevealsControls = false;
   let audibleVolume = 1;
   let lastSubtitle: string | null = null;
-  // Until the viewer picks one, the server chooses the subtitle for the audio that plays.
+  // Until the user picks one, the server chooses the subtitle for the audio that plays.
   let subtitleChosen = false;
   // Seconds the subtitles show later, for this playback only.
   let subtitleOffset = $state(0),
@@ -414,7 +414,7 @@
     }
   }
   function setSubtitle(value: string) {
-    // A conversion burns a picture subtitle in, so changing one starts it again.
+    // A transcode burns a picture subtitle in, so changing one starts it again.
     const burned = (id: string) =>
       active?.subtitles.some((track) => track.id === id && !track.url);
     const restart = burned(value) || burned(subtitle);
@@ -462,7 +462,7 @@
     const selected = [lastSubtitle, active?.selected_subtitle]
       .filter((id): id is string => !!id && id !== 'off')
       .find((id) => subtitles.some((track) => track.id === id));
-    // A picture subtitle would start a conversion; a text one shows at once.
+    // A picture subtitle would start a transcode; a text one shows at once.
     setSubtitle(
       selected ?? (subtitles.find((track) => track.url) ?? subtitles[0]).id,
     );
@@ -900,7 +900,7 @@
       });
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (!data.fatal || active !== session) return;
-        // A conversion that died, such as on a failed GPU, restarts once where it stopped.
+        // A transcode that died, such as on a failed GPU, restarts once where it stopped.
         if (
           restarted !== session.id &&
           session.mode !== 'direct' &&
@@ -1242,7 +1242,8 @@
     onended={() => void end()}
     onerror={() => {
       if (active)
-        error = 'Unable to play this media. Select Auto quality to convert it.';
+        error =
+          'Unable to play this media. Select Auto quality to transcode it.';
     }}
   >
     {#each active?.subtitles ?? [] as track (track.id)}
@@ -1493,12 +1494,12 @@
             title={active.conversion_reason ?? undefined}
             >{deliveredQuality ? `${deliveredQuality} · ` : ''}{active.mode ===
             'direct'
-              ? 'Original'
+              ? 'Direct play'
               : active.mode === 'remux'
                 ? 'Remuxed'
                 : active.encoding?.video !== false
-                  ? 'Video converted'
-                  : 'Audio converted'}{info?.watched ? ' · Watched' : ''}</span
+                  ? 'Video transcoded'
+                  : 'Audio transcoded'}{info?.watched ? ' · Watched' : ''}</span
           >{/if}
       </div>
       <div class="control-spacer flex-1"></div>

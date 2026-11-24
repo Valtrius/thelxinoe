@@ -38,7 +38,7 @@ struct RemoteWork {
     end: usize,
     task: tokio::task::JoinHandle<WindowEnd>,
 }
-/// How a window's conversion ended. It hands its slot back to the software conversion that
+/// How a window's transcode ended. It hands its slot back to the software transcode that
 /// replaces a failed GPU.
 struct WindowEnd {
     result: Result<()>,
@@ -206,7 +206,7 @@ impl VodCache {
         tools.ffprobe.verify_unchanged().await?;
         let duration = source.duration();
         if !duration.is_finite() || !(0.0..=86400.0).contains(&duration) || duration == 0.0 {
-            bail!("Seekable conversion requires a duration of at most 24 hours");
+            bail!("Seekable remux and transcode require a duration of at most 24 hours");
         }
         // Remote windows prepare adjacent segments over the same connection.
         // Six-second segments also keep conversion overhead bounded on TVs.
@@ -217,7 +217,7 @@ impl VodCache {
                     .slots
                     .clone()
                     .try_acquire_owned()
-                    .context("All conversion slots are busy")?;
+                    .context("All remux and transcode slots are busy")?;
                 keyframes(source, &tools, Some(remote), Duration::from_secs(30)).await
             } else {
                 self.index(source, &tools).await
@@ -236,10 +236,10 @@ impl VodCache {
         self.stop(id).await;
         let mut runs = self.runs.lock().await;
         if runs.len() >= 4 {
-            bail!("All four seekable conversion sessions are busy");
+            bail!("All four seekable remux and transcode sessions are busy");
         }
         if fs2::available_space(&self.root)? < 1024 * 1024 * 1024 {
-            bail!("Conversion requires at least 1 GB of free cache space");
+            bail!("Remuxing and transcoding require at least 1 GB of free cache space");
         }
         let revision = uuid::Uuid::new_v4().to_string();
         let directory = self.root.join(&revision);
@@ -362,7 +362,7 @@ impl VodCache {
             run.source.validate().await?;
         }
         if fs2::available_space(&run.directory)? < 512 * 1024 * 1024 {
-            bail!("Insufficient conversion cache space");
+            bail!("Insufficient cache space to remux or transcode");
         }
         let _slot = match slot {
             Some(slot) => slot,
@@ -370,7 +370,7 @@ impl VodCache {
                 .slots
                 .clone()
                 .try_acquire_owned()
-                .context("All conversion slots are busy")?,
+                .context("All remux and transcode slots are busy")?,
         };
         // The gate makes this the directory's only conversion. Dropped after the children
         // below, so a killed conversion's output goes too.
@@ -514,7 +514,7 @@ impl VodCache {
         let watch = Watch::new(&mut child);
         let status = tokio::select! {
             result=tokio::time::timeout(Duration::from_secs(40),child.wait()) =>
-                result.context("Segment conversion timed out").and_then(|r|r.map_err(Into::into)),
+                result.context("Segment remux or transcode timed out").and_then(|r|r.map_err(Into::into)),
             _=canceled.changed()=>Err(anyhow::anyhow!("Playback was stopped")),
             result=monitor_work(&run.directory)=>Err(result),
         };
@@ -713,7 +713,7 @@ impl VodCache {
                         return Ok(path);
                     }
                     match end.result {
-                        // Software converts from the requested segment on, leaving what the
+                        // Software transcodes from the requested segment on, leaving what the
                         // GPU published with its own initialization.
                         Err(error) if end.gpu_failed => {
                             self.hardware.failed(id, &format!("{error:#}"));
@@ -729,7 +729,7 @@ impl VodCache {
         .await
         .context("Public video segment timed out")?
     }
-    /// Converts at most 48 seconds of a public video from segment `index` over one
+    /// Transcodes at most 48 seconds of a public video from segment `index` over one
     /// connection, publishing each segment as soon as it is ready.
     fn window(
         &self,
@@ -741,7 +741,7 @@ impl VodCache {
         let remote = run.remote.as_ref().unwrap();
         remote.validate()?;
         if fs2::available_space(&run.directory)? < 512 * 1024 * 1024 {
-            bail!("Insufficient conversion cache space");
+            bail!("Insufficient cache space to remux or transcode");
         }
         let slot = match slot {
             Some(slot) => slot,
@@ -749,7 +749,7 @@ impl VodCache {
                 .slots
                 .clone()
                 .try_acquire_owned()
-                .context("All conversion slots are busy")?,
+                .context("All remux and transcode slots are busy")?,
         };
         let end = (index + 8).min(run.boundaries.len() - 1);
         let start = run.boundaries[index];
@@ -761,7 +761,7 @@ impl VodCache {
         let gpu = hardware.is_some();
         let mut child = window_command(run, remote, index, start, duration, hardware.as_ref())?
             .spawn()
-            .context("Start public video conversion")?;
+            .context("Start public video transcode")?;
         let watch = Watch::new(&mut child);
         let mut canceled = run.canceled.subscribe();
         let directory = run.directory.clone();
@@ -776,7 +776,7 @@ impl VodCache {
             let mut stopped = false;
             let result = tokio::select! {
                 result = tokio::time::timeout(Duration::from_secs(60), child.wait()) =>
-                    result.context("Public video conversion timed out").and_then(|r| r.map_err(Into::into)),
+                    result.context("Public video transcode timed out").and_then(|r| r.map_err(Into::into)),
                 _ = canceled.changed() => {
                     stopped = true;
                     Err(anyhow::anyhow!("Playback was stopped"))
@@ -864,7 +864,7 @@ impl VodCache {
         Ok(removed)
     }
 }
-/// The FFmpeg command converting at most 48 seconds of a public video from segment `index`,
+/// The FFmpeg command transcoding at most 48 seconds of a public video from segment `index`,
 /// publishing each segment as soon as it is ready.
 fn window_command(
     run: &Run,
@@ -1192,7 +1192,7 @@ async fn keyframes(
     result.push(duration);
     if result.windows(2).any(|s| s[1] - s[0] > 30.0) {
         bail!(
-            "Keyframes are too far apart for seekable remux; select a lower quality to convert video"
+            "Keyframes are too far apart for seekable remux; select a lower quality to transcode the video"
         );
     }
     Ok((result, video_start))
@@ -1252,7 +1252,7 @@ async fn monitor_work(directory: &Path) -> anyhow::Error {
         .await;
         match size {
             Ok(size) if size < 192 * 1024 * 1024 => {}
-            Ok(_) => return anyhow::anyhow!("Conversion work exceeds its cache limit"),
+            Ok(_) => return anyhow::anyhow!("Remux or transcode work exceeds its cache limit"),
             Err(error) => return error,
         }
     }

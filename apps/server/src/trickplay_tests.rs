@@ -187,7 +187,7 @@ fn difference(a: &image::RgbImage, b: &image::RgbImage) -> u64 {
         .map(|(a, b)| u64::from(a.abs_diff(*b)))
         .sum()
 }
-/// A scan, the library work previews wait for.
+/// A scan, the library work trickplay waits for.
 const DUE_JOB: &str = "INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES ('scan','library.scan','movies','{}','queued',1,1)";
 
 #[tokio::test]

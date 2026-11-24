@@ -101,7 +101,7 @@ async function setup(
     });
   await page.goto('/');
   await expect.poll(events.connected).toBe(true);
-  const version = page.getByLabel('Product version', { exact: true });
+  const version = page.getByLabel('Server version', { exact: true });
   await expect(
     version.getByRole('button', {
       name: `Update server to ${next}`,
@@ -255,7 +255,7 @@ test('server settings keep their layout through update states and maintenance re
     page.evaluate(() =>
       Object.fromEntries(
         [
-          'Product version',
+          'Server version',
           'Server update settings',
           'Server display defaults',
           'Administration overview',

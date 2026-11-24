@@ -849,7 +849,7 @@ export async function settingsApi(s, c) {
   );
   if (retention) {
     const item = s.retention.items.find((item) => item.id === retention[1]);
-    if (!item) return fail(404, 'Retention entry not found');
+    if (!item) return fail(404, 'Scheduled deletion not found');
     item.state = {
       keep: 'kept',
       cancel: 'cancelled',
@@ -983,7 +983,7 @@ export async function settingsApi(s, c) {
   return false;
 }
 
-// A Jellyfin with four accounts; the first two match people here by name.
+// A Jellyfin with four accounts; the first two match users here by name.
 function jellyfinImportApi(s, c) {
   const { path, method, body, json, fail } = c;
   const state = s.jellyfinImport;

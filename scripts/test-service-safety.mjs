@@ -74,14 +74,14 @@ async function scenario(name, run) {
   }
 }
 /** Review a Connected service's transfer without approving it, then close the review. */
-async function reviewOnly(attached) {
-  const { review } = await f.transfer(attached.id, { approve: false });
+async function reviewOnly(connected) {
+  const { review } = await f.transfer(connected.id, { approve: false });
   await f.api(`/admin/transfers/${review.id}/cancel`, 'POST');
   return review;
 }
-async function forget(attached) {
-  await f.api(`/admin/services/${attached.id}/forget`, 'POST');
-  docker('rm', '-f', attached.container);
+async function forget(connected) {
+  await f.api(`/admin/services/${connected.id}/forget`, 'POST');
+  docker('rm', '-f', connected.container);
 }
 function backupStage(id) {
   try {
@@ -135,7 +135,7 @@ try {
         const config =
           layout === 'media-contains-config' ? `${source}/config` : source;
         mkdirSync(media, { recursive: true });
-        const attached = await f.attach(
+        const connected = await f.connect(
           'radarr',
           '/existing-radarr',
           imageManifest.services.radarr,
@@ -144,45 +144,45 @@ try {
             mediaMounts: [{ source: media, destination: '/movies' }],
           },
         );
-        const before = startedAt(attached.container);
-        const review = await reviewOnly(attached);
+        const before = startedAt(connected.container);
+        const review = await reviewOnly(connected);
         expect(review.review.blockers.join(' ')).toMatch(/overlaps/);
         // Nothing stops or copies while the layout is unsupported.
-        expect(startedAt(attached.container)).toBe(before);
+        expect(startedAt(connected.container)).toBe(before);
         expect(
-          JSON.parse(docker('inspect', attached.container))[0].State.Running,
+          JSON.parse(docker('inspect', connected.container))[0].State.Running,
         ).toBe(true);
         expect((await f.stack()).provisions).toEqual([]);
-        await forget(attached);
+        await forget(connected);
       },
     );
   }
   await scenario(
     'an auto-remove original is rejected at review and keeps running',
     async () => {
-      const attached = await f.attach(
+      const connected = await f.connect(
         'radarr',
         '/existing-radarr',
         imageManifest.services.radarr,
         { existingLayout: true, autoRemove: true },
       );
-      const before = startedAt(attached.container);
-      const review = await reviewOnly(attached);
+      const before = startedAt(connected.container);
+      const review = await reviewOnly(connected);
       expect(review.review.blockers.join(' ')).toContain('auto-remove');
-      expect(startedAt(attached.container)).toBe(before);
-      await forget(attached);
+      expect(startedAt(connected.container)).toBe(before);
+      await forget(connected);
     },
   );
   await scenario(
     'transferred state is backed up and restored only when chosen while the original stays untouched',
     async () => {
-      const attached = await f.attach(
+      const connected = await f.connect(
         'radarr',
         '/existing-radarr',
         imageManifest.services.radarr,
         { existingLayout: true },
       );
-      const { view } = await f.transfer(attached.id);
+      const { view } = await f.transfer(connected.id);
       expect(view.state, view.error ?? '').toBe('complete');
       const provision = (await f.api('/admin/services')).items.find(
         (item) => item.kind === 'radarr',
@@ -192,7 +192,7 @@ try {
           .container_id;
       const marker = async () =>
         docker('exec', await replacement(), 'cat', '/config/safety-marker');
-      const original = f.appdataDigest(attached.appdata);
+      const original = f.appdataDigest(connected.appdata);
       docker(
         'exec',
         '-u',
@@ -257,7 +257,7 @@ try {
         )
         .toBe('operation.json');
       // Backups and restores never touch the retained original's appdata.
-      expect(f.appdataDigest(attached.appdata)).toBe(original);
+      expect(f.appdataDigest(connected.appdata)).toBe(original);
       await healthy();
     },
   );

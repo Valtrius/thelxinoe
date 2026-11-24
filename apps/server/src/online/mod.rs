@@ -200,10 +200,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/api/v1/online/{provider}/authorization",
             axum::routing::delete(presentation::cancel),
         )
-        .route(
-            "/api/v1/online/{provider}/sync",
-            post(presentation::refresh),
-        )
+        .route("/api/v1/online/{provider}/sync", post(presentation::sync))
         .route(
             "/api/v1/online/youtube/resolve",
             post(presentation::resolve),
@@ -302,14 +299,13 @@ async fn google(state: &AppState) -> Result<Google> {
     Ok(client)
 }
 fn redirect_uri(state: &AppState) -> Result<String> {
-    let base =
-        state.config.public_url.as_ref().ok_or_else(|| {
-            ApiError::bad("Set THELXINOE_PUBLIC_URL before linking online accounts")
-        })?;
+    let base = state.config.public_url.as_ref().ok_or_else(|| {
+        ApiError::bad("Set THELXINOE_PUBLIC_URL before connecting online accounts")
+    })?;
     let loopback = matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
     if base.scheme() != "https" && !loopback {
         return Err(ApiError::bad(
-            "Online account linking requires an HTTPS public URL (HTTP localhost is allowed for development)",
+            "Connecting an online account requires an HTTPS public URL (HTTP localhost is allowed for development)",
         ));
     }
     Ok(format!(

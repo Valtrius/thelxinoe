@@ -127,7 +127,7 @@ async fn search(
     };
     Ok(Json(json!({"service":s.name,"local":local,"items":rows})))
 }
-/// Marks the albums the library holds and the viewer's latest request for each.
+/// Marks the albums the library holds and the user's latest request for each.
 pub(super) async fn decorate(
     state: &AppState,
     user: &str,

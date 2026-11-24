@@ -630,10 +630,10 @@ async fn season_requires_complete_confirmed_aired_metadata_and_all_selected_user
         db.execute("UPDATE media SET metadata=json_set(metadata,'$.status','Returning Series') WHERE id='show'",[])?;
         assert!(eligibility(db,"season")?.is_none(),"An airing season needs evidence of completion");
         db.execute("UPDATE media SET metadata=json_set(metadata,'$.status','Ended','$.seasons[0].episode_count',3) WHERE id='show'",[])?;
-        assert!(eligibility(db,"season")?.is_none(),"Missing episodes block retention");
+        assert!(eligibility(db,"season")?.is_none(),"Missing episodes block auto-delete");
         assert!(matches!(storage::assess(db,"season")?,storage::Assessment::Ineligible));
         db.execute("UPDATE media SET metadata=json_set(metadata,'$.seasons[0].episode_count',2,'$.refreshed_at',0) WHERE id='show'",[])?;
-        assert!(eligibility(db,"season")?.is_none(),"Stale manager metadata blocks retention");
+        assert!(eligibility(db,"season")?.is_none(),"Stale manager metadata blocks auto-delete");
         assert!(matches!(storage::assess(db,"season")?,storage::Assessment::Waiting(_)),"Stale metadata only postpones it");
         db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES ('second','ret-root','second','first',1,'1','1','{}','managed',1)",[])?;
         db.execute("UPDATE media_sources SET file_id='second' WHERE media_id='e2'",[])?;
@@ -644,7 +644,7 @@ async fn season_requires_complete_confirmed_aired_metadata_and_all_selected_user
     }).await.unwrap();
 }
 
-// Hundreds of movies, seasons and downloads can wait at once. The admin sees every one, the
+// Hundreds of movies, seasons and downloads can wait at once. The administrator sees every one, the
 // next to go first, while the outcomes that only accumulate stay the latest ones.
 #[tokio::test]
 async fn every_scheduled_deletion_is_listed_soonest_first() {

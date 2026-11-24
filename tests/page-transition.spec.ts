@@ -134,11 +134,11 @@ test('settings sections, service tabs and detail pages also transition without l
     ['Devices', 'Living room desktop'],
     ['Server', '2026.09.30'],
     ['Episode analysis', 'Beyond the Horizon · S01E01'],
-    ['Provider applications', 'Daily API budget'],
+    ['Provider applications', 'Daily API quota'],
     ['Media services', 'Seerr'],
     ['Auto-delete', 'Video downloads'],
     ['Backups', 'thelxinoe-preview-0.tar.age'],
-    ['People', 'Alex'],
+    ['Users', 'Alex'],
     ['Jobs', 'Scan library'],
     ['Audit', 'Created a user'],
   ]) {

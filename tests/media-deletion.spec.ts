@@ -19,7 +19,7 @@ async function installSeries(
   const series = {
     id: 'series',
     kind: 'show',
-    title: 'Fixture series',
+    title: 'Fixture show',
     parent_id: null as string | null,
     sort_number: null as number | null,
     available: false,
@@ -140,17 +140,17 @@ async function installSeries(
 async function openSeries(page: Page) {
   await page.goto('/');
   await page
-    .getByRole('heading', { name: 'Fixture series', exact: true })
+    .getByRole('heading', { name: 'Fixture show', exact: true })
     .click();
   await expect(
-    page.getByRole('heading', { level: 1, name: 'Fixture series' }),
+    page.getByRole('heading', { level: 1, name: 'Fixture show' }),
   ).toBeVisible();
 }
 
-async function deletion(page: Page, scope: 'season' | 'series') {
+async function deletion(page: Page, scope: 'season' | 'show') {
   await page
     .getByRole('button', {
-      name: `More actions for ${scope === 'season' ? 'Season 1' : 'Fixture series'}`,
+      name: `More actions for ${scope === 'season' ? 'Season 1' : 'Fixture show'}`,
       exact: true,
     })
     .click();
@@ -168,7 +168,7 @@ const playable = (page: Page, number: number, title: string) =>
     exact: true,
   });
 
-for (const scope of ['season', 'series'] as const) {
+for (const scope of ['season', 'show'] as const) {
   test(`delete a ${scope} keeps its catalogue and removes only its files`, async ({
     page,
   }, testInfo) => {
@@ -189,7 +189,7 @@ for (const scope of ['season', 'series'] as const) {
     await expect(dialog).toHaveCount(0);
     await page.reload();
     await expect(
-      page.getByRole('heading', { level: 1, name: 'Fixture series' }),
+      page.getByRole('heading', { level: 1, name: 'Fixture show' }),
     ).toBeVisible();
     await page.getByRole('tab', { name: 'Season 1', exact: true }).click();
     await expect(
@@ -233,7 +233,7 @@ test('a deletion prepared after its dialog closed is never offered', async ({
     await route.fallback();
   });
   try {
-    const dialog = await deletion(page, 'series');
+    const dialog = await deletion(page, 'show');
     await expect.poll(() => requested).toBe(true);
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(dialog).toHaveCount(0);
@@ -326,16 +326,16 @@ test('a rejected season deletion shows the error and keeps episodes playable', a
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('members can browse series and seasons without administration actions', async ({
+test('members can browse shows and seasons without administration actions', async ({
   page,
 }, testInfo) => {
   const fixture = await installSeries(page, 'user');
   await openSeries(page);
   await expect(playable(page, 1, 'Episode 1.1')).toBeVisible();
-  // The series page shows Watch Later and Favorite itself, leaving members no menu.
+  // The show's page has Watch Later and Favorite itself, leaving members no menu.
   await expect(
     page.getByRole('button', {
-      name: 'More actions for Fixture series',
+      name: 'More actions for Fixture show',
       exact: true,
     }),
   ).toHaveCount(0);

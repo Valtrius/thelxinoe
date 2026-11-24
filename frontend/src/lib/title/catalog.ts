@@ -24,14 +24,14 @@ export type CatalogItem = {
   backdrop_url?: string | null;
   status?: TitleStatus | null;
   keep?: boolean;
-  /** The season or series whose Keep covers this item (administrators only). */
+  /** The season or show whose Keep covers this item (administrators only). */
   kept_by?: 'show' | 'season' | null;
   /** Kept seasons and episodes inside this item (administrators only). */
   kept_within?: number;
   files?: CatalogFile[];
   watched?: boolean;
   virtual?: boolean;
-  /** A series no more episodes will air for. */
+  /** A show no more episodes will air for. */
   ended?: boolean;
 };
 export type Flags = {
@@ -106,13 +106,13 @@ export const setWatched = (id: string, watched: boolean, through = false) =>
 
 /**
  * Why Keep stops file changes to this item, or '' when nothing does. Keep on the
- * item, on its season or series, or on anything inside it blocks deleting and
+ * item, on its season or show, or on anything inside it blocks deleting and
  * monitoring changes.
  */
 export function keptReason(item: CatalogItem) {
-  const scope = item.kind === 'show' ? 'series' : item.kind;
+  const scope = item.kind;
   if (item.kept_by)
-    return `Keep is on for the whole ${item.kept_by === 'show' ? 'series' : 'season'}. Turn it off there first.`;
+    return `Keep is on for the whole ${item.kept_by === 'show' ? 'show' : 'season'}. Turn it off there first.`;
   if (item.keep) return 'Keep is on. Turn it off first.';
   const inside = item.kept_within ?? 0;
   if (inside)
@@ -120,7 +120,7 @@ export function keptReason(item: CatalogItem) {
   return '';
 }
 
-/** An episode named after its file repeats the series name; leave it out. */
+/** An episode named after its file repeats the show's name; leave it out. */
 export const episodeLabel = (title: string, show: string) =>
   show && title.startsWith(`${show} · `) ? title.slice(show.length + 3) : title;
 
@@ -133,8 +133,8 @@ export const metadataNumber = (item: CatalogItem | null, key: string) => {
   return typeof value === 'number' && value > 0 ? value : undefined;
 };
 
-/** Walk from a season or episode to its series. */
-export async function seriesOf(item: CatalogItem) {
+/** Walk from a season or episode to its show. */
+export async function showOf(item: CatalogItem) {
   let current = item;
   const chain: CatalogItem[] = [];
   while (current.kind !== 'show' && current.parent_id) {

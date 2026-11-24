@@ -4,5 +4,5 @@
 </script>
 
 <YoutubeSettings />
-<ProviderApplicationSettings platform="twitch" />
-<ProviderApplicationSettings platform="kick" />
+<ProviderApplicationSettings provider="twitch" />
+<ProviderApplicationSettings provider="kick" />

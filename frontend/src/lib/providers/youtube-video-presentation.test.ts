@@ -46,7 +46,9 @@ describe('YouTube download format', () => {
   ])('names %o %s', (format, label) => {
     const presentation = downloaded(format);
     expect(presentation.downloadFormatLabel).toBe(label);
-    expect(presentation.readyDownloadTitle).toBe(`540 MB local · ${label}`);
+    expect(presentation.readyDownloadTitle).toBe(
+      `540 MB downloaded · ${label}`,
+    );
   });
 
   it('has no format without a probed picture', () => {

@@ -84,7 +84,7 @@ pub(super) async fn store(
     db.write("segments.analysis.store", move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let current=tx.query_row("SELECT present AND generation=?2 FROM media_files WHERE id=?1",params![src.id,src.generation],|r|r.get::<_,bool>(0))?;
-        anyhow::ensure!(current,"Media generation changed during analysis");
+        anyhow::ensure!(current,"File version changed during analysis");
         tx.execute("DELETE FROM media_segments WHERE media_id=?1 AND file_id=?2 AND generation=?3 AND source=?4 AND (?5 IS NULL OR kind=?5)",params![src.media_id,src.id,src.generation,origin,kind])?;
         for segment in segments {insert(&tx,&src,&segment,origin)?;}
         tx.commit()?;Ok(())

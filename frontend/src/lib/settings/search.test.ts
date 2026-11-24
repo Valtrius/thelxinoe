@@ -51,7 +51,7 @@ describe('settings search', () => {
     ]);
   });
 
-  it('only searches the pages this person can open', () => {
+  it('only searches the pages this user can open', () => {
     expect(search('transcoding', pagesFor('user'))).toEqual([]);
     expect(search('nothing like this')).toEqual([]);
   });

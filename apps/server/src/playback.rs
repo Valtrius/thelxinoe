@@ -190,7 +190,7 @@ pub(crate) async fn create_with_delivery(
             })
             .and_then(|t| t.index);
     }
-    // Only text subtitles show by default: a picture one needs a conversion, which the viewer
+    // Only text subtitles show by default: a picture one needs a transcode, which the viewer
     // asks for by choosing it.
     if input.options.subtitle.is_none() {
         let preferred = tracks.iter().find(|t| {
@@ -276,7 +276,7 @@ pub(crate) async fn create_with_delivery(
             }
         }
     };
-    // A picture subtitle has no file: a conversion burns it in.
+    // A picture subtitle has no file: a transcode burns it in.
     let subtitles:Vec<_>=tracks.iter().filter(|t|shown(t)).map(|t|json!({"id":t.id,"language":t.language,"title":t.title,"codec":t.codec,"forced":t.forced,"url":t.supported.then(||format!("/api/v1/playback/{sid}/subtitles/{}?grant={grant}",t.id))})).collect();
     let fonts: Vec<_> = thelxinoe_playback::font_attachments(&source.probe)
         .into_iter()
@@ -342,7 +342,7 @@ pub async fn stream(
     let (p, _) = from_grant(&state, &id, &grant.grant).await?;
     serve_file(&state, &p, &id, request).await
 }
-/// Serves the local file of `p`'s play session `id`, byte ranges included, for callers that
+/// Serves the media file of `p`'s playback session `id`, byte ranges included, for callers that
 /// have already authorized the request.
 pub(crate) async fn serve_file(
     state: &AppState,
@@ -518,7 +518,7 @@ pub struct Progress {
     pub sequence: i64,
     pub position: f64,
     pub state: String,
-    /// Cumulative active wall seconds. Compatibility clients omit this field.
+    /// Cumulative active wall seconds. Jellyfin clients omit this field.
     pub active_seconds: Option<f64>,
 }
 pub async fn progress(
@@ -643,7 +643,7 @@ pub async fn subtitle(
     .map_err(|_| ApiError::conflict("Subtitle conversion timed out"))??;
     Ok(([(header::CONTENT_TYPE, content_type)], output).into_response())
 }
-/// A font attached to the file of a play session, for its styled subtitles.
+/// A font attached to the file of a playback session, for its styled subtitles.
 pub async fn font(
     State(state): State<AppState>,
     Path((id, index)): Path<(String, i64)>,
@@ -677,7 +677,7 @@ pub(crate) async fn fail(state: &AppState, id: &str) -> anyhow::Result<()> {
     storage::fail(id, &state.db).await
 }
 pub async fn maintain(state: AppState) -> anyhow::Result<()> {
-    // Process state cannot survive a server restart, but resume records do.
+    // Process state cannot survive a server restart, but resume points do.
     storage::maintain_write_playback_sessions(&state.db).await?;
     loop {
         tokio::time::sleep(Duration::from_secs(10)).await;

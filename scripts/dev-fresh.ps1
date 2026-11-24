@@ -14,7 +14,7 @@ $cargoCommand = (Get-Command cargo.exe -ErrorAction Stop).Source
 $webRoot = Join-Path $repoRoot 'frontend/dist'
 
 if ($SkipBuild -and -not (Test-Path -LiteralPath (Join-Path $webRoot 'index.html'))) {
-    throw 'The frontend has not been built. Run without -SkipBuild first.'
+    throw 'The web app has not been built. Run without -SkipBuild first.'
 }
 
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
@@ -64,7 +64,7 @@ try {
     if (-not $SkipBuild) {
         & $pnpmCommand run build:web
         if ($LASTEXITCODE -ne 0) {
-            throw "Frontend build failed (exit $LASTEXITCODE)."
+            throw "Web app build failed (exit $LASTEXITCODE)."
         }
     }
 

@@ -227,7 +227,7 @@ pub(super) async fn preflight(
                 | "superseded"
         )
     }) {
-        return Err(conflict("Recover the unfinished product update first"));
+        return Err(conflict("Recover the unfinished server update first"));
     }
     let source = policy::host_path(
         mount(&current, "/var/lib/thelxinoe")?["Source"]
@@ -1345,7 +1345,7 @@ async fn accepted(own: &str) -> anyhow::Result<bool> {
 }
 /// Compose recreates the containers after `docker compose pull`, a rebuild or an
 /// edited `.env`. Adopt them as the next generation of this deployment, so
-/// installed and transferred services stay registered, when they keep its
+/// Owned services, installed or transferred, stay Owned, when they keep its
 /// storage, Docker access, network and media; otherwise stop with the reason.
 /// Runs before this controller takes the writer role.
 pub(crate) async fn adopt_local(runtime: &std::path::Path) -> anyhow::Result<()> {
@@ -1769,7 +1769,7 @@ fn settled(stage: &str) -> bool {
 fn unsettled() -> Result<Option<String>> {
     let attempts = all()?;
     if attempts.iter().any(|u| !settled(&u.stage)) {
-        return Ok(Some("Finish or recover the product update first".into()));
+        return Ok(Some("Finish or recover the server update first".into()));
     }
     if let Some(u) = attempts.iter().find(|u| unrestored(u)) {
         return Ok(Some(format!(

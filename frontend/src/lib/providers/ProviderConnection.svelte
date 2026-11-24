@@ -5,14 +5,14 @@
   import SetupLink from './SetupLink.svelte';
 
   let {
-    platform,
+    provider,
     admin,
     configured,
     onConfigured,
     onConnect,
     connecting = false,
   }: {
-    platform: 'youtube' | 'twitch' | 'kick';
+    provider: 'youtube' | 'twitch' | 'kick';
     admin: boolean;
     configured: boolean;
     onConfigured: () => void;
@@ -23,19 +23,19 @@
 
 <section
   class="provider-setup border border-line bg-surface p-4 shadow-panel sm:p-6"
-  aria-label={`${platform} connection guide`}
+  aria-label={`${provider} connection guide`}
 >
   <div
     class="mx-auto max-w-3xl [&_.panel]:mb-0 [&_.panel]:border-0 [&_.panel]:bg-transparent [&_.panel]:p-0"
   >
     <h2 class="text-xl">
-      {platform === 'youtube'
+      {provider === 'youtube'
         ? 'Connect YouTube'
-        : platform === 'twitch'
+        : provider === 'twitch'
           ? 'Connect Twitch'
           : 'Track Kick channels'}
     </h2>
-    {#if platform === 'kick'}
+    {#if provider === 'kick'}
       <ol class="my-4 list-decimal space-y-2 pl-5 text-sm leading-6 text-muted">
         <li>
           Find a public channel on <SetupLink href="https://kick.com/"
@@ -54,7 +54,7 @@
       </ol>
     {:else if configured}
       <p class="my-4 text-sm leading-6 text-muted">
-        {#if platform === 'youtube'}
+        {#if provider === 'youtube'}
           Choose Connect YouTube, sign in to Google and approve read-only
           YouTube access. If the server opens in your browser, sign in to
           Thelxinoe there first and choose Connect YouTube again. Return here
@@ -67,30 +67,30 @@
       </p>
     {:else if !admin}
       <p class="my-4 text-sm leading-6 text-muted">
-        Ask your Thelxinoe administrator to configure {platform === 'youtube'
+        Ask your Thelxinoe administrator to configure {provider === 'youtube'
           ? 'the Google application and public server URL'
           : 'a Public Twitch application'} in Settings → Provider applications. Once
         ready, return here to connect your own account.
       </p>
     {/if}
-    {#if onConnect && (configured || platform === 'kick')}
+    {#if onConnect && (configured || provider === 'kick')}
       <Button onclick={onConnect} loading={connecting}
-        >{platform === 'youtube'
+        >{provider === 'youtube'
           ? 'Connect YouTube'
-          : platform === 'twitch'
+          : provider === 'twitch'
             ? 'Connect Twitch'
             : 'Manage channels'}</Button
       >
     {/if}
     {#if !configured}
-      {#if platform === 'kick'}
+      {#if provider === 'kick'}
         <details class="mt-4 text-sm">
           <summary class="cursor-pointer text-muted"
             >Optional: show live status, titles and thumbnails</summary
           >
           {#if admin}
             <div class="mt-3">
-              <ProviderApplicationSettings platform="kick" {onConfigured} />
+              <ProviderApplicationSettings provider="kick" {onConfigured} />
             </div>
           {:else}
             <p class="mt-3 text-muted">
@@ -102,10 +102,10 @@
         </details>
       {:else if admin}
         <div class="mt-4 [&_.panel>h2]:hidden">
-          {#if platform === 'youtube'}
+          {#if provider === 'youtube'}
             <YoutubeSettings {onConfigured} />
           {:else}
-            <ProviderApplicationSettings platform="twitch" {onConfigured} />
+            <ProviderApplicationSettings provider="twitch" {onConfigured} />
           {/if}
         </div>
       {/if}

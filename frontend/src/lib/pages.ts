@@ -141,7 +141,7 @@ export async function preloadPage(route: AppRoute) {
   else if (route.section === 'Music') await pages.music();
   else if (['Movies', 'Shows'].includes(route.section)) await pages.library();
   else if (route.section === 'Statistics') await pages.statistics();
-  // The platform's view loads beside its page, not once the account arrives.
+  // The provider's view loads beside its page, not once the account arrives.
   else
     await Promise.all([
       pages.providers(),

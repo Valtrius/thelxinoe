@@ -239,7 +239,9 @@ test('Twitch keeps loading until the first followed snapshot arrives', async ({
     in_progress: true,
   };
   await page.goto('/');
-  const loading = page.getByRole('status', { name: 'Loading Twitch streams' });
+  const loading = page.getByRole('status', {
+    name: 'Loading Twitch live streams',
+  });
   await expect(loading).toBeVisible();
   await page.reload();
   await expect(loading).toBeVisible();
@@ -332,7 +334,7 @@ for (const platform of ['Twitch', 'YouTube']) {
     ).toHaveCount(0);
     await expect(
       page.getByRole('button', {
-        name: platform === 'Twitch' ? 'Refresh' : 'Refresh YouTube feed',
+        name: platform === 'Twitch' ? 'Sync' : 'Sync YouTube feed',
         exact: true,
       }),
     ).toBeVisible();
@@ -453,8 +455,8 @@ test('YouTube video codecs save and keep at least one codec', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-// Every provider shares the integration switch; Kick also hides its channels.
-test('Kick integration can be disabled and restored server-wide', async ({
+// Every provider shares the enable switch; Kick also hides its channels.
+test('Kick can be disabled and restored server-wide', async ({
   page,
 }, testInfo) => {
   const platform = 'Kick';
@@ -464,7 +466,7 @@ test('Kick integration can be disabled and restored server-wide', async ({
     .getByRole('link', { name: 'Provider applications', exact: true })
     .click();
   const toggle = page.getByRole('switch', {
-    name: `Enable ${platform} integration`,
+    name: `Enable ${platform}`,
   });
   await expect(toggle).toBeChecked();
   await toggle.uncheck();
@@ -511,7 +513,7 @@ test('Kick integration can be disabled and restored server-wide', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('integration switches recover from failed saves and fit mobile settings', async ({
+test('provider switches recover from failed saves and fit mobile settings', async ({
   page,
 }, testInfo) => {
   const fixture = await providerFixture(page, 'Settings');
@@ -522,7 +524,7 @@ test('integration switches recover from failed saves and fit mobile settings', a
     .click();
   fixture.state.failToggle = true;
   const toggle = page.getByRole('switch', {
-    name: 'Enable YouTube integration',
+    name: 'Enable YouTube',
   });
   // A failed save restores the switch, so uncheck() could observe no change.
   await toggle.click();
@@ -704,7 +706,7 @@ test('Kick toolbar tracks channels and links administrators to metadata settings
     name: 'Show live status, titles and thumbnails',
     exact: true,
   });
-  const refresh = page.getByRole('button', { name: 'Refresh metadata' });
+  const sync = page.getByRole('button', { name: 'Sync metadata' });
   await expect(input).toBeVisible();
   await expect(setup).toHaveAttribute('href', '#admin/providers');
   await expect(
@@ -713,7 +715,7 @@ test('Kick toolbar tracks channels and links administrators to metadata settings
   await expect(page.getByText(/\d+ tracked|metadata is optional/i)).toHaveCount(
     0,
   );
-  await expect(refresh).toHaveCount(0);
+  await expect(sync).toHaveCount(0);
   await expect(page.getByLabel('Kick client ID')).toHaveCount(0);
   await input.fill('https://kick.com/fixture');
   await page.getByRole('button', { name: 'Add', exact: true }).click();
@@ -722,7 +724,7 @@ test('Kick toolbar tracks channels and links administrators to metadata settings
   ).toBeVisible();
   await expect(input).toHaveValue('');
   await expect(setup).toBeVisible();
-  await expect(refresh).toHaveCount(0);
+  await expect(sync).toHaveCount(0);
   await expect(
     page.getByRole('button', { name: 'Resume tracking' }),
   ).toHaveCount(0);
@@ -752,15 +754,15 @@ test('Kick toolbar tracks channels and links administrators to metadata settings
     .getByRole('link', { name: 'Kick', exact: true })
     .click();
   await expect(setup).toHaveCount(0);
-  await expect(refresh).toBeEnabled();
+  await expect(sync).toBeEnabled();
   await expect(page.locator('[data-page-content]')).toHaveAttribute(
     'data-page-phase',
     'idle',
   );
-  const refreshBounds = await refresh.boundingBox();
-  expect(refreshBounds!.x).toBeGreaterThan(inputBounds!.x + inputBounds!.width);
-  expect(Math.abs(inputBounds!.y - refreshBounds!.y)).toBeLessThan(2);
-  await refresh.click();
+  const syncBounds = await sync.boundingBox();
+  expect(syncBounds!.x).toBeGreaterThan(inputBounds!.x + inputBounds!.width);
+  expect(Math.abs(inputBounds!.y - syncBounds!.y)).toBeLessThan(2);
+  await sync.click();
   await expect
     .poll(() => fixture.state.writes.at(-1)?.path)
     .toBe('/online/kick/sync');
@@ -793,7 +795,7 @@ test('Kick toolbar tracks channels and links administrators to metadata settings
     .click();
   await expect(card).toHaveCount(0);
   await expect(input).toBeVisible();
-  await expect(refresh).toBeDisabled();
+  await expect(sync).toBeDisabled();
   await testInfo.attach('kick-configured-empty', {
     body: await page.screenshot({ fullPage: true }),
     contentType: 'image/png',
@@ -817,9 +819,9 @@ test('Kick toolbar prompts regular users to ask an administrator and fits mobile
   await expect(
     page.getByRole('link', { name: 'Show live status, titles and thumbnails' }),
   ).toHaveCount(0);
-  await expect(
-    page.getByRole('button', { name: 'Refresh metadata' }),
-  ).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Sync metadata' })).toHaveCount(
+    0,
+  );
   await page.getByLabel('Kick channel', { exact: true }).fill('fixture');
   await page.getByLabel('Kick channel', { exact: true }).press('Enter');
   await expect(
@@ -840,7 +842,7 @@ test('Kick toolbar prompts regular users to ask an administrator and fits mobile
     page.getByText(/Ask your administrator to set up Kick/),
   ).toHaveCount(0);
   await expect(
-    page.getByRole('button', { name: 'Refresh metadata' }),
+    page.getByRole('button', { name: 'Sync metadata' }),
   ).toBeEnabled();
   expect(
     await page.evaluate(

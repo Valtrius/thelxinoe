@@ -324,7 +324,7 @@ server.httpServer.on('upgrade', (request, socket, head) => {
 console.log(`Mock preview: http://127.0.0.1:${port}/#home`);
 console.log('Switch between the admin and user views at the bottom right.');
 console.log(
-  `Movie: http://127.0.0.1:${port}/movie/11 | TV: http://127.0.0.1:${port}/tv/22`,
+  `Movie: http://127.0.0.1:${port}/movie/11 | Show: http://127.0.0.1:${port}/tv/22`,
 );
 console.log(
   'Changes last until restart. POST /__mock/reset restores the seed data.',

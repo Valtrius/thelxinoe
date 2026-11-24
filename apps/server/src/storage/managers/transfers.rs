@@ -449,7 +449,7 @@ pub(super) struct Outcome {
     pub(super) error: Option<String>,
     /// `applied`, `failed` or `refused`.
     pub(super) outcome: &'static str,
-    /// A restored candidate replaced the held container.
+    /// A restored replacement replaced the held container.
     pub(super) replacement: Option<String>,
     pub(super) action: &'static str,
 }
@@ -626,7 +626,7 @@ pub(super) async fn recyclarr_paused(db: &Database, provision: String) -> anyhow
     .await
 }
 
-/// A restored candidate replaced the held container: point ownership at it, still held.
+/// A restored replacement replaced the held container: point ownership at it, still held.
 /// Its appdata is a new generation, so setup and checks of the discarded one stop counting;
 /// they are kept only as that generation's evidence.
 fn rebind(tx: &rusqlite::Transaction<'_>, id: &str, container: &str) -> anyhow::Result<()> {

@@ -46,7 +46,7 @@
     clientId = $state(''),
     clientSecret = $state(''),
     downloads = $state(false),
-    budget = $state(10000),
+    dailyQuota = $state(10000),
     network = $state<Network>('auto'),
     downloadQuality = $state<YoutubeDownloadQuality>('best'),
     codecs = $state<YoutubeVideoCodec[]>([]),
@@ -56,7 +56,7 @@
   async function load() {
     config = await api<Configuration>('/admin/online');
     downloads = config.youtube_downloads;
-    budget = config.youtube_daily_quota;
+    dailyQuota = config.youtube_daily_quota;
     network = config.youtube_network;
     downloadQuality = config.youtube_download_quality;
     codecs = config.youtube_video_codecs;
@@ -91,7 +91,7 @@
             }
           : {}),
         youtube_downloads: downloads,
-        youtube_daily_quota: budget,
+        youtube_daily_quota: dailyQuota,
         youtube_network: network,
         youtube_download_quality: downloadQuality,
         youtube_video_codecs: codecs,
@@ -112,8 +112,8 @@
 <SettingsCard
   title="YouTube"
   description={$providers.youtube
-    ? 'One Google Web application for this server. Each person connects their own YouTube account. Replacing the application credentials requires everyone to reconnect.'
-    : 'Turn the integration on to configure a Google application and let people connect YouTube.'}
+    ? 'One Google Web application for this server. Each user connects their own YouTube account. Replacing the application credentials requires everyone to reconnect.'
+    : 'Enable YouTube to configure a Google application and let users connect their accounts.'}
   autoSave={$providers.youtube && Boolean(config)}
   saving={savingPreferences}
 >
@@ -127,7 +127,7 @@
     {/if}
   {/snippet}
   {#snippet actions()}
-    <ProviderIntegrationSwitch platform="youtube" />
+    <ProviderIntegrationSwitch provider="youtube" />
   {/snippet}
   {#if $providers.youtube}
     <!-- The guide mounts once the configuration is known so it starts folded
@@ -135,7 +135,7 @@
     {#if config}
       <div class={cardBlockClass}>
         <ProviderSetupInstructions
-          platform="youtube"
+          provider="youtube"
           redirectUri={config.redirect_uri}
           open={!config.google_configured}
         />
@@ -219,14 +219,14 @@
         disabled={busy || !config}
         value={{
           youtube_downloads: downloads,
-          youtube_daily_quota: budget,
+          youtube_daily_quota: dailyQuota,
           youtube_network: network,
           youtube_download_quality: downloadQuality,
           youtube_video_codecs: codecs,
         }}
         onRevert={(previous) => {
           downloads = previous.youtube_downloads;
-          budget = previous.youtube_daily_quota;
+          dailyQuota = previous.youtube_daily_quota;
           network = previous.youtube_network;
           downloadQuality = previous.youtube_download_quality;
           codecs = previous.youtube_video_codecs;
@@ -237,16 +237,16 @@
         }}
       >
         <SettingRow
-          label="Daily API budget"
-          description={`${config.quota.used.toLocaleString()} API units used today. The shared budget resets at midnight Pacific time.${config.quota.blocked ? ' YouTube has paused requests for today.' : ''}`}
-          for={`${ids}-budget`}
+          label="Daily API quota"
+          description={`${config.quota.used.toLocaleString()} API units used today. The shared quota resets at midnight Pacific time.${config.quota.blocked ? ' YouTube has paused requests for today.' : ''}`}
+          for={`${ids}-quota`}
           control="field"
         >
           <input
-            id={`${ids}-budget`}
+            id={`${ids}-quota`}
             class={formControlClass}
             type="number"
-            bind:value={budget}
+            bind:value={dailyQuota}
             min="1"
             max="10000000"
             required

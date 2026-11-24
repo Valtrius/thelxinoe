@@ -240,7 +240,7 @@
       case 'open_browser':
         return 'Open in browser';
       case 'pin_download':
-        return activeDownload?.pinned ? 'Unpin download' : 'Pin download';
+        return activeDownload?.pinned ? 'Unpin' : 'Pin';
       case 'delete_download':
         return downloadReady ? 'Delete download' : 'Delete partial download';
       case 'add_watch_later':
@@ -469,7 +469,7 @@
         </button>
       {:else}
         <CardShortcutButton
-          platform="youtube"
+          provider="youtube"
           disabled={shortcutDisabled(shortcut)}
           title={shortcutLabel(shortcut)}
           aria-label={`${shortcutLabel(shortcut)}: ${video.title}`}
@@ -482,7 +482,7 @@
   {/each}
   <CardShortcutButton
     bind:element={menuButton}
-    platform="youtube"
+    provider="youtube"
     aria-label={`More actions for ${video.title}`}
     aria-expanded={menuOpen}
     aria-controls={`video-actions-${video.videoId}`}
@@ -551,8 +551,8 @@
                   ? actions.onUnpinDownload
                   : actions.onPinDownload,
               )}
-            >{#if activeDownload?.pinned}<PinOff />Unpin download{:else}<Pin
-              />Pin download{/if}</button
+            >{#if activeDownload?.pinned}<PinOff />Unpin{:else}<Pin
+              />Pin{/if}</button
           >
           {@render deleteDownloadMenuItem(
             'Delete download',

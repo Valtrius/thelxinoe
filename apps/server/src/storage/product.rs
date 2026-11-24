@@ -1,4 +1,4 @@
-//! Database operations for product.
+//! Database operations for server updates.
 use super::*;
 use thelxinoe_database::Database;
 
@@ -7,7 +7,7 @@ pub(super) async fn discovered(
     release: Option<(Envelope, Manifest, bool, Option<Value>)>,
     error: Option<String>,
 ) -> anyhow::Result<()> {
-    // Hourly checks spread over a few minutes, so installations do not ask at once.
+    // Hourly checks spread over a few minutes, so deployments do not ask at once.
     let jitter = (uuid::Uuid::new_v4().as_u128() % 300) as i64;
     db.write("product.discovered", move |db| {
         let tx = db.transaction()?;

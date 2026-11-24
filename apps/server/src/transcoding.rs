@@ -42,10 +42,10 @@ pub async fn probe_hardware(state: AppState) {
             decode_hevc_10bit = gpu.hevc_10bit,
             tone_map = gpu.tone_map,
             deinterlace = gpu.deinterlace,
-            "Hardware video conversion is available"
+            "Hardware transcoding is available"
         ),
         HardwareStatus::Unavailable { reason } => {
-            tracing::info!(%reason, "Hardware video conversion is unavailable")
+            tracing::info!(%reason, "Hardware transcoding is unavailable")
         }
         _ => {}
     }

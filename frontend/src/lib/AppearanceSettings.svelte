@@ -39,12 +39,12 @@
 </SettingRow>
 <SettingRow
   label="Poster density"
-  description="Movies, TV and Music. Ctrl + scroll over a collection also changes it."
+  description="Movies, Shows and Music. Ctrl + scroll over a collection also changes it."
 >
   <DensityControl
     variant="row"
     label="Poster density"
-    views="Movies, TV and Music"
+    views="Movies, Shows and Music"
     columns={$appearance.poster_columns}
     onChange={(poster_columns) => updateAppearance({ poster_columns })}
   />

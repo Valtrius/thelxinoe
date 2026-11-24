@@ -50,8 +50,8 @@
   }
   const titles: Record<string, string> = {
     prowlarr: 'Applications',
-    bazarr: 'Media managers',
-    seerr: 'Media managers',
+    bazarr: 'Managers',
+    seerr: 'Managers',
     radarr: 'Download clients',
     sonarr: 'Download clients',
     lidarr: 'Download clients',

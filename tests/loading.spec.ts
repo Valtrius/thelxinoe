@@ -353,7 +353,7 @@ test('Discover displays completed feeds while another feed is pending', async ({
       page.getByRole('button', { name: /Ready discovery/ }),
     ).toBeVisible();
     await expect(
-      page.getByRole('status', { name: 'Loading Popular series', exact: true }),
+      page.getByRole('status', { name: 'Loading Popular shows', exact: true }),
     ).toBeVisible();
     await testInfo.attach('independent-feeds', {
       body: await page.screenshot(),
@@ -361,7 +361,7 @@ test('Discover displays completed feeds while another feed is pending', async ({
     });
     gate.release();
     await expect(
-      page.getByRole('status', { name: 'Loading Popular series', exact: true }),
+      page.getByRole('status', { name: 'Loading Popular shows', exact: true }),
     ).toHaveCount(0);
     expect(fixture.errors).toEqual([]);
     expect(fixture.unexpected).toEqual([]);
@@ -438,7 +438,7 @@ test('Discover loads a row once it nears the screen', async ({ page }) => {
   expect(requested).toContain('trending');
   expect(requested).not.toContain('upcoming-tv');
   const skeleton = page.getByRole('status', {
-    name: 'Loading Upcoming series',
+    name: 'Loading Upcoming shows',
     exact: true,
   });
   await skeleton.scrollIntoViewIfNeeded();

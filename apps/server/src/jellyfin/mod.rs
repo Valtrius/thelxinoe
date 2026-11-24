@@ -85,7 +85,7 @@ async fn dispatch(State(state): State<AppState>, request: Request) -> Response {
         route,
         method,
         status = response.status().as_u16(),
-        "Compatibility request"
+        "Jellyfin-compatible API request"
     );
     response
         .headers_mut()

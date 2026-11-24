@@ -6,7 +6,7 @@
     youtubeThumbnailUrl,
   } from '../../utils';
 
-  // A new upload's images can lag behind it, and a fetch can fail in transit.
+  // A new video's images can lag behind it, and a fetch can fail in transit.
   const retryDelays = [2_000, 10_000, 30_000];
 
   let {

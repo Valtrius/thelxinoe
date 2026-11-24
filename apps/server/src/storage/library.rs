@@ -74,15 +74,15 @@ pub(super) async fn remove_root(
         )? {
             return Ok(false);
         }
-        // Queued work for the library has nothing left to act on. A running scan finds the
-        // library gone and stops without writing.
+        // Queued work for the library folder has nothing left to act on. A running scan finds
+        // the folder gone and stops without writing.
         tx.execute(
             "UPDATE jobs SET state='complete',completed_at=?2 WHERE state='queued' AND ((kind='library.scan' AND subject=?1) OR (kind IN ('metadata.match','metadata.refresh') AND subject IN (SELECT id FROM media WHERE root_id=?1)))",
             params![root_id, now()],
         )?;
-        // Rows that refer to the library's entries and files without cascading go first.
-        // Everyone's state for the entries cascades with them; playback history keeps its
-        // own copy of each title.
+        // Rows that refer to the folder's media items and files without cascading go first.
+        // Everyone's state for the media items cascades with them; playback history keeps
+        // its own copy of each title.
         for statement in [
             "DELETE FROM retention_candidates WHERE media_id IN (SELECT id FROM media WHERE root_id=?1)",
             "DELETE FROM media_operations WHERE media_id IN (SELECT id FROM media WHERE root_id=?1)",
@@ -457,7 +457,7 @@ pub(super) struct CardPresentation {
     pub(super) year: Option<i64>,
     pub(super) artwork_id: Option<String>,
     pub(super) watched: bool,
-    /// Something in it is watched or has a resume position.
+    /// Something in it is watched or has a resume point.
     pub(super) started: bool,
 }
 
@@ -502,7 +502,7 @@ pub(super) async fn detail(db: &Database, media_id: String) -> anyhow::Result<Op
 
 pub(super) struct Protection {
     pub(super) own: bool,
-    /// The nearest season or series whose Keep covers this item.
+    /// The nearest season or show whose Keep covers this item.
     pub(super) by: Option<String>,
     /// Kept seasons and episodes inside this item, which also block its deletion.
     pub(super) within: i64,

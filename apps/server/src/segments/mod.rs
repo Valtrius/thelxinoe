@@ -1,4 +1,5 @@
-//! Shared file-generation-specific segments for first-party and Jellyfin clients.
+//! Skip segments, kept per file version and shared by the web app, the desktop app and
+//! Jellyfin clients.
 
 #[path = "../storage/segments.rs"]
 mod storage;
@@ -139,12 +140,12 @@ async fn save(
     let src = playback::source(&state, &media, Some(&input.file_id)).await?;
     if src.generation != input.generation {
         return Err(ApiError::conflict(
-            "Media was replaced; reload its segments",
+            "Media was replaced; reload its skip segments",
         ));
     }
     if input.items.len() > 40 || input.items.iter().any(|s| !valid(s, src.duration())) {
         return Err(ApiError::bad(
-            "Segments need a supported type and a valid start/end within this file",
+            "Skip segments need a supported type and a valid start/end within this file",
         ));
     }
     let event_media = media.clone();

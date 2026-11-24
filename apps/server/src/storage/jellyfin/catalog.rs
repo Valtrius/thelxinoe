@@ -2,7 +2,7 @@
 use super::*;
 use thelxinoe_database::Database;
 
-/// Whether the item under the given alias has a file on disk, or is a series, season,
+/// Whether the item under the given alias has a file on disk, or is a show, season,
 /// artist or album holding one. An item outlives its files to keep its watch state, but
 /// Jellyfin drops an item whose files are gone, so its clients never list one.
 macro_rules! on_disk {
@@ -465,7 +465,7 @@ fn provider_ids(metadata: &Value) -> Value {
     Value::Object(ids)
 }
 
-/// When a movie was released, a series first aired or an episode aired.
+/// When a movie was released, a show first aired or an episode aired.
 fn premiere_date(metadata: &Value) -> Option<String> {
     ["air_date_utc", "air_date", "release_date", "first_air_date"]
         .into_iter()

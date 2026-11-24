@@ -86,7 +86,7 @@ pub(super) async fn evaluate_all_write_media(
         for media in ids {
             match assess(&tx,&media)? {
                 Assessment::Eligible(e) => {
-                    tx.execute("UPDATE media_operations SET state='blocked',error='Retention eligibility changed' WHERE state='pending' AND id IN (SELECT operation_id FROM retention_candidates WHERE media_id=?1 AND stamp<>?2 AND state='pending')",params![media,e.stamp])?;
+                    tx.execute("UPDATE media_operations SET state='blocked',error='Auto-delete eligibility changed' WHERE state='pending' AND id IN (SELECT operation_id FROM retention_candidates WHERE media_id=?1 AND stamp<>?2 AND state='pending')",params![media,e.stamp])?;
                     tx.execute("UPDATE retention_candidates SET state='cancelled',error='Eligibility changed; a fresh countdown is required' WHERE media_id=?1 AND stamp<>?2 AND state='pending'",params![media,e.stamp])?;
                     recapture(&tx,&media,&e.stamp)?;
                     let exists=tx.query_row("SELECT EXISTS(SELECT 1 FROM retention_candidates WHERE media_id=?1 AND ((stamp=?2 AND state IN ('complete','blocked')) OR state IN ('pending','executing')))",params![media,e.stamp],|r|r.get::<_,bool>(0))?;
@@ -132,7 +132,7 @@ pub(super) async fn evaluate_all_write_retention_candidates(
     db: &Database,
 ) -> anyhow::Result<()> {
     db.write("managers.retention.evaluate_all_write_retention_candidates", move|db|{let tx=db.transaction()?;
-        anyhow::ensure!(eligibility(&tx,&operation.media_id)?.is_some_and(|current|current.stamp==e.stamp),"Retention eligibility changed before proposal persistence");
+        anyhow::ensure!(eligibility(&tx,&operation.media_id)?.is_some_and(|current|current.stamp==e.stamp),"Auto-delete eligibility changed before proposal persistence");
         operations::storage::insert_prepared(&tx,&operation)?;
         let names=tx.prepare("SELECT username FROM users WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY username")?.query_map([json!(e.users).to_string()],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         tx.execute("INSERT INTO retention_candidates(id,media_id,operation_id,stamp,trigger_user,state,eligible_at,due_at,watched_users) VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?8)",params![key,operation.media_id,operation.id,e.stamp,e.user,now(),now()+e.grace,json!(names).to_string()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'retention.pending',?2,?3)",params![operation.actor,key,now()])?;tx.commit()?;Ok(())}).await
@@ -147,7 +147,7 @@ pub(super) async fn action(
     db.write("managers.retention.action", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;let record=tx.query_row("SELECT media_id,operation_id FROM retention_candidates WHERE id=?1 AND state='pending'",[&key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?;let Some((media,operation))=record else{return Ok(false)};
         if action=="keep" {tx.execute("INSERT INTO media_protection VALUES (?1,1) ON CONFLICT(media_id) DO UPDATE SET keep=1",[&media])?;}
         tx.execute("UPDATE retention_candidates SET state='kept' WHERE id=?1",[&key])?;
-        tx.execute("UPDATE media_operations SET state='blocked',error='Retention cancelled' WHERE id=?1 AND state='pending'",[operation])?;
+        tx.execute("UPDATE media_operations SET state='blocked',error='Auto-delete cancelled' WHERE id=?1 AND state='pending'",[operation])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",params![p.user.id,format!("retention.{action}"),key,now()])?;tx.commit()?;Ok(true)
     }).await
 }
@@ -295,7 +295,7 @@ pub(super) async fn reacquire_write_media_operations(
     db.write("managers.retention.reacquire_write_media_operations", move|db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for key in affected {
-            tx.execute("UPDATE media_operations SET state='blocked',error='Retention reversed by reacquisition' WHERE state='pending' AND id=(SELECT operation_id FROM retention_candidates WHERE id=?1)",[&key])?;
+            tx.execute("UPDATE media_operations SET state='blocked',error='Auto-delete reversed by reacquisition' WHERE state='pending' AND id=(SELECT operation_id FROM retention_candidates WHERE id=?1)",[&key])?;
             tx.execute("UPDATE retention_candidates SET state='cancelled',error='Reacquisition requested' WHERE id=?1",[key])?;
         }
         tx.execute("DELETE FROM retention_exclusions WHERE service_id=?1 AND external_id=?2",params![sid,identity])?;

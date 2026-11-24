@@ -50,7 +50,7 @@
     loadSeasons,
     lookup,
     metadataNumber,
-    seriesOf,
+    showOf,
     setFlag,
     episodeLabel,
     type CatalogItem,
@@ -73,7 +73,7 @@
   }: {
     user: User;
     kind: TitleKind;
-    /** A library id (any level of a series) or a `tmdb:`/`tvdb:` reference. */
+    /** A library id (any level of a show) or a `tmdb:`/`tvdb:` reference. */
     mediaId?: string;
     /** TMDB id from Discover. */
     tmdb?: number;
@@ -237,7 +237,7 @@
         fresh = true;
       }
     }
-    // Sonarr can list a series' seasons before any of its files are in the library.
+    // Sonarr can list a show's seasons before any of its files are in the library.
     const source = id ?? (reference && manager ? reference : null);
     const [nextItem, nextFlags, nextSeasons] = await Promise.all([
       id && !fresh ? loadItem(id) : null,
@@ -269,7 +269,7 @@
         let season: number | null = null,
           episode: string | null = null;
         if (['season', 'episode'].includes(found.kind)) {
-          const { show, chain } = await seriesOf(found);
+          const { show, chain } = await showOf(found);
           season =
             chain.find((entry) => entry.kind === 'season')?.sort_number ?? null;
           episode = chain.find((entry) => entry.kind === 'episode')?.id ?? null;
@@ -425,7 +425,7 @@
           <p
             class="mb-3 text-[11px] font-semibold tracking-widest text-accent uppercase"
           >
-            {kind === 'movie' ? 'Movie' : 'Series'}{year ? ` · ${year}` : ''}
+            {kind === 'movie' ? 'Movie' : 'Show'}{year ? ` · ${year}` : ''}
             {#if ended}<StatusChip dot={false} class="ml-2 align-[1px]"
                 >Ended</StatusChip
               >{/if}

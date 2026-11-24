@@ -39,7 +39,7 @@ pub(super) enum Marked {
     Episodes(usize),
 }
 
-/// A season's episodes, or an episode with every one before it in its series: earlier
+/// A season's episodes, or an episode with every one before it in its show: earlier
 /// seasons and episodes, Specials only among Specials.
 const THROUGH: &str = "WITH target AS (
     SELECT e.id,COALESCE(e.sort_number,0) AS episode,COALESCE(s.sort_number,0) AS season,s.parent_id AS show
@@ -89,17 +89,17 @@ pub(super) async fn set_watched(
     .await
 }
 
-/// The episodes of the series `shows` selects, in viewing order. Specials stand outside it.
-/// Only those series are read and ranked, not every episode of the library: the unary plus
+/// The episodes of the shows `shows` selects, in viewing order. Specials stand outside it.
+/// Only those shows are read and ranked, not every episode of the library: the unary plus
 /// keeps SQLite, which has no statistics, from reading every episode by its kind instead of
-/// finding the series' seasons and their episodes through `media_parent`.
-fn series_order(shows: &str) -> String {
+/// finding the shows' seasons and their episodes through `media_parent`.
+fn show_order(shows: &str) -> String {
     format!(
         "SELECT e.id,s.parent_id AS show_id,ROW_NUMBER() OVER(PARTITION BY s.parent_id ORDER BY s.sort_number,e.sort_number,e.id) AS ord FROM media e JOIN media s ON s.id=e.parent_id WHERE +e.kind='episode' AND +s.kind='season' AND s.sort_number>0 AND s.parent_id IN ({shows})"
     )
 }
 
-/// Each series' next episode is its `candidates` row with `rn=1`: the first available,
+/// Each show's next episode is its `candidates` row with `rn=1`: the first available,
 /// unwatched one after the last watched (`anchor`), or from the start. Follows `ordered`.
 const NEXT_UP: &str = "anchor AS (SELECT o.show_id,MAX(o.ord) AS ord FROM ordered o JOIN media_state u ON u.media_id=o.id WHERE u.user_id=?1 AND u.watched=1 GROUP BY o.show_id), candidates AS (SELECT o.id,o.show_id,a.ord AS anchor,ROW_NUMBER() OVER(PARTITION BY o.show_id ORDER BY o.ord) AS rn FROM ordered o LEFT JOIN anchor a ON a.show_id=o.show_id LEFT JOIN media_state u ON u.media_id=o.id AND u.user_id=?1 JOIN media_cards c ON c.id=o.id WHERE c.available=1 AND COALESCE(u.watched,0)=0 AND o.ord>COALESCE(a.ord,0))";
 
@@ -110,9 +110,9 @@ const PLAYED: &str = "played AS (SELECT media_id,MAX(at) AS at FROM (SELECT medi
 /// With rewatching, Jellyfin also offers the watched episode that follows the one played last.
 const REWATCH: &str = "UNION ALL SELECT id,show_id,1,at FROM (SELECT o.id,o.show_id,r.at,ROW_NUMBER() OVER(PARTITION BY o.show_id ORDER BY o.ord) AS rn FROM (SELECT o.show_id,o.ord,p.at,ROW_NUMBER() OVER(PARTITION BY o.show_id ORDER BY p.at DESC,o.ord DESC) AS rn FROM ordered o JOIN played p ON p.media_id=o.id JOIN media_state u ON u.media_id=o.id AND u.user_id=?1 WHERE u.watched=1) r JOIN ordered o ON o.show_id=r.show_id AND o.ord>r.ord JOIN media_state u ON u.media_id=o.id AND u.user_id=?1 JOIN media_cards c ON c.id=o.id WHERE r.rn=1 AND u.watched=1 AND c.available=1) WHERE rn=1";
 
-/// Jellyfin's Next up (`TVSeriesManager`). Without a series, it lists the series played
-/// since the cutoff, ordered by when their last watched episode was played. An entry with
-/// a resume position is dropped unless resumable ones are wanted; a rewatch always is.
+/// Jellyfin's Next up (`TVSeriesManager`). Without a show, it lists the shows played
+/// since the cutoff, ordered by when their last watched episode was played. An episode with
+/// a resume point is dropped unless resumable ones are wanted; a rewatch always is.
 pub(super) async fn next_up(
     user: String,
     query: NextUp,
@@ -131,11 +131,11 @@ pub(super) async fn next_up(
     .await
 }
 
-/// Next up's query. It ranks the episodes of the series asked for, or else of those played
+/// Next up's query. It ranks the episodes of the show asked for, or else of those played
 /// since the cutoff: the only ones it can list.
 fn next_up_sql(show: bool, rewatching: bool) -> String {
     let rewatch = if rewatching { REWATCH } else { "" };
-    let ordered = series_order(if show {
+    let ordered = show_order(if show {
         "?2"
     } else {
         "SELECT id FROM shows WHERE at>=COALESCE(?3,0)"
@@ -150,7 +150,7 @@ fn next_up_sql(show: bool, rewatching: bool) -> String {
             ORDER BY x.at IS NULL,x.at DESC,a.at DESC,x.show_id")
 }
 
-/// The available episode that follows `media` in its series, past every episode its
+/// The available episode that follows `media` in its show, past every episode its
 /// played file also holds (any of its files when none is named).
 pub(super) async fn next_episode(
     media: String,
@@ -166,9 +166,9 @@ pub(super) async fn next_episode(
     .await
 }
 
-/// The next episode's query, which ranks only the series of episode ?1.
+/// The next episode's query, which ranks only the show of episode ?1.
 fn next_episode_sql() -> String {
-    let ordered = series_order(
+    let ordered = show_order(
         "SELECT s.parent_id FROM media e JOIN media s ON s.id=e.parent_id WHERE e.id=?1",
     );
     format!("WITH ordered AS ({ordered}),
@@ -191,10 +191,10 @@ pub(super) async fn home_for(p: Principal, db: &Database) -> anyhow::Result<Valu
     }).await
 }
 
-/// Home's Next up shelf. It ranks only the series it can show: those the user watched an
+/// Home's Next up shelf. It ranks only the shows it can list: those the user watched an
 /// episode of, or keeps as a favorite or for later.
 fn home_next_up_sql() -> String {
-    let ordered = series_order(
+    let ordered = show_order(
         "SELECT s.parent_id FROM media_state u JOIN media e ON e.id=u.media_id JOIN media s ON s.id=e.parent_id WHERE u.user_id=?1 AND u.watched=1 AND e.kind='episode' UNION SELECT media_id FROM media_state WHERE user_id=?1 AND (favorite=1 OR watch_later=1)",
     );
     format!(
@@ -202,7 +202,7 @@ fn home_next_up_sql() -> String {
     )
 }
 
-/// A shelf card; seasons and episodes also name their series.
+/// A shelf card; seasons and episodes also name their show.
 fn shelf_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let mut value = card(row)?;
     if let Some(show) = row.get::<_, Option<String>>(4)? {
@@ -252,7 +252,7 @@ mod tests {
             .await
             .unwrap();
         for plan in plans {
-            // Episodes are found through their series' seasons.
+            // Episodes are found through their show's seasons.
             assert!(
                 plan.iter()
                     .any(|step| step == "SEARCH e USING INDEX media_parent (parent_id=?)"),

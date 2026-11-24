@@ -320,7 +320,7 @@ pub(super) async fn evaluate(
     {
         let id = check["id"].as_str().unwrap_or_default().to_owned();
         check["detail"] = json!(optional.get(&id).cloned().unwrap_or_else(|| {
-            "Not tested during takeover; it stays unavailable until verified after completion"
+            "Not tested during the transfer; it stays unavailable until verified after completion"
                 .into()
         }));
     }

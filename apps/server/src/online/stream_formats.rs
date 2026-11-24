@@ -216,7 +216,7 @@ pub(super) fn extract(
             None
         } else {
             Some(audio.ok_or_else(|| {
-                ApiError::conflict("No supported public audio stream is available")
+                ApiError::conflict("No supported public audio format is available")
             })?)
         };
         let source = RemoteSource {
@@ -298,7 +298,7 @@ pub(super) fn extract(
     }
     if output.is_empty() {
         return Err(ApiError::conflict(
-            "No supported public video stream is available",
+            "No supported public video format is available",
         ));
     }
     Ok(output)
@@ -363,7 +363,7 @@ pub(super) fn choose<'a>(
         return pick(&supported, quality);
     }
     // If no original rendition is compatible, retain the requested provider
-    // quality and let the shared planner convert only incompatible tracks.
+    // quality and let the shared planner transcode only incompatible tracks.
     if !caps.hls {
         return Err(ApiError::conflict(
             "This resolution is not available for this player",

@@ -59,7 +59,7 @@ function simulateDownload(video, emit) {
 export async function mediaApi(s, c) {
   const { path, method, body, query, json, fail } = c;
   // Watching a title clears it from Watch Later, and finishing every episode
-  // clears its season and series.
+  // clears its season and show.
   const clearWatchLater = (item) => {
     const watched = (id) => Boolean(s.mediaStates[id]?.watched);
     const done = (parent) =>
@@ -82,7 +82,7 @@ export async function mediaApi(s, c) {
     if (season?.parent_id && done(season.parent_id)) clear(season.parent_id);
   };
   const parents = new Map(s.library.map((item) => [item.id, item.parent_id]));
-  // Radarr and Sonarr fanart: seasons and episodes use their series'. Every
+  // Radarr and Sonarr fanart: seasons and episodes use their show's. Every
   // third title has none, as unmatched files don't.
   const backdrop = (entry) => {
     const owner =
@@ -364,13 +364,16 @@ export async function mediaApi(s, c) {
     const inside = (child, parent) =>
       child === parent || child.startsWith(`${parent}/`);
     if (!body.name?.trim() || !inside(body.path, '/media'))
-      return fail(400, 'Enter a library name and a folder inside /media');
+      return fail(
+        400,
+        'Enter a library folder name and a folder inside /media',
+      );
     if (
       s.roots.some(
         (root) => inside(body.path, root.path) || inside(root.path, body.path),
       )
     )
-      return fail(409, 'Library roots cannot overlap');
+      return fail(409, 'Library folders cannot overlap');
     const root = {
       id: `root-${++s.sequence}`,
       name: body.name,
@@ -430,7 +433,10 @@ export async function mediaApi(s, c) {
           ('watch_later' in body &&
             !['movie', 'show', 'season', 'episode'].includes(item.kind))
         )
-          return fail(400, 'This state is not supported for this media type');
+          return fail(
+            400,
+            'This state is not supported for this kind of media item',
+          );
         Object.assign(s.mediaStates[item.id], body);
         if (body.watched) clearWatchLater(item);
       }
@@ -509,7 +515,7 @@ export async function mediaApi(s, c) {
     }
     if (action === 'segments/analyze') return json({ queued: true });
     if (action === 'next') {
-      // The server's series order: regular seasons, then episodes. The played
+      // The server's show order: regular seasons, then episodes. The played
       // file plays past every episode it holds.
       const parent = (entry) =>
         s.library.find((other) => other.id === entry.parent_id);
@@ -963,7 +969,7 @@ export async function mediaApi(s, c) {
           ready: true,
         })),
     });
-  // The viewer's latest request for an album or an artist's new releases.
+  // The user's latest request for an album or an artist's new releases.
   const latest = (externalId) => {
     const request = s.musicRequests.find(
       (r) => r.external_id === externalId && r.user_id === viewer(s).id,

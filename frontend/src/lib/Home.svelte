@@ -84,7 +84,7 @@
     next_up: YoutubeVideo[];
   };
   type Stream = {
-    platform: 'twitch' | 'kick';
+    provider: 'twitch' | 'kick';
     id: string;
     name: string;
     title: string;
@@ -171,7 +171,7 @@
   const streams = $derived<Stream[]>(
     [
       ...twitch.map((stream) => ({
-        platform: 'twitch' as const,
+        provider: 'twitch' as const,
         id: `twitch:${stream.broadcasterId}`,
         name: stream.displayName,
         title: stream.title,
@@ -187,7 +187,7 @@
         startedAt: stream.startedAt,
       })),
       ...kick.map((stream) => ({
-        platform: 'kick' as const,
+        provider: 'kick' as const,
         id: `kick:${stream.slug}`,
         name: stream.display_name || stream.slug,
         title: stream.title,
@@ -507,7 +507,7 @@
     playing.some((media: PlayingMedia) => media.id === id);
 </script>
 
-{#snippet videoCard(video: YoutubeVideo, row: string, platformIcon: boolean)}
+{#snippet videoCard(video: YoutubeVideo, row: string, providerIcon: boolean)}
   {@const id = `youtube:${video.videoId}`}
   <div data-layout-key={`${row}:${id}`} class="h-full min-w-0">
     <VideoCard
@@ -530,7 +530,7 @@
       onMenuToggle={() => videoCards.toggleMenu(video.videoId)}
       onShortcutDeleteRequest={() => videoCards.confirmDelete(video.videoId)}
       onShortcutDeleteCancel={() => videoCards.confirmDelete(null)}
-      {platformIcon}
+      {providerIcon}
     />
   </div>
 {/snippet}
@@ -655,7 +655,7 @@
     <MediaRow label="Live now">
       {#each streams as stream (stream.id)}
         <LiveCard
-          platform={stream.platform}
+          provider={stream.provider}
           streamId={stream.id}
           displayName={stream.name}
           title={stream.title}
@@ -677,8 +677,8 @@
           watchLabel={`Watch ${stream.name}`}
           onWatch={() => void launch({ id: stream.id, title: stream.title })}
         >
-          {#snippet badges()}<LiveCardBadge tone={stream.platform}
-              >{stream.platform === 'twitch' ? 'Twitch' : 'Kick'} · Live</LiveCardBadge
+          {#snippet badges()}<LiveCardBadge tone={stream.provider}
+              >{stream.provider === 'twitch' ? 'Twitch' : 'Kick'} · Live</LiveCardBadge
             >{/snippet}
           {#snippet fallback()}<Radio
               class="absolute inset-0 m-auto size-10 text-accent"
@@ -688,7 +688,7 @@
               class="mt-3 flex items-center gap-2 text-xs text-muted"
             >
               <PlatformIcon
-                platform={stream.platform}
+                provider={stream.provider}
                 class="size-4 shrink-0"
               />{stream.category ?? ''}
             </div>{/snippet}

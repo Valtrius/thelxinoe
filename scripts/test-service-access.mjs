@@ -574,10 +574,10 @@ try {
       await client.close();
     },
   );
-  const { ownershipAccess, attachedConflicts } =
+  const { ownershipAccess, connectedConflicts } =
     await import('./service-access-ownership.mjs');
   await ownershipAccess({ f, page, scenario, output });
-  await attachedConflicts({ f, page, scenario, output });
+  await connectedConflicts({ f, page, scenario, output });
   await scenario(
     'existing /movies paths map to files under the server media mount',
     async () => {

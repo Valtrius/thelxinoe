@@ -232,7 +232,7 @@
           onerror={() =>
             backdrop ? (backdropFailed = true) : (imageFailed = true)}
         />{:else if launching}<!-- The spinner replaces the placeholder. -->{:else if item.kind === 'youtube'}<PlatformIcon
-          platform="youtube"
+          provider="youtube"
           class="size-12"
         />{:else if music}<Music size={48} />{:else if item.kind === 'show'}<Tv
           size={48}

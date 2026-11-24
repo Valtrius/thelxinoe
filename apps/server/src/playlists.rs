@@ -75,7 +75,7 @@ pub async fn detail(
     playlist["items"] = json!(library::playlist_tracks(&state, &p, id).await?);
     Ok(Json(playlist))
 }
-/// A whole playlist, as released desktops save it.
+/// A whole playlist, as released desktop apps save it.
 #[derive(Deserialize)]
 pub struct Save {
     name: String,

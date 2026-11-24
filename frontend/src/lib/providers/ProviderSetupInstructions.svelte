@@ -9,11 +9,11 @@
   // The guide starts folded once the application is configured; it slides
   // open and closed on the user's animation clock.
   let {
-    platform,
+    provider,
     redirectUri,
     open = true,
   }: {
-    platform: 'youtube' | 'twitch' | 'kick';
+    provider: 'youtube' | 'twitch' | 'kick';
     redirectUri?: string | null;
     open?: boolean;
   } = $props();
@@ -22,7 +22,7 @@
   const publicOrigin = $derived(
     redirectUri ? new URL(redirectUri).origin : null,
   );
-  const steps = $derived({ youtube: 6, twitch: 3, kick: 2 }[platform]);
+  const steps = $derived({ youtube: 6, twitch: 3, kick: 2 }[provider]);
   const brandingPages = [
     {
       page: 'home',
@@ -63,7 +63,7 @@
          the slide ends short of the final height and the layout snaps. -->
     <div id={panelId} class="flow-root" transition:reveal>
       <ol class="my-3 list-decimal space-y-2 pl-5 text-xs leading-6 text-muted">
-        {#if platform === 'youtube'}
+        {#if provider === 'youtube'}
           <li>
             Create or select a project in <SetupLink
               href="https://console.cloud.google.com/">Google Cloud</SetupLink
@@ -143,7 +143,7 @@
             on the YouTube page. If you connected while in Testing, disconnect and
             reconnect after publishing. Access can still expire or be revoked.
           </li>
-        {:else if platform === 'twitch'}
+        {:else if provider === 'twitch'}
           <li>
             Verify your Twitch email and enable two-factor authentication in <SetupLink
               href="https://www.twitch.tv/settings/security"
@@ -177,7 +177,7 @@
           </li>
           <li>
             Paste its client ID and secret below. Thelxinoe uses application
-            access for public channel metadata; viewers do not authorize their
+            access for public channel metadata; users do not authorize their
             Kick accounts. If the form requires a redirect URL, enter your
             server's HTTPS origin; this flow does not call it.
             <SetupLink

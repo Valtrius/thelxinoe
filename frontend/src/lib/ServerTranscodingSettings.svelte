@@ -122,7 +122,7 @@
 <SettingsCard
   id="server-transcoding"
   title="Transcoding"
-  description="Convert media on the fly when a device cannot play the original."
+  description="Transcode media on the fly when a device cannot play the original."
   autoSave
   {saving}
 >

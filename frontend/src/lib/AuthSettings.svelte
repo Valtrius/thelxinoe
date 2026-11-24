@@ -34,7 +34,7 @@
     passkeyName = $state('');
   onMount(() => {
     void load().catch((e) => (error = errorMessage(e)));
-    if (authNotice === 'oidc-linked') notice = 'OIDC account linked';
+    if (authNotice === 'oidc-linked') notice = 'Identity provider linked';
     else if (authNotice === 'verified') notice = 'Identity verified';
   });
   async function load() {
@@ -205,7 +205,7 @@
       <SettingRow
         label={options.oidc.label}
         description={options.oidc.available
-          ? 'Single sign-on through your identity provider.'
+          ? 'Sign in through your identity provider.'
           : 'Identity-provider sign-in needs this server to be reached over HTTPS.'}
       >
         {#snippet badge()}

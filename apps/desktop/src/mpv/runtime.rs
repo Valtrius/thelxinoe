@@ -251,7 +251,7 @@ impl Player {
             crate::tools::discovery::detect_named_executable("mpv", mpv_path.as_deref()).await;
         let executable = diagnostic
             .path
-            .context("Install or select MPV in Windows player settings")?;
+            .context("Install or select MPV in MPV settings")?;
         let backend = Backend::new(&app)?;
         let (commands, rx) = mpsc::channel(32);
         let initial = View {
@@ -786,8 +786,8 @@ async fn run(
     work
 }
 
-/// MPV runs in a kill-on-close job. Windows closes the job with the desktop process,
-/// so a crashed or ended desktop cannot leave MPV playing with no window to stop it.
+/// MPV runs in a kill-on-close job. Windows closes the job with the desktop app's process,
+/// so a crashed or ended desktop app cannot leave MPV playing with no window to stop it.
 fn spawn_player(command: &mut Command) -> Result<(Child, ProcessJob)> {
     command
         .stdin(Stdio::null())

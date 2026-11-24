@@ -125,7 +125,7 @@ try {
   const styled = movies.find((i) => i.title === 'Styled');
   const picture = movies.find((i) => i.title === 'Picture');
   assert.ok(styled && picture);
-  // The web player has picture subtitles burned in; desktop and Jellyfin
+  // The web app has picture subtitles burned in; the desktop app and Jellyfin
   // clients select embedded tracks, forced ones included, themselves.
   const web = { ...options.capabilities, burn_subtitles: true };
   const native = { ...options.capabilities, native_tracks: true };
@@ -185,7 +185,7 @@ try {
     assert.ok(gray[40 * 320 + 160] < 40, 'The picture above the box is black');
     return gray[140 * 320 + 160] > 200;
   };
-  // A forced picture track never shows by default: it needs a conversion, so
+  // A forced picture track never shows by default: it needs a transcode, so
   // a file that plays directly still does.
   session = await play(picture, { ...web, containers: ['mkv'] });
   assert.equal(session.selected_subtitle, null);

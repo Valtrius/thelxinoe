@@ -151,7 +151,7 @@ describe('episode phases', () => {
   });
 });
 
-describe('going on with a series', () => {
+describe('going on with a show', () => {
   const here = (id: string, extra: Partial<Episode> = {}) =>
     episode(Number(id.slice(-1)), null, {
       id,
@@ -229,7 +229,7 @@ describe('going on with a series', () => {
     expect(seasonToOpen(list)).toBe(2);
   });
 
-  it('keeps specials out of the order and opens a series without files at its start', () => {
+  it('keeps specials out of the order and opens a show without files at its start', () => {
     const list = [
       ...seasons([absent('s11')], [absent('s21')]),
       { ...specials, episodes: [here('s01', { season: 0, ...played })] },

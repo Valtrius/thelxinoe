@@ -102,7 +102,7 @@ impl Identity {
     pub fn media(&self) -> String {
         format!("{}:{}", self.kind, self.key)
     }
-    /// The online service the entry belongs to; watchlists are YouTube's.
+    /// The provider the item belongs to; watchlists are YouTube's.
     fn provider(&self) -> &str {
         if self.kind == "watchlist" {
             "youtube"
@@ -126,7 +126,7 @@ pub async fn resolve(state: &AppState, p: &Principal, item: &str) -> Result<Opti
     }
     Ok(identity)
 }
-/// The online entries among comma-separated `ids`, read in one query however many there are.
+/// The online items among comma-separated `ids`, read in one query however many there are.
 async fn resolve_all(state: &AppState, p: &Principal, ids: &str) -> Result<Vec<Identity>> {
     let ids = ids
         .split(',')
@@ -408,7 +408,7 @@ pub async fn playlist_create(state: &AppState, p: &Principal, input: Value) -> R
 }
 async fn playlist_videos(state: &AppState, p: &Principal, ids: &[String]) -> Result<Vec<String>> {
     if ids.len() > 1000 {
-        return Err(ApiError::bad("Playlist exceeds the saved video limit"));
+        return Err(ApiError::bad("Watchlist exceeds the limit of 1,000 videos"));
     }
     let mut videos = Vec::new();
     for id in ids {
@@ -707,13 +707,13 @@ pub async fn playback_info(
     let mut quality =
         if let Some(max) = max.filter(|max| source_rate.is_none_or(|rate| rate > *max)) {
             super::profile::quality_within(max).ok_or_else(|| {
-                ApiError::bad("This client bitrate limit is below the supported conversion quality")
+                ApiError::bad("This client bitrate limit is below the supported transcode quality")
             })?
         } else {
             rendition.as_deref().unwrap_or("auto")
         };
     let options_for = |quality: &str| -> Result<thelxinoe_playback::Options> {
-        // The rendition itself converts as Auto.
+        // The rendition itself transcodes as Auto.
         let rate = if rendition.as_deref() == Some(quality) {
             None
         } else {

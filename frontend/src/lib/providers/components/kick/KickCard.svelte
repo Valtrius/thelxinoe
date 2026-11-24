@@ -34,7 +34,7 @@
 </script>
 
 <LiveCard
-  platform="kick"
+  provider="kick"
   channelSlug={channel.slug}
   streamId={stream?.streamId}
   displayName={channel.displayName}
@@ -77,7 +77,7 @@
   {/snippet}
   {#snippet shortcuts()}
     <CardShortcutButton
-      platform="kick"
+      provider="kick"
       aria-label={`Copy ${channel.displayName} URL`}
       title="Copy Kick URL"
       onclick={() => onCopy(channel)}
@@ -85,7 +85,7 @@
       <Copy class="size-3.5" />
     </CardShortcutButton>
     <CardShortcutButton
-      platform="kick"
+      provider="kick"
       aria-label={`Open ${channel.displayName} in browser`}
       title="Open in browser"
       onclick={() => onOpen(channel)}
@@ -93,7 +93,7 @@
       <ExternalLink class="size-3.5" />
     </CardShortcutButton>
     <CardShortcutButton
-      platform="kick"
+      provider="kick"
       aria-label={`Stop tracking ${channel.displayName}`}
       title="Stop tracking"
       disabled={removeDisabled}

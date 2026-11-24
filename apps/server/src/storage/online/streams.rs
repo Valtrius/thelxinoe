@@ -29,7 +29,7 @@ pub(super) struct StreamSession {
     pub(super) position: Option<f64>,
 }
 
-pub(super) async fn create_with_delivery_write_twitch_streams(
+pub(super) async fn create_with_delivery_insert_playback_session(
     db: &Database,
     input: StreamSession,
 ) -> anyhow::Result<f64> {
@@ -46,7 +46,7 @@ pub(super) async fn create_with_delivery_write_twitch_streams(
         position,
     } = input;
 
-    db.write("online.streams.create_with_delivery_write_twitch_streams", move |db| {
+    db.write("online.streams.create_with_delivery_insert_playback_session", move |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if let Some(title)=live_title {
             anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM twitch_streams WHERE user_id=?1 AND 'twitch:'||channel_id=?2 AND active=1) OR EXISTS(SELECT 1 FROM kick_channels WHERE user_id=?1 AND 'kick:'||slug=?2)",params![owner,video],|r|r.get::<_,bool>(0))?,"Channel was removed before playback");

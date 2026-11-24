@@ -56,16 +56,15 @@ const personal: SettingsPageInfo[] = [
     label: 'Devices',
     icon: MonitorSmartphone,
     description:
-      'Browsers, desktops and media clients that can use your account.',
+      'Browsers, desktop apps and Jellyfin clients signed in as you.',
   },
 ];
-const native: SettingsPageInfo[] = [
+const desktopOnly: SettingsPageInfo[] = [
   {
     id: 'mpv',
     label: 'MPV',
     icon: Clapperboard,
-    description:
-      'The desktop player, its bundled tools and their configuration.',
+    description: 'The MPV player, its desktop tools and their configuration.',
   },
   {
     id: 'connection',
@@ -85,48 +84,48 @@ const admin: SettingsPageInfo[] = [
     id: 'analysis',
     label: 'Episode analysis',
     icon: AudioLines,
-    description: 'Finds intro and credit segments so viewers can skip them.',
+    description: 'Finds intro and credit segments so users can skip them.',
   },
   {
     id: 'providers',
     label: 'Provider applications',
     icon: AppWindow,
     description:
-      'Server-wide applications that let people connect their own YouTube, Twitch and Kick accounts.',
+      'Server-wide applications that let users connect their own YouTube, Twitch and Kick accounts.',
   },
   {
     id: 'services',
     label: 'Media services',
     icon: Boxes,
     description:
-      'Managed containers and connections for requests, downloads and library automation.',
+      'Owned and Connected services for requests, downloads and library automation.',
   },
   {
     id: 'jellyfin-import',
     label: 'Jellyfin import',
     icon: Import,
     description:
-      'Watched state, resume points and favorites from an existing Jellyfin server.',
+      'Watched marks, resume points and favorites from an existing Jellyfin server.',
   },
   {
     id: 'retention',
     label: 'Auto-delete',
     icon: Hourglass,
     description:
-      'Free up space by removing media once the right people have watched it.',
+      'Free up space by removing media once the right users have watched it.',
   },
   {
     id: 'backups',
     label: 'Backups',
     icon: ArchiveRestore,
     description:
-      'Encrypted archives of server state, credentials, deployment information and managed-service appdata.',
+      'Encrypted archives of server state, credentials, deployment information and the appdata of Owned services.',
   },
   {
     id: 'people',
-    label: 'People',
+    label: 'Users',
     icon: UsersRound,
-    description: 'Accounts on this server and what they can do.',
+    description: 'Users of this server and what they can do.',
   },
   {
     id: 'jobs',
@@ -143,7 +142,7 @@ const admin: SettingsPageInfo[] = [
   },
 ];
 
-// The settings pages this person can open, grouped as the navigation shows them.
+// The settings pages this user can open, grouped as the navigation shows them.
 export function settingsGroups(
   user: User,
   providers: ProviderAvailability,
@@ -156,7 +155,7 @@ export function settingsGroups(
           (item) =>
             item.id !== 'online' || Object.values(providers).some(Boolean),
         ),
-        ...(desktop ? native : []),
+        ...(desktop ? desktopOnly : []),
       ],
     },
     ...(user.role === 'admin'

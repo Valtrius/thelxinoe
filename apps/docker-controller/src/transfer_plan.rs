@@ -531,7 +531,7 @@ pub fn restart_threat(
     })
 }
 
-/// Host-level access or deployment overrides that keep a container outside managed ownership.
+/// Host-level access or deployment overrides that keep a container from being Owned.
 pub fn boundary(kind: &str, raw: &Value, image: &Value) -> Option<String> {
     let host = &raw["HostConfig"];
     if host["Privileged"] == true {
@@ -860,8 +860,10 @@ pub fn ports(raw: &Value, port: Option<u16>) -> (Option<u16>, Vec<Value>) {
                         "reason":"Managed services publish only on this host's loopback address; use Thelxinoe or a reverse proxy for remote access"}));
                 }
             } else {
-                changes.push(json!({"area":"ports","before":before,"after":"Not published",
-                    "reason":"Only the service's own web port is published by managed deployments"}));
+                changes.push(
+                    json!({"area":"ports","before":before,"after":"Not published",
+                    "reason":"Only the service's own web port is published for Owned services"}),
+                );
             }
         }
     }

@@ -102,12 +102,12 @@ async fn forget(State(state): State<AppState>, headers: HeaderMap) -> Result<Jso
     Ok(Json(json!({"saved":true})))
 }
 
-/// Jellyfin's accounts with what each has to import, and who here matches each by name.
+/// The Jellyfin accounts with what each has to import, and the user here that matches each by name.
 async fn accounts(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
     let server = saved(&state).await?.ok_or_else(not_connected)?;
     let jellyfin = Jellyfin::new(&server.url, &server.api_key)?;
-    let people = storage::people(&state.db).await?;
+    let users = storage::users(&state.db).await?;
     let mut accounts = Vec::new();
     for account in jellyfin.accounts().await? {
         let (played, in_progress, favorites) = tokio::try_join!(
@@ -115,7 +115,7 @@ async fn accounts(State(state): State<AppState>, headers: HeaderMap) -> Result<J
             jellyfin.count(&account.id, Filter::Resumable),
             jellyfin.count(&account.id, Filter::Favorite),
         )?;
-        let suggested = people
+        let suggested = users
             .iter()
             .find(|(_, username)| username.to_lowercase() == account.name.to_lowercase())
             .map(|(id, _)| id);
@@ -125,11 +125,11 @@ async fn accounts(State(state): State<AppState>, headers: HeaderMap) -> Result<J
             "played":played,"in_progress":in_progress,"favorites":favorites,"suggested":suggested,
         }));
     }
-    let people: Vec<Value> = people
+    let users: Vec<Value> = users
         .iter()
         .map(|(id, username)| json!({"id":id,"username":username}))
         .collect();
-    Ok(Json(json!({"accounts":accounts,"people":people})))
+    Ok(Json(json!({"accounts":accounts,"people":users})))
 }
 
 #[derive(Deserialize)]
@@ -155,14 +155,14 @@ struct Request {
 #[derive(Clone)]
 struct Meta {
     server: String,
-    /// Jellyfin ID and name, and the person here.
+    /// Jellyfin ID and name, and the user here.
     accounts: Vec<(String, String, String, String)>,
     groups: Vec<Group>,
     missing: Vec<Value>,
     missing_counts: Vec<usize>,
 }
 
-/// Reads each account's history from Jellyfin and decides where every item goes.
+/// Reads each Jellyfin account's history and decides where every item goes.
 async fn plan(state: &AppState, input: &Request) -> Result<(Meta, Vec<Entry>)> {
     if input.accounts.is_empty() || input.accounts.len() > 100 {
         return Err(ApiError::bad("Choose the Jellyfin accounts to import"));
@@ -181,15 +181,16 @@ async fn plan(state: &AppState, input: &Request) -> Result<(Meta, Vec<Entry>)> {
         .into_iter()
         .map(|account| (account.id, account.name))
         .collect();
-    let people: HashMap<String, String> = storage::people(&state.db).await?.into_iter().collect();
+    let users: HashMap<String, String> = storage::users(&state.db).await?.into_iter().collect();
     let mut accounts = Vec::new();
     let mut seen = HashSet::new();
     for mapping in &input.accounts {
-        let (Some(name), Some(username)) = (
-            known.get(&mapping.jellyfin_id),
-            people.get(&mapping.user_id),
-        ) else {
-            return Err(ApiError::bad("An account to import no longer exists"));
+        let (Some(name), Some(username)) =
+            (known.get(&mapping.jellyfin_id), users.get(&mapping.user_id))
+        else {
+            return Err(ApiError::bad(
+                "A Jellyfin account or user to import no longer exists",
+            ));
         };
         if !seen.insert(&mapping.jellyfin_id) {
             return Err(ApiError::bad("Each Jellyfin account can be imported once"));

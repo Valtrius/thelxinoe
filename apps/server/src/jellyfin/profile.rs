@@ -264,7 +264,7 @@ pub fn embeds_subtitle(profile: &Value, codec: &str, language: &str, container: 
                 || (text && !styled(codec) && !styled(format))
         })
 }
-/// The highest conversion quality whose video and 192 kbps audio fit a client's bitrate limit.
+/// The highest transcode quality whose video and 192 kbps audio fit a client's bitrate limit.
 pub fn quality_within(max: i64) -> Option<&'static str> {
     [
         (20_192_000, "20mbps"),
@@ -276,8 +276,8 @@ pub fn quality_within(max: i64) -> Option<&'static str> {
     .find(|(least, _)| max >= *least)
     .map(|(_, quality)| quality)
 }
-/// The quality that keeps a planned video conversion and its audio within the client's limit,
-/// if the requested one doesn't. Auto converts at the rate of its picture, which a source
+/// The quality that keeps a planned video transcode and its audio within the client's limit,
+/// if the requested one doesn't. Auto transcodes at the rate of its picture, which a source
 /// within the limit can still exceed.
 pub fn bounded_quality(
     source: &Source,
@@ -294,7 +294,7 @@ pub fn bounded_quality(
         return Ok(None);
     }
     quality_within(max).map(Some).ok_or_else(|| {
-        ApiError::bad("This client bitrate limit is below the supported conversion quality")
+        ApiError::bad("This client bitrate limit is below the supported transcode quality")
     })
 }
 /// The lowest H.264 level that holds a picture, by its macroblocks per frame and per second.
@@ -549,7 +549,7 @@ fn negotiate_for_container(
     } else {
         conversion.is_some()
     };
-    // Whether the client takes the video copied, with the original audio or converted audio.
+    // Whether the client takes the video copied, with the original audio or transcoded audio.
     let copies = |values: &Properties| {
         let mut audio_converted = values.clone();
         for key in [
@@ -688,7 +688,7 @@ mod tests {
         (source, profile)
     }
     #[test]
-    fn unsupported_depth_resolution_level_and_channels_require_a_supported_conversion() {
+    fn unsupported_depth_resolution_level_and_channels_require_a_supported_transcode() {
         let (source, profile) = fixture();
         let caps = negotiate(&source, Some(1), &profile, true, true, Some(8_000_000));
         let conversion = caps.conversion.as_ref().unwrap();
@@ -749,9 +749,9 @@ mod tests {
         assert_eq!(container(&source, &profile).as_deref(), Some("ts"));
     }
     #[test]
-    fn conversions_stay_within_the_client_bitrate_limit_even_from_a_smaller_source() {
+    fn transcodes_stay_within_the_client_bitrate_limit_even_from_a_smaller_source() {
         let (mut source, _) = fixture();
-        // A 6 Mbps 4K HEVC source that an H.264 client receives converted.
+        // A 6 Mbps 4K HEVC source that an H.264 client receives transcoded.
         source.probe["streams"][0] = json!({"index":0,"codec_type":"video","codec_name":"hevc","profile":"Main","width":3840,"height":2160,"avg_frame_rate":"30/1","bits_per_raw_sample":"8"});
         source.probe["format"] = json!({"bit_rate":"6000000","duration":"60"});
         let profile = json!({"DirectPlayProfiles":[{"Type":"Video","Container":"mkv","VideoCodec":"h264","AudioCodec":"aac"}],"TranscodingProfiles":[{"Type":"Video","Container":"ts","Protocol":"hls","VideoCodec":"h264","AudioCodec":"aac"}]});
@@ -806,7 +806,7 @@ mod tests {
         let caps = negotiate(&source, Some(1), &profile, true, true, None);
         assert_eq!(caps.containers, vec!["mkv"]);
         assert!(caps.conversion.is_some());
-        // Without a base layer it shows, the client gets neither the original nor a conversion.
+        // Without a base layer it shows, the client gets neither the original nor a transcode.
         source.probe["streams"][0] = dolby_vision(5, 0, "bt709");
         let caps = negotiate(&source, Some(1), &profile, true, true, None);
         assert!(caps.containers.is_empty());

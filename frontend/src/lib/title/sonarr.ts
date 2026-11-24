@@ -1,6 +1,6 @@
 import { api } from '../api';
 
-// Administrator actions on a series' Sonarr episodes. The series is the library id or
+// Administrator actions on a show's Sonarr episodes. The show is the library id or
 // tmdb:/tvdb: reference its seasons load from; episodes are Sonarr ids.
 const path = (series: string) => `/admin/series/${encodeURIComponent(series)}`;
 

@@ -185,7 +185,7 @@
     {#await pages.providers()}{@render loading()}{:then { default: ProviderView }}
       <ProviderView
         admin={user.role === 'admin'}
-        platform={route.section.toLowerCase() as 'youtube' | 'twitch' | 'kick'}
+        provider={route.section.toLowerCase() as 'youtube' | 'twitch' | 'kick'}
         userId={user.id}
         watchlistId={route.watchlist}
         watchlistChanged={(watchlist) => go({ ...route, watchlist })}

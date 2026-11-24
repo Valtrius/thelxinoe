@@ -190,10 +190,10 @@ export function allowedRoute(
   desktop: boolean,
   providers: ProviderAvailability,
 ): AppRoute {
-  const platform = route.section.toLowerCase();
+  const provider = route.section.toLowerCase();
   if (
-    Object.hasOwn(providers, platform) &&
-    !providers[platform as keyof ProviderAvailability]
+    Object.hasOwn(providers, provider) &&
+    !providers[provider as keyof ProviderAvailability]
   )
     return { ...homeRoute };
   if (route.section !== 'Settings') return route;

@@ -47,7 +47,7 @@ pub struct Capabilities {
     /// Copied video loses its Dolby Vision layers, leaving the base picture the client shows.
     #[serde(default)]
     pub strip_dolby_vision: bool,
-    /// Shows an embedded picture subtitle by having a conversion burn it into the video.
+    /// Shows an embedded picture subtitle by having a transcode burn it into the video.
     #[serde(default)]
     pub burn_subtitles: bool,
 }
@@ -75,7 +75,7 @@ pub fn picture_rate(width: u64, height: u64) -> u32 {
         .flatten()
         .unwrap_or(8_000_000)
 }
-/// The video rate of a conversion: the requested one, else that of its output picture, within
+/// The video rate of a transcode: the requested one, else that of its output picture, within
 /// the client's H.264 level.
 pub fn conversion_rate(options: &Options, probe: &Value) -> Result<u32> {
     let conversion = options.capabilities.conversion.as_ref();
@@ -101,10 +101,10 @@ pub fn tone_map_filter(video: &Value) -> String {
 /// Maps PQ or HLG to SDR BT.709 in linear light, without the HDR metadata FFmpeg would
 /// otherwise pass on to the SDR output.
 const TONE_MAP: &str = ",zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL";
-/// FFmpeg output options converting the audio to stereo AAC.
+/// FFmpeg output options transcoding the audio to stereo AAC.
 pub(crate) const AUDIO_CONVERSION_ARGS: [&str; 8] =
     ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000"];
-/// The `fps` filter of a conversion's limits, before scaling or after it. Frames dropped
+/// The `fps` filter of a transcode's limits, before scaling or after it. Frames dropped
 /// first are neither scaled nor tone mapped.
 pub(crate) fn frame_rate_filters(c: &Conversion, video: Option<&Value>) -> (String, String) {
     let source_rate = video
@@ -127,7 +127,7 @@ pub(crate) fn picture_size(options: &Options) -> String {
     };
     format!("w={}:h={}", side("iw"), side("ih"))
 }
-/// FFmpeg options converting the video to 8-bit SDR H.264, on the GPU when `hardware` can.
+/// FFmpeg options transcoding the video to 8-bit SDR H.264, on the GPU when `hardware` can.
 pub(crate) fn video_conversion_args(
     options: &Options,
     probe: &Value,
@@ -155,7 +155,7 @@ pub(crate) fn video_conversion_args(
             || !["baseline", "main", "high"].contains(&c.profile.as_str())
             || ![30, 31, 32, 41, 42, 50, 51, 52, 60, 61, 62].contains(&c.level)
         {
-            bail!("Invalid conversion limits");
+            bail!("Invalid transcode limits");
         }
         let (before, after) = frame_rate_filters(c, video);
         filter = format!(
@@ -245,7 +245,7 @@ pub(crate) fn video_conversion_args(
         output,
     })
 }
-/// The highest rate a conversion uses at an H.264 level, well within the level's own.
+/// The highest rate a transcode uses at an H.264 level, well within the level's own.
 pub fn level_rate(level: u32) -> u32 {
     match level {
         30 => 10_000_000,
@@ -322,7 +322,7 @@ impl Preferences {
 }
 /// The FFprobe codecs of the text subtitles the server converts to WebVTT and SRT.
 pub const TEXT_SUBTITLES: [&str; 6] = ["subrip", "webvtt", "ass", "ssa", "mov_text", "text"];
-/// The FFprobe codecs of the picture subtitles a conversion can burn into the video.
+/// The FFprobe codecs of the picture subtitles a transcode can burn into the video.
 pub const PICTURE_SUBTITLES: [&str; 3] = ["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"];
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Track {
@@ -340,7 +340,7 @@ pub struct Track {
     pub path: Option<PathBuf>,
 }
 impl Track {
-    /// An embedded picture subtitle, which a conversion can burn into the video.
+    /// An embedded picture subtitle, which a transcode can burn into the video.
     pub fn picture(&self) -> bool {
         self.kind == "subtitle"
             && self.index.is_some()
@@ -348,7 +348,7 @@ impl Track {
     }
 }
 /// The first forced text subtitle in the language of audio track `audio`, or of the first audio
-/// track when `None`. A picture subtitle needs a conversion, so it never shows by default.
+/// track when `None`. A picture subtitle needs a transcode, so it never shows by default.
 pub fn forced_subtitle(tracks: &[Track], audio: Option<i64>) -> Option<&Track> {
     let language = tracks
         .iter()

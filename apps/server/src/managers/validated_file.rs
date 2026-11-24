@@ -71,7 +71,7 @@ impl ValidatedFile {
                     .as_nanos()
                     .to_string()
                     == target.modified,
-            "File generation changed"
+            "File version changed"
         );
         // The same sampled identity the scan recorded; the stamps detect any replacement.
         let fingerprint = thelxinoe_catalog::fingerprint(&mut file)?;

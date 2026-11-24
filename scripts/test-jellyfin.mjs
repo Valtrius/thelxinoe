@@ -367,7 +367,7 @@ r = await compat.post('/Sessions/Playing/Progress', {
 assert.equal(
   r.status(),
   400,
-  'Video progress still requires an explicit play session',
+  'Video progress still requires an explicit playback session',
 );
 r = await compat.get('/Items?SearchTerm=Direct&IncludeItemTypes=Movie', {
   headers,
@@ -749,7 +749,7 @@ try {
     assert.equal(
       response.status(),
       status,
-      `Disabled conversion: ${title}, direct stream ${stream}`,
+      `Disabled transcode: ${title}, direct stream ${stream}`,
     );
     if (response.ok()) {
       const session = await response.json();
@@ -835,7 +835,7 @@ for (const mode of ['remux', 'transcode', 'audio-only']) {
       assert.deepEqual(
         delivered,
         original.slice(first, first + delivered.length),
-        'Jellyfin audio conversion must preserve original video frames, including reverse segment requests',
+        'Jellyfin audio transcode must preserve original video frames, including reverse segment requests',
       );
     }
     execFileSync(

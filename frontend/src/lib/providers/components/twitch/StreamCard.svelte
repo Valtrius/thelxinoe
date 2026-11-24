@@ -39,7 +39,7 @@
 </script>
 
 <LiveCard
-  platform="twitch"
+  provider="twitch"
   streamId={stream.streamId}
   displayName={stream.displayName}
   title={stream.title}
@@ -69,7 +69,7 @@
   {/snippet}
   {#snippet shortcuts()}
     <CardShortcutButton
-      platform="twitch"
+      provider="twitch"
       aria-label={`Copy ${stream.displayName} URL`}
       title="Copy Twitch URL"
       onclick={() => onCopy(stream)}
@@ -77,7 +77,7 @@
       <Copy class="size-3.5" />
     </CardShortcutButton>
     <CardShortcutButton
-      platform="twitch"
+      provider="twitch"
       aria-label={`Open ${stream.displayName} in browser`}
       title="Open in browser"
       onclick={() => onOpen(stream)}
@@ -85,7 +85,7 @@
       <ExternalLink class="size-3.5" />
     </CardShortcutButton>
     <CardShortcutButton
-      platform="twitch"
+      provider="twitch"
       aria-label={`Open ${stream.displayName} chat in browser`}
       title="Open chat in browser"
       onclick={() => onChat(stream)}

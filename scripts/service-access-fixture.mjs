@@ -72,8 +72,8 @@ export async function fixture({
   const compose = (...args) => infrastructure.compose(...args);
   let browser, context;
   const services = {};
-  const attachedContainers = [];
-  const attachedVolumes = [];
+  const connectedContainers = [];
+  const connectedVolumes = [];
   const sourceProjects = [];
   const secrets = new Set(['test-only long passphrase']);
   let closed = false;
@@ -293,7 +293,7 @@ export async function fixture({
     closed = true;
   }
 
-  async function attach(
+  async function connect(
     kind,
     urlBase,
     image,
@@ -312,10 +312,10 @@ export async function fixture({
       extraMounts = [],
     } = {},
   ) {
-    const name = `${project}-attached-${kind}-${attachedContainers.length}`;
+    const name = `${project}-attached-${kind}-${connectedContainers.length}`;
     const directory =
       configDirectory ??
-      `${root}/attached-${kind}-${attachedContainers.length}`;
+      `${root}/attached-${kind}-${connectedContainers.length}`;
     const internalPort = {
       radarr: 7878,
       sonarr: 8989,
@@ -356,13 +356,13 @@ export async function fixture({
         `${directory}/config.xml`,
         `<Config><BindAddress>*</BindAddress><Port>${internalPort}</Port><UrlBase>${urlBase}</UrlBase>${kind === 'lidarr' ? '' : `<AllowedHosts>${name};custom.example</AllowedHosts>`}<EnableSsl>False</EnableSsl><LaunchBrowser>False</LaunchBrowser><ApiKey>${key}</ApiKey><AuthenticationMethod>${authentication}</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired>${kind === 'radarr' && authentication === 'Forms' ? '<AuthenticationEnabled>True</AuthenticationEnabled>' : ''}<UpdateAutomatically>False</UpdateAutomatically></Config>`,
       );
-    attachedContainers.push(name);
-    infrastructure.update({ containers: attachedContainers });
+    connectedContainers.push(name);
+    infrastructure.update({ containers: connectedContainers });
     // Docker-volume appdata starts from the same seeded files as a bind.
     const appdata = volume ? `${name}-config` : directory;
     if (volume) {
-      attachedVolumes.push(appdata);
-      infrastructure.update({ volumes: attachedVolumes });
+      connectedVolumes.push(appdata);
+      infrastructure.update({ volumes: connectedVolumes });
       docker(
         'volume',
         'create',
@@ -485,9 +485,9 @@ export async function fixture({
           },
         );
         if (!response.ok())
-          throw Error(`Attached NZBGet/${path}: HTTP ${response.status()}`);
+          throw Error(`Connected NZBGet/${path}: HTTP ${response.status()}`);
         const body = await response.json();
-        if (body.error) throw Error(`Attached NZBGet/${path}: RPC rejected`);
+        if (body.error) throw Error(`Connected NZBGet/${path}: RPC rejected`);
         return body.result;
       }
       const response = await context.request.fetch(
@@ -503,7 +503,7 @@ export async function fixture({
       );
       if (!response.ok())
         throw Error(
-          `Attached ${kind}/${path}: HTTP ${response.status()} ${(await response.text()).slice(0, 400)}`,
+          `Connected ${kind}/${path}: HTTP ${response.status()} ${(await response.text()).slice(0, 400)}`,
         );
       const text = await response.text();
       return text ? JSON.parse(text) : null;
@@ -511,9 +511,9 @@ export async function fixture({
     // An existing Seerr has an administrator; set one up through a fixture Jellyfin.
     async function initializeSeerr() {
       // Hostnames are DNS labels of at most 63 characters.
-      const peer = `${project}-jf-${attachedContainers.length}`;
-      attachedContainers.push(peer);
-      infrastructure.update({ containers: attachedContainers });
+      const peer = `${project}-jf-${connectedContainers.length}`;
+      connectedContainers.push(peer);
+      infrastructure.update({ containers: connectedContainers });
       docker(
         'run',
         '-d',
@@ -557,7 +557,7 @@ export async function fixture({
     }
     async function register() {
       await waitForState(
-        `Attached ${kind} startup`,
+        `Connected ${kind} startup`,
         async () => {
           if (kind === 'nzbget') return (await direct('version')) ? kind : '';
           if (seerr) {
@@ -583,7 +583,7 @@ export async function fixture({
       if (seerr) await initializeSeerr();
       const support = ['prowlarr', 'bazarr', 'nzbget', 'seerr'].includes(kind);
       return api(support ? '/admin/support' : '/admin/managers', 'POST', {
-        name: `Attached ${kind}`,
+        name: `Connected ${kind}`,
         kind,
         container_id: container,
         port: internalPort,
@@ -654,8 +654,8 @@ export async function fixture({
   }
   async function peer({ existingLayout = false } = {}) {
     const name = `${project}-peer`;
-    attachedContainers.push(name);
-    infrastructure.update({ containers: attachedContainers });
+    connectedContainers.push(name);
+    infrastructure.update({ containers: connectedContainers });
     const container = docker(
       'run',
       '-d',
@@ -933,7 +933,7 @@ export async function fixture({
       stack,
       compose,
       close,
-      attach,
+      connect,
       peer,
       createMappingMovie,
       transfer,

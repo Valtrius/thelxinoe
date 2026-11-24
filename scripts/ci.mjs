@@ -310,7 +310,7 @@ async function transfers() {
 }
 
 /**
- * The pinned Windows MPV and FFmpeg the native playback tests use, verified by digest.
+ * The pinned Windows MPV and FFmpeg the MPV player tests use, verified by digest.
  * Extracted copies are kept in .local/ci-tools, which CI caches by the pins.
  */
 async function nativeTools() {

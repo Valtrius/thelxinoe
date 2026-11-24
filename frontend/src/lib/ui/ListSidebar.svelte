@@ -65,9 +65,9 @@
     canDelete: (list: List) => boolean;
     listCaption?: Snippet<[List]>;
     row: Snippet<[Item, ListSidebarRow]>;
-    /** Left out when the viewer can't change the list's sort. */
+    /** Left out when the user can't change the list's sort. */
     sortMenu?: Snippet<[List]>;
-    /** Left out when the viewer can't change the list's settings. */
+    /** Left out when the user can't change the list's settings. */
     settingsMenu?: Snippet<[List]>;
     onSelect: (id: List['id']) => void;
     /** Resolves to why the list wasn't created, if it wasn't. */

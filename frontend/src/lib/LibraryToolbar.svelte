@@ -241,7 +241,7 @@
           {/each}
         </div>
         {#if shows}
-          <p class="mt-4 mb-1.5 text-xs text-muted">Series</p>
+          <p class="mt-4 mb-1.5 text-xs text-muted">Show status</p>
           <div class="flex flex-wrap gap-1.5">
             {#each seriesStates as [state, label] (state)}
               <button

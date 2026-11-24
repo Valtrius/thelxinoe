@@ -25,7 +25,7 @@ const QUEUE_PAGES: usize = 40;
 const BACKOFF_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// A queue that cannot be confirmed for this long stops showing progress.
 const STALE_QUEUE: std::time::Duration = std::time::Duration::from_secs(300);
-/// Bursts of upstream changes, such as retention deleting many titles, refresh once.
+/// Bursts of upstream changes, such as auto-delete removing many titles, refresh once.
 const FORCED_GAP: std::time::Duration = std::time::Duration::from_secs(10);
 /// Download progress is announced in steps of this many percent.
 const PROGRESS_STEP: i64 = 5;
@@ -383,7 +383,7 @@ impl Snapshot {
             .map(Arc::as_ref)
             .find(|inventory| inventory.service == id)
     }
-    /// Cheap change detection over what viewers can see: queue stages and progress
+    /// Cheap change detection over what users can see: queue stages and progress
     /// in coarse steps, so a running download does not refresh every page each poll.
     fn fingerprint(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -806,7 +806,7 @@ fn stage(record: &QueueItem) -> Option<Stage> {
     .then_some(Stage::Queued)
 }
 /// Byte-weighted progress across queue records; importing counts as complete.
-fn transfer<'a>(records: impl IntoIterator<Item = &'a QueueItem>) -> Option<Status> {
+fn download_progress<'a>(records: impl IntoIterator<Item = &'a QueueItem>) -> Option<Status> {
     let (mut found, mut active, mut done, mut size, mut eta) = (false, false, 0i64, 0i64, None);
     for record in records {
         let Some(stage) = stage(record) else {
@@ -849,7 +849,7 @@ fn movie_status(inventory: &Inventory, movie: &Title, library: bool, now: i64) -
     });
     let mut status = if movie.has_file || library {
         Status::new(Phase::Available)
-    } else if let Some(status) = transfer(
+    } else if let Some(status) = download_progress(
         inventory
             .queue
             .iter()
@@ -878,7 +878,7 @@ fn episode_status(
 ) -> Status {
     let mut status = if episode.has_file || library {
         Status::new(Phase::Available)
-    } else if let Some(status) = transfer(
+    } else if let Some(status) = download_progress(
         inventory
             .queue
             .iter()
@@ -937,7 +937,7 @@ fn episodes_status(
             coming |= fetched && (episode.air.is_some() || !ended);
         }
     }
-    let mut status = if let Some(mut status) = transfer(
+    let mut status = if let Some(mut status) = download_progress(
         inventory
             .queue
             .iter()
@@ -1018,7 +1018,7 @@ fn season_status(found: Found<'_>, season: i64, library: &HashSet<i64>, now: i64
 
 /// How one catalog item names its manager title.
 #[derive(Clone, Debug, Default)]
-pub(super) struct Link {
+pub(super) struct Locator {
     pub(super) id: String,
     pub(super) kind: String,
     pub(super) available: bool,
@@ -1042,12 +1042,12 @@ pub(super) struct Present {
 }
 #[derive(Default)]
 pub(super) struct Catalog {
-    pub(super) links: Vec<Link>,
+    pub(super) locators: Vec<Locator>,
     pub(super) present: HashMap<String, Vec<Present>>,
 }
 /// Manager titles that already have a catalog movie or show.
 #[derive(Default)]
-pub(super) struct Linked {
+pub(super) struct Cataloged {
     pub(super) entities: HashSet<(String, i64)>,
     pub(super) tmdb: HashSet<i64>,
     pub(super) tvdb: HashSet<i64>,
@@ -1086,12 +1086,12 @@ fn manager(kind: &str) -> Option<&'static str> {
     }
 }
 /// The bound manager title, else the one with the same provider identity.
-fn find<'a>(snapshot: &'a Snapshot, manager: &str, link: &Link) -> Option<Found<'a>> {
-    if let (Some(service), Some(entity)) = (&link.service_id, link.entity_id)
+fn find<'a>(snapshot: &'a Snapshot, manager: &str, locator: &Locator) -> Option<Found<'a>> {
+    if let (Some(service), Some(entity)) = (&locator.service_id, locator.entity_id)
         && let Some(inventory) = snapshot.services.get(manager)
         && inventory.service == *service
         && let Some(title) = inventory.titles.get(&entity)
-        && link.external_id.as_deref().is_none_or(|external| {
+        && locator.external_id.as_deref().is_none_or(|external| {
             let current = if manager == "radarr" {
                 title.tmdb_id
             } else {
@@ -1102,11 +1102,12 @@ fn find<'a>(snapshot: &'a Snapshot, manager: &str, link: &Link) -> Option<Found<
     {
         return Some(Found { inventory, title });
     }
-    let by_tvdb = (manager == "sonarr").then_some(link.tvdb_id).flatten();
+    let by_tvdb = (manager == "sonarr").then_some(locator.tvdb_id).flatten();
     by_tvdb
         .and_then(|id| find_ref(snapshot, manager, Ref::Tvdb(id)))
         .or_else(|| {
-            link.tmdb_id
+            locator
+                .tmdb_id
                 .and_then(|id| find_ref(snapshot, manager, Ref::Tmdb(id)))
         })
 }
@@ -1146,18 +1147,23 @@ fn present_ids(found: Found<'_>, present: &[Present]) -> HashSet<i64> {
         .map(|e| e.id)
         .collect()
 }
-/// The raw status of one catalog item, before it is shaped for its viewer.
-fn link_status(snapshot: &Snapshot, link: &Link, present: &[Present], now: i64) -> Option<Status> {
-    let found = find(snapshot, manager(&link.kind)?, link)?;
-    Some(match link.kind.as_str() {
-        "movie" => movie_status(found.inventory, found.title, link.available, now),
+/// The raw status of one catalog item, before it is shaped for its user.
+fn locator_status(
+    snapshot: &Snapshot,
+    locator: &Locator,
+    present: &[Present],
+    now: i64,
+) -> Option<Status> {
+    let found = find(snapshot, manager(&locator.kind)?, locator)?;
+    Some(match locator.kind.as_str() {
+        "movie" => movie_status(found.inventory, found.title, locator.available, now),
         "show" => show_status(found, &present_ids(found, present), now),
-        "season" => season_status(found, link.season?, &present_ids(found, present), now),
+        "season" => season_status(found, locator.season?, &present_ids(found, present), now),
         _ => episode_status(
             found.inventory,
             found.title,
-            episode_for(found, &link.mapped, link.season, link.episode)?,
-            link.available,
+            episode_for(found, &locator.mapped, locator.season, locator.episode)?,
+            locator.available,
             now,
         ),
     })
@@ -1195,11 +1201,11 @@ pub(crate) async fn decorate_titles(
 ) -> Result<HashMap<String, Facts>> {
     let (snapshot, catalog) = decorated(state, p, items, grant).await?;
     Ok(catalog
-        .links
+        .locators
         .iter()
-        .filter_map(|link| {
-            let found = find(&snapshot, manager(&link.kind)?, link)?;
-            Some((link.id.clone(), found.title.facts()))
+        .filter_map(|locator| {
+            let found = find(&snapshot, manager(&locator.kind)?, locator)?;
+            Some((locator.id.clone(), found.title.facts()))
         })
         .collect())
 }
@@ -1222,21 +1228,24 @@ async fn decorated(
     };
     let now = now();
     let statuses = catalog
-        .links
+        .locators
         .iter()
-        .filter_map(|link| {
-            let present = catalog.present.get(&link.id).map_or(&[][..], Vec::as_slice);
-            link_status(&snapshot, link, present, now)
-                .map(|status| (link.id.as_str(), status.for_viewer(admin(p))))
+        .filter_map(|locator| {
+            let present = catalog
+                .present
+                .get(&locator.id)
+                .map_or(&[][..], Vec::as_slice);
+            locator_status(&snapshot, locator, present, now)
+                .map(|status| (locator.id.as_str(), status.for_viewer(admin(p))))
         })
         .collect::<HashMap<_, _>>();
     let backdrops = catalog
-        .links
+        .locators
         .iter()
-        .filter_map(|link| {
-            find(&snapshot, manager(&link.kind)?, link)
+        .filter_map(|locator| {
+            find(&snapshot, manager(&locator.kind)?, locator)
                 .and_then(|found| artwork_url(found, "fanart", grant))
-                .map(|url| (link.id.as_str(), url))
+                .map(|url| (locator.id.as_str(), url))
         })
         .collect::<HashMap<_, _>>();
     for item in items {
@@ -1264,15 +1273,16 @@ pub(crate) async fn detail(
     } else {
         storage::catalog(&state.db, vec![id]).await?
     };
-    let link = catalog.links.first();
-    let present = link
-        .and_then(|link| catalog.present.get(&link.id))
+    let locator = catalog.locators.first();
+    let present = locator
+        .and_then(|locator| catalog.present.get(&locator.id))
         .map_or(&[][..], Vec::as_slice);
-    item["status"] = link
-        .and_then(|link| link_status(&snapshot, link, present, now()))
+    item["status"] = locator
+        .and_then(|locator| locator_status(&snapshot, locator, present, now()))
         .map_or(Value::Null, |status| json!(status.for_viewer(admin(p))));
     item["backdrop_url"] = json!(
-        link.and_then(|link| find(&snapshot, manager(&link.kind)?, link))
+        locator
+            .and_then(|locator| find(&snapshot, manager(&locator.kind)?, locator))
             .and_then(|found| artwork_url(found, "fanart", grant))
     );
     Ok(())
@@ -1295,16 +1305,16 @@ pub(crate) async fn title_art(
     if snapshot.services.is_empty() || ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let links = storage::links(&state.db, ids).await?;
-    Ok(links
+    let locators = storage::locators(&state.db, ids).await?;
+    Ok(locators
         .iter()
-        .filter_map(|link| {
-            let found = find(&snapshot, manager(&link.kind)?, link)?;
+        .filter_map(|locator| {
+            let found = find(&snapshot, manager(&locator.kind)?, locator)?;
             let art = TitleArt {
                 backdrop: found.title.image("fanart").is_some(),
                 logo: found.title.image("clearlogo").is_some(),
             };
-            (art != TitleArt::default()).then(|| (link.id.clone(), art))
+            (art != TitleArt::default()).then(|| (locator.id.clone(), art))
         })
         .collect())
 }
@@ -1316,12 +1326,12 @@ pub(crate) async fn serve_title_art(
     kind: &str,
     request: Request<Body>,
 ) -> Result<Response> {
-    let links = storage::links(&state.db, vec![media_id.to_owned()]).await?;
+    let locators = storage::locators(&state.db, vec![media_id.to_owned()]).await?;
     let title = {
         let snapshot = snapshot(state);
-        links
+        locators
             .first()
-            .and_then(|link| find(&snapshot, manager(&link.kind)?, link))
+            .and_then(|locator| find(&snapshot, manager(&locator.kind)?, locator))
             .map(|found| (found.inventory.service.clone(), found.title.id))
     };
     let (service, entity) = title.ok_or_else(ApiError::not_found)?;
@@ -1361,11 +1371,11 @@ pub(crate) async fn virtual_titles(
     if !snapshot.services.contains_key(manager) {
         return Ok(Vec::new());
     }
-    let linked = storage::linked(&state.db, kind.to_owned(), false).await?;
+    let cataloged = storage::cataloged(&state.db, kind.to_owned(), false).await?;
     Ok(virtual_items(
         &snapshot,
         kind,
-        &linked,
+        &cataloged,
         admin(p),
         now(),
         grant,
@@ -1374,7 +1384,7 @@ pub(crate) async fn virtual_titles(
 fn virtual_items(
     snapshot: &Snapshot,
     kind: &str,
-    linked: &Linked,
+    cataloged: &Cataloged,
     admin: bool,
     now: i64,
     grant: &str,
@@ -1387,11 +1397,12 @@ fn virtual_items(
     };
     let mut items = Vec::new();
     for title in inventory.titles.values() {
-        let known = linked
+        let known = cataloged
             .entities
             .contains(&(inventory.service.clone(), title.id))
-            || title.tmdb_id.is_some_and(|id| linked.tmdb.contains(&id))
-            || (manager == "sonarr" && title.tvdb_id.is_some_and(|id| linked.tvdb.contains(&id)));
+            || title.tmdb_id.is_some_and(|id| cataloged.tmdb.contains(&id))
+            || (manager == "sonarr"
+                && title.tvdb_id.is_some_and(|id| cataloged.tvdb.contains(&id)));
         if known {
             continue;
         }
@@ -1416,15 +1427,15 @@ fn virtual_items(
 
 /// The TMDB and TVDB ids of every movie or show the library lists: its own items and
 /// the Radarr or Sonarr titles shown beside them.
-pub(super) async fn library_ids(state: &AppState, kind: &str) -> Result<Linked> {
-    let mut linked = storage::linked(&state.db, kind.to_owned(), kind == "movie").await?;
+pub(super) async fn library_ids(state: &AppState, kind: &str) -> Result<Cataloged> {
+    let mut cataloged = storage::cataloged(&state.db, kind.to_owned(), kind == "movie").await?;
     if let Some(inventory) = manager(kind).and_then(|m| snapshot(state).services.get(m).cloned()) {
-        linked.tmdb.extend(inventory.by_tmdb.keys());
+        cataloged.tmdb.extend(inventory.by_tmdb.keys());
         if kind == "show" {
-            linked.tvdb.extend(inventory.by_tvdb.keys());
+            cataloged.tvdb.extend(inventory.by_tvdb.keys());
         }
     }
-    Ok(linked)
+    Ok(cataloged)
 }
 
 /// A library season and its episodes, with the caller's own progress.
@@ -1480,7 +1491,7 @@ fn seasons_value(
     grant: &str,
 ) -> Value {
     let mut groups = BTreeMap::<i64, Group<'_>>::new();
-    let mut linked = HashSet::new();
+    let mut cataloged = HashSet::new();
     let mut present = HashSet::new();
     for season in library {
         let number = season.number.unwrap_or(0);
@@ -1492,7 +1503,7 @@ fn seasons_value(
                 episode_for(found, &episode.mapped, Some(number), episode.number)
             });
             if let Some(upstream) = upstream {
-                linked.insert(upstream.id);
+                cataloged.insert(upstream.id);
                 if episode.available {
                     present.insert(upstream.id);
                 }
@@ -1539,7 +1550,7 @@ fn seasons_value(
             .get(&found.title.id)
             .into_iter()
             .flatten()
-            .filter(|e| !linked.contains(&e.id))
+            .filter(|e| !cataloged.contains(&e.id))
         {
             let status =
                 episode_status(found.inventory, found.title, episode, false, now).for_viewer(admin);
@@ -1592,11 +1603,11 @@ fn seasons_value(
     json!({"seasons":seasons})
 }
 
-/// A show by library id or `tmdb:`/`tvdb:` reference: its catalog link, if the library
+/// A show by library id or `tmdb:`/`tvdb:` reference: its catalog locator, if the library
 /// has it, and the library episodes Sonarr's list can match.
 struct Show {
     reference: Option<Ref>,
-    link: Option<Link>,
+    locator: Option<Locator>,
     present: Vec<Present>,
 }
 impl Show {
@@ -1610,21 +1621,24 @@ impl Show {
             Some(media) => storage::catalog(&state.db, vec![media]).await?,
             None => Catalog::default(),
         };
-        let link = catalog.links.into_iter().find(|link| link.kind == "show");
-        let present = link
+        let locator = catalog
+            .locators
+            .into_iter()
+            .find(|locator| locator.kind == "show");
+        let present = locator
             .as_ref()
-            .and_then(|link| catalog.present.remove(&link.id))
+            .and_then(|locator| catalog.present.remove(&locator.id))
             .unwrap_or_default();
         Ok(Self {
             reference,
-            link,
+            locator,
             present,
         })
     }
     fn series<'a>(&self, snapshot: &'a Snapshot) -> Option<Found<'a>> {
-        self.link
+        self.locator
             .as_ref()
-            .and_then(|link| find(snapshot, "sonarr", link))
+            .and_then(|locator| find(snapshot, "sonarr", locator))
             .or_else(|| self.reference.and_then(|r| find_ref(snapshot, "sonarr", r)))
     }
 }
@@ -1638,11 +1652,11 @@ async fn seasons(
     let snapshot = snapshot(&state);
     let show = Show::load(&state, &id).await?;
     let found = show.series(&snapshot);
-    if show.link.is_none() && found.is_none() {
+    if show.locator.is_none() && found.is_none() {
         return Err(ApiError::not_found());
     }
-    let library = match &show.link {
-        Some(link) => storage::show(&state.db, link.id.clone(), p.user.id.clone()).await?,
+    let library = match &show.locator {
+        Some(locator) => storage::show(&state.db, locator.id.clone(), p.user.id.clone()).await?,
         None => Vec::new(),
     };
     let grant = crate::grants::artwork(&state, &p).await?;
@@ -1673,8 +1687,8 @@ pub(super) async fn series(state: &AppState, id: &str) -> Result<Series> {
     let show = Show::load(state, id).await?;
     let snapshot = snapshot(state);
     let found = show.series(&snapshot).ok_or_else(|| {
-        if show.link.is_some() {
-            ApiError::conflict("Sonarr does not list this series")
+        if show.locator.is_some() {
+            ApiError::conflict("Sonarr does not list this show")
         } else {
             ApiError::not_found()
         }
@@ -1737,20 +1751,20 @@ pub(super) async fn movie(state: &AppState, id: &str) -> Result<Movie> {
         Some(Ref::Tvdb(_)) => return Err(ApiError::not_found()),
         None => Some(id.to_owned()),
     };
-    let link = match &media {
-        Some(media) => storage::links(&state.db, vec![media.clone()])
+    let locator = match &media {
+        Some(media) => storage::locators(&state.db, vec![media.clone()])
             .await?
             .into_iter()
-            .find(|link| link.kind == "movie"),
+            .find(|locator| locator.kind == "movie"),
         None => None,
     };
-    if media.is_some() && link.is_none() {
+    if media.is_some() && locator.is_none() {
         return Err(ApiError::not_found());
     }
     let snapshot = snapshot(state);
-    let found = link
+    let found = locator
         .as_ref()
-        .and_then(|link| find(&snapshot, "radarr", link))
+        .and_then(|locator| find(&snapshot, "radarr", locator))
         .or_else(|| reference.and_then(|r| find_ref(&snapshot, "radarr", r)))
         .ok_or_else(|| ApiError::conflict("Radarr does not list this movie"))?;
     Ok(Movie {
@@ -1761,7 +1775,7 @@ pub(super) async fn movie(state: &AppState, id: &str) -> Result<Movie> {
             .tmdb_id
             .ok_or_else(|| ApiError::conflict("Radarr lists this movie without a TMDB id"))?
             .to_string(),
-        media: link.map(|link| link.id),
+        media: locator.map(|locator| locator.id),
     })
 }
 
@@ -1790,16 +1804,19 @@ async fn lookup(
         }
         _ => Catalog::default(),
     };
-    let link = catalog.links.first();
-    let found = link
-        .and_then(|link| find(&snapshot, manager, link))
+    let locator = catalog.locators.first();
+    let found = locator
+        .and_then(|locator| find(&snapshot, manager, locator))
         .or_else(|| find_ref(&snapshot, manager, reference));
     let now = now();
-    let status = match (link, found) {
-        (Some(link), Some(found)) => {
-            let present = catalog.present.get(&link.id).map_or(&[][..], Vec::as_slice);
+    let status = match (locator, found) {
+        (Some(locator), Some(found)) => {
+            let present = catalog
+                .present
+                .get(&locator.id)
+                .map_or(&[][..], Vec::as_slice);
             Some(if manager == "radarr" {
-                movie_status(found.inventory, found.title, link.available, now)
+                movie_status(found.inventory, found.title, locator.available, now)
             } else {
                 show_status(found, &present_ids(found, present), now)
             })

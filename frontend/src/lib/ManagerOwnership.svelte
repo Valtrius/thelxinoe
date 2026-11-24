@@ -45,18 +45,18 @@
 </script>
 
 <SettingsCard
-  title="Library files"
+  title="Managed files"
   description="Auto-delete only removes files whose manager is known. Reconcile after a Radarr, Sonarr or Lidarr import or configuration change; unresolved files are never deleted."
 >
   <SettingRow
-    label="Reconcile file ownership"
-    description="Re-reads which manager owns each library file and lists any recent media operations."
+    label="Reconcile managed files"
+    description="Re-reads which manager claims each media file and lists any recent media operations."
   >
     <Button
       variant="secondary"
       size="form"
       disabled={busy}
-      onclick={() => void refresh()}>Reconcile file ownership</Button
+      onclick={() => void refresh()}>Reconcile managed files</Button
     >
   </SettingRow>
   {#if message}<p role="status" class="m-0 {cardBlockClass} text-xs text-muted">

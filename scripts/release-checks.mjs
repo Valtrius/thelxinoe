@@ -47,7 +47,7 @@ export function draftGuard(release, reassemble) {
   if (!release) return;
   if (!release.isDraft)
     throw Error(
-      'Published releases are immutable; increment the product version',
+      'Published releases are immutable; increment the release version',
     );
   if (
     release.assets?.some(({ name }) => name === completeDraftAsset) &&

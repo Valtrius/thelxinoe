@@ -71,9 +71,9 @@ fn failure(error: anyhow::Error) -> ApiError {
         Some(storage::Fault::Conflict) => {
             ApiError::conflict("This sign-in method is already configured or unavailable")
         }
-        Some(storage::Fault::SelfRecovery) => ApiError::conflict(
-            "An administrator cannot create a recovery link for their own account",
-        ),
+        Some(storage::Fault::SelfRecovery) => {
+            ApiError::conflict("An administrator cannot create a recovery link for themselves")
+        }
         Some(storage::Fault::Invalid(code, message)) => {
             ApiError(StatusCode::BAD_REQUEST, code, (*message).into())
         }
@@ -268,7 +268,7 @@ fn totp_step(state: &AppState, account: &storage::Account, code: &str) -> Result
         .check(code, now() as u64)
         .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "totp_incorrect", INCORRECT.into()))
 }
-/// Checks a sign-in or re-verification code, counting failures against the account.
+/// Checks a sign-in or verification code, counting failures against the user.
 async fn checked_totp_step(
     state: &AppState,
     account: &storage::Account,
@@ -282,7 +282,7 @@ async fn checked_totp_step(
     }
     step
 }
-/// Checks a re-verification password, counting failures against the account as sign-in does.
+/// Checks a verification password, counting failures against the user as sign-in does.
 async fn checked_password(
     state: &AppState,
     account: &storage::Account,
@@ -476,7 +476,7 @@ async fn totp_confirm(
             return Err(ApiError(
                 StatusCode::CONFLICT,
                 "totp_enabled",
-                "An authenticator app is already enabled for this account.".into(),
+                "An authenticator app is already enabled for this user.".into(),
             ));
         }
         None => return Err(failure(storage::totp_setup_missing().into())),
@@ -907,10 +907,10 @@ mod tests {
         assert_eq!(left, [0, 0]);
     }
 
-    // A browser keeps its token while it's known to the account signing in. A token new to that
-    // account is replaced, and the accounts it was known to follow the browser to the new one.
+    // A browser keeps its token while it's known to the user signing in. A token new to that
+    // user is replaced, and the users it was known to follow the browser to the new one.
     #[tokio::test]
-    async fn a_browser_stays_known_to_each_account_that_signed_in_on_it() {
+    async fn a_browser_stays_known_to_each_user_that_signed_in_on_it() {
         let temp = tempfile::tempdir().unwrap();
         let db = thelxinoe_database::Database::open(temp.path().join("db")).unwrap();
         let (kept, rows) = db
@@ -934,7 +934,7 @@ mod tests {
         assert_eq!(rows, ["second:a", "second:b", "third:b"]);
     }
 
-    // A remembered device skips two-step sign-in only while it's in use and within the cap.
+    // A remembered device skips the authenticator app code only while in use and within the cap.
     #[tokio::test]
     async fn remembered_devices_lapse_when_unused_or_past_the_cap() {
         let temp = tempfile::tempdir().unwrap();

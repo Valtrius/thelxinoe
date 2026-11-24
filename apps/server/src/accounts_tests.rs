@@ -145,10 +145,10 @@ async fn open_setup_has_bounded_admission_and_an_attempt_limit() {
     );
 }
 
-// Only a browser known to this account, and not past its lifetime, gets past the lock that
+// Only a browser known to this user, and not past its lifetime, gets past the lock that
 // others' guesses put on it; a remembered device alone no longer does.
 #[tokio::test]
-async fn a_known_browser_signs_in_while_others_have_locked_the_account() {
+async fn a_known_browser_signs_in_while_others_have_locked_the_user_out() {
     use crate::accounts::check_credentials;
     let (_temp, state, _) = fixture().await;
     let hash = thelxinoe_auth::password_hash("right password".into(), None)

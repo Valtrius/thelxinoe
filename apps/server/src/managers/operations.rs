@@ -1,4 +1,4 @@
-//! Durable destructive commands share the same file-generation and ownership checks.
+//! Media operations are durable and share the same file-version and managed-file checks.
 
 #[path = "../storage/managers/operations.rs"]
 pub(super) mod storage;
@@ -182,7 +182,7 @@ async fn physical(file: &Target) -> Result<Arc<ValidatedFile>> {
         .await
         .map_err(|_| unavailable())?
         .map_err(|_| {
-            ApiError::conflict("File generation changed; rescan and prepare a new operation")
+            ApiError::conflict("File version changed; rescan and prepare a new operation")
         })?;
     #[cfg(test)]
     if let Ok(control) = crate::test_support::MEDIA_VALIDATION.try_with(Clone::clone) {

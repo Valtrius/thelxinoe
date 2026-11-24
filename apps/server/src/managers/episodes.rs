@@ -38,7 +38,7 @@ fn episodes(series: &Series, ids: &[i64]) -> Result<Vec<i64>> {
         .all(|id| series.episodes.iter().any(|e| e.id == *id))
     {
         return Err(ApiError::conflict(
-            "Sonarr no longer lists an episode of this series",
+            "Sonarr no longer lists an episode of this show",
         ));
     }
     Ok(ids.to_vec())

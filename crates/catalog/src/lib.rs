@@ -58,7 +58,7 @@ pub fn fingerprint(file: &mut std::fs::File) -> std::io::Result<String> {
     }
     Ok(hex::encode(hash.finalize()))
 }
-/// One file's scan outcome. A changing or unreadable file keeps any entry it had.
+/// One file's scan outcome. A changing or unreadable file keeps any media item it had.
 enum Indexed {
     File(Box<IndexedFile>),
     Changing,
@@ -91,8 +91,8 @@ where
         .commit(db)
         .await
 }
-/// A root that was walked and probed but not written yet. Probing can take minutes, so a
-/// caller serializing against deletions holds its lease for `commit` only.
+/// A library folder that was walked and probed but not written yet. Probing can take
+/// minutes, so a caller serializing against deletions holds its lease for `commit` only.
 pub struct Scanned {
     root: Root,
     indexed: Vec<IndexedFile>,
@@ -132,7 +132,7 @@ impl Scanned {
         Ok(count)
     }
 }
-/// Walk and probe a root without writing it; see [`Scanned::commit`].
+/// Walk and probe a library folder without writing it; see [`Scanned::commit`].
 pub async fn index_with_progress<F, Fut>(
     db: &Database,
     root: Root,
@@ -151,7 +151,8 @@ where
     let (entries, unreadable) = tokio::task::spawn_blocking(move || -> Result<_> {
         let mut entries = Vec::new();
         // A folder the server can't read, such as lost+found or #recycle, is skipped and
-        // keeps what it had. An unreadable root or an unknown location still fails the scan.
+        // keeps what it had. An unreadable library folder or an unknown location still fails
+        // the scan.
         let mut unreadable = Vec::new();
         for entry in walkdir::WalkDir::new(&walked).follow_links(false) {
             let entry = match entry {
@@ -170,7 +171,7 @@ where
             if entry.file_type().is_file() && supported(entry.path()) {
                 let path = entry.path().canonicalize()?;
                 if !path.starts_with(&walked) {
-                    bail!("File escapes library root");
+                    bail!("File escapes its library folder");
                 }
                 entries.push(path);
             }
@@ -182,7 +183,7 @@ where
     progress(0, total).await?;
     let mut last_progress = std::time::Instant::now();
     let mut indexed = Vec::new();
-    // One unreadable or still-changing file must not block the rest of the library.
+    // One unreadable or still-changing file must not block the rest of the library folder.
     let mut retained = std::collections::HashSet::new();
     let mut failures = Vec::new();
     if !unreadable.is_empty() {
@@ -212,7 +213,7 @@ where
             }
         }
         if done + 1 == total || last_progress.elapsed() >= std::time::Duration::from_secs(1) {
-            // A library removed during its scan stops probing; the commit checks again.
+            // A library folder removed during its scan stops probing; the commit checks again.
             if !storage::root_exists(root.id.clone(), db).await? {
                 bail!(storage::REMOVED);
             }

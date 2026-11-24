@@ -81,7 +81,7 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
     );
     std::fs::remove_file(media.join("Distinct copy.wav"))?;
     scan(&db, root.clone(), tools.media()?).await?;
-    // One unreadable file is reported and retried without blocking the rest of the library.
+    // One unreadable file is reported and retried without blocking the rest of the folder.
     std::fs::write(media.join("Broken.wav"), b"incomplete download")?;
     assert_eq!(scan(&db, root.clone(), tools.media()?).await?, 1);
     let warning = db
@@ -107,7 +107,7 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
         .await?,
         1
     );
-    // A known file that becomes unreadable keeps its entry and identity until it recovers.
+    // A known file that becomes unreadable keeps its media item and identity until it recovers.
     let known = db
         .write("test.fixture", |c| {
             Ok(c.query_row(
@@ -239,7 +239,7 @@ async fn an_unreadable_folder_is_skipped_and_keeps_its_files() -> Result<()> {
         warning.starts_with("1 folder couldn't be read") && warning.contains("Hidden"),
         "{warning}"
     );
-    // The skipped folder keeps its entry; files gone from readable folders are removed.
+    // The skipped folder keeps its media item; files gone from readable folders are removed.
     assert_eq!(present.len(), 2, "{present:?}");
     assert!(present.contains(&"kept".to_owned()));
     assert!(!present.contains(&"gone".to_owned()));
@@ -326,7 +326,7 @@ async fn a_file_deleted_after_probing_is_not_committed_as_present() -> Result<()
     Ok(())
 }
 
-// Rescanning an unchanged library rewrites no file rows; a changed file is rewritten.
+// Rescanning an unchanged library folder rewrites no file rows; a changed file is rewritten.
 #[tokio::test]
 async fn an_unchanged_rescan_writes_no_file_rows() -> Result<()> {
     let temp = tempfile::tempdir()?;
@@ -408,7 +408,7 @@ fn tagged_wav(tags: &[(&[u8; 4], &str)]) -> Vec<u8> {
     out
 }
 
-/// One empty library of `kind` with a user to hold watch state, and the runner's FFmpeg.
+/// One empty library folder of `kind` with a user to hold watch state, and the runner's FFmpeg.
 async fn library(
     temp: &std::path::Path,
     kind: &str,
@@ -449,8 +449,8 @@ async fn count(db: &Database, sql: &'static str) -> Result<i64> {
     .await
 }
 
-// A library removed during its scan stops it: probing ends at the next progress check, and
-// a scan probed before the removal writes nothing.
+// A library folder removed during its scan stops it: probing ends at the next progress
+// check, and a scan probed before the removal writes nothing.
 #[tokio::test]
 async fn a_scan_of_a_removed_library_stops_without_writing() -> Result<()> {
     let temp = tempfile::tempdir()?;
@@ -467,22 +467,22 @@ async fn a_scan_of_a_removed_library_stops_without_writing() -> Result<()> {
     })
     .await?;
     let committed = probed.commit(&db).await.map_err(|error| error.to_string());
-    assert_eq!(committed, Err("Library was removed".into()));
+    assert_eq!(committed, Err("Library folder was removed".into()));
     let probing =
         thelxinoe_catalog::index_with_progress(&db, root, tools.media()?, |_, _| async { Ok(()) })
             .await;
     assert_eq!(
         probing.err().map(|error| error.to_string()).as_deref(),
-        Some("Library was removed")
+        Some("Library folder was removed")
     );
     assert_eq!(count(&db, "SELECT COUNT(*) FROM media_files").await?, 0);
     Ok(())
 }
 
-// The file keeps its logical entry, so watch state stays with what was watched, while its
+// The file keeps its media item, so watch state stays with what was watched, while its
 // title and place follow the file: an episode renamed S01E02 to S01E03 becomes episode 3.
 #[tokio::test]
-async fn a_renamed_episode_keeps_its_entry_and_watch_state_at_its_new_number() -> Result<()> {
+async fn a_renamed_episode_keeps_its_media_item_and_watch_state_at_its_new_number() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (db, root, media, tools) = library(temp.path(), "shows").await?;
     let season = media.join("Show/Season 1");
@@ -572,10 +572,10 @@ async fn a_renamed_episode_keeps_its_entry_and_watch_state_at_its_new_number() -
 }
 
 // Files named before and after a naming change are one show, and a show an earlier rule split
-// off is regrouped although its files are unchanged: episodes keep their entries and watch
-// state, and the emptied show goes.
+// off is regrouped although its files are unchanged: episodes keep their media items and
+// watch state, and the emptied show goes.
 #[tokio::test]
-async fn a_series_folder_regroups_its_unchanged_files() -> Result<()> {
+async fn a_show_folder_regroups_its_unchanged_files() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (db, root, media, tools) = library(temp.path(), "shows").await?;
     let series = media.join("Show (2019) {imdb-tt1}");
@@ -636,8 +636,8 @@ async fn a_series_folder_regroups_its_unchanged_files() -> Result<()> {
     Ok(())
 }
 
-// Retagging a track's album moves the same entry under the new album, and the album left
-// without tracks goes.
+// Retagging a track's album moves the same media item under the new album, and the album
+// left without tracks goes.
 #[tokio::test]
 async fn a_retagged_track_moves_to_its_new_album_with_its_watch_state() -> Result<()> {
     let temp = tempfile::tempdir()?;
@@ -702,10 +702,10 @@ async fn a_retagged_track_moves_to_its_new_album_with_its_watch_state() -> Resul
     Ok(())
 }
 
-// A renamed file holding two episodes carries each entry to the episode it stood for, in the
-// order the file was linked, whatever order their ids sort in.
+// A renamed file holding two episodes carries each media item to the episode it stood for,
+// in the order the file was linked, whatever order their ids sort in.
 #[tokio::test]
-async fn a_renamed_double_episode_keeps_each_entry_at_its_number() -> Result<()> {
+async fn a_renamed_double_episode_keeps_each_media_item_at_its_number() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (db, root, media, tools) = library(temp.path(), "shows").await?;
     std::fs::write(media.join("Old Show S01E01E02.wav"), wav(1))?;

@@ -188,7 +188,7 @@ function nas(): ServerUpdateStatus {
   };
 }
 
-describe('product version card', () => {
+describe('server version card', () => {
   const card = (
     status: ServerUpdateStatus | null,
     model: Partial<ServerUpdateModel> = {},

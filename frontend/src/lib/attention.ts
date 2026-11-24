@@ -147,7 +147,8 @@ export async function acknowledgeAttention(
       if (session === epoch) {
         attentionErrors.update((errors) => ({
           ...errors,
-          [item.id]: 'Could not clear this marker. Hover again to retry.',
+          [item.id]:
+            'Could not dismiss this attention item. Hover again to retry.',
         }));
         void refreshAttention();
       }

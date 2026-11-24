@@ -159,12 +159,12 @@
         ? snapshot.candidate?.valid
           ? 'Candidate configuration is compatible.'
           : 'Candidate configuration needs validation.'
-        : 'Use defaults replaces the whole file set and follows defaults on future upgrades.'}
+        : 'Use defaults replaces the whole file set and follows defaults on future service updates.'}
     </p>
     <p class="text-muted">
       {changed.length}
       {changed.length === 1 ? 'file changes' : 'files change'}{#if candidate}
-        · Active files stay in use until the upgrade.{/if}
+        · Active files stay in use until the service update.{/if}
     </p>
     {#if !candidate && snapshot.mode === 'customized'}<Button
         size="sm"
@@ -239,7 +239,7 @@
         onclick={() => void update('preflight')}>Revalidate candidate</Button
       ><Button
         disabled={!snapshot.candidate?.valid || busy}
-        onclick={() => void update('activate')}>Install upgrade</Button
+        onclick={() => void update('activate')}>Install update</Button
       >
     {:else if merged}<Button
         disabled={conflicts.length > 0}

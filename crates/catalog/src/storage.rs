@@ -21,8 +21,8 @@ pub(super) async fn roots(db: &Database) -> anyhow::Result<Vec<Root>> {
     .await
 }
 
-/// Why a scan stopped without writing: its library was removed while it ran.
-pub(super) const REMOVED: &str = "Library was removed";
+/// Why a scan stopped without writing: its library folder was removed while it ran.
+pub(super) const REMOVED: &str = "Library folder was removed";
 
 fn root_exists_in(c: &rusqlite::Connection, root: &str) -> rusqlite::Result<bool> {
     c.query_row(
@@ -75,8 +75,8 @@ pub(super) async fn scan_with_progress_read_present_paths(
     .await
 }
 
-/// The entries a file stands for, found by `media_sources_file` once per changed file. They
-/// come in the order they were linked, which `place` carries them over in.
+/// The media items a file stands for, found by `media_sources_file` once per changed file.
+/// They come in the order they were linked, which `place` carries them over in.
 const LINKED_MEDIA: &str = "SELECT media_id FROM media_sources WHERE file_id=?1 ORDER BY rowid";
 const UNLINK_FILE: &str = "DELETE FROM media_sources WHERE file_id=?1";
 
@@ -93,10 +93,10 @@ pub(super) async fn scan_with_progress_write_media_files(
         let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if !root_exists_in(&tx,&root.id)? {bail!(REMOVED);}
         let missing:Vec<(String,String)>=tx.prepare("SELECT id,path,fingerprint FROM media_files WHERE root_id=?1 AND present=1")?.query_map([&root.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<std::result::Result<Vec<_>,_>>()?.into_iter().filter(|(_,path,_)|!current_paths.contains(path)).map(|(id,_,hash)|(id,hash)).collect();
-        // Only files that are gone change; an unchanged library writes almost nothing. Their
+        // Only files that are gone change; an unchanged folder writes almost nothing. Their
         // scan time records when they went missing, which maintenance waits on before pruning.
         for (missing_id,_) in &missing {tx.execute("UPDATE media_files SET present=0,scanned_at=?2 WHERE id=?1",params![missing_id,now()])?;}
-        // Files that couldn't be read this time keep their previous entry until a later scan.
+        // Files that couldn't be read this time keep their media item until a later scan.
         for path in &retained {tx.execute("UPDATE media_files SET present=1 WHERE root_id=?1 AND path=?2",params![root.id,path])?;}
         let mut vacated=Vec::new();
         for file in indexed {
@@ -104,14 +104,14 @@ pub(super) async fn scan_with_progress_write_media_files(
             let file_id=old.as_ref().map(|o|o.0.clone()).unwrap_or_else(id);
             let generation=old.as_ref().filter(|o|o.1==file.fingerprint).map(|o|o.2.clone()).unwrap_or_else(id);
             // A unique exact-content move preserves logical identity. Ambiguous identical files
-            // are kept distinct instead of merging unrelated entries by a guessed title.
+            // are kept distinct instead of merging unrelated media items by a guessed title.
             let candidates:Vec<_>=missing.iter().filter(|(_,hash)|hash==&file.fingerprint).collect();
             let source_file=if old.is_some(){Some(&file_id)}else if candidates.len()==1 && fingerprint_counts.get(&file.fingerprint)==Some(&1){Some(&candidates[0].0)}else{None};
             let previous:Vec<String>=if let Some(source)=source_file{tx.prepare(LINKED_MEDIA)?.query_map([source],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?}else{Vec::new()};
             let changed=tx.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,edition,present,scanned_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10) ON CONFLICT(path) DO UPDATE SET generation=excluded.generation,size=excluded.size,modified=excluded.modified,fingerprint=excluded.fingerprint,probe=excluded.probe,edition=excluded.edition,present=1,scanned_at=excluded.scanned_at,ownership=CASE WHEN generation=excluded.generation THEN ownership ELSE 'unresolved' END WHERE media_files.generation IS NOT excluded.generation OR media_files.size IS NOT excluded.size OR media_files.modified IS NOT excluded.modified OR media_files.fingerprint IS NOT excluded.fingerprint OR media_files.probe IS NOT excluded.probe OR media_files.edition IS NOT excluded.edition OR media_files.present=0",params![file_id,root.id,file.path,generation,file.size,file.modified,file.fingerprint,file.probe.to_string(),file.edition,now()])?;
             let trailer=file.probe["thelxinoe_local_trailer"].as_bool()==Some(true);
             // An unchanged file keeps its row and its media links as they are, unless how files
-            // are identified changed and it now stands for other entries.
+            // are identified changed and it now stands for other media items.
             if changed==0 && (trailer || placed(&tx,&previous,&file.identities)?) {continue;}
             tx.execute(UNLINK_FILE,[&file_id])?;
             tx.execute("DELETE FROM local_trailers WHERE file_id=?1",[&file_id])?;
@@ -123,7 +123,7 @@ pub(super) async fn scan_with_progress_write_media_files(
     }).await
 }
 
-/// Whether the entries a file is linked to are the playable ones it identifies as.
+/// Whether the media items a file is linked to are the playable items it identifies as.
 fn placed(
     tx: &rusqlite::Connection,
     linked: &[String],
@@ -149,9 +149,9 @@ fn placed(
 }
 
 /// Places a changed or re-identified file's identities, parents first, and links the file to
-/// the playable ones. The entry the file stood for keeps its id, and with it watch state,
-/// favorites and history, while its title and place follow the file; unless another present
-/// file still stands for it, or its new identity already has an entry of its own.
+/// the playable ones. The media item the file stood for keeps its id, and with it watch
+/// state, favorites and history, while its title and place follow the file; unless another
+/// present file still stands for it, or its new identity already has a media item of its own.
 fn place(
     tx: &rusqlite::Connection,
     root: &str,
@@ -248,8 +248,9 @@ fn place(
     Ok(linked)
 }
 
-/// Deletes entries a scan left with no file and no children, then the parents that leaves
-/// empty. Entries an operation or auto-delete refers to stay, along with that history.
+/// Deletes media items a scan left with no file and no children, then the parents that
+/// leaves empty. Those a media operation or auto-delete refers to stay, along with that
+/// history.
 fn prune(tx: &rusqlite::Connection, mut vacated: Vec<String>) -> anyhow::Result<()> {
     while let Some(media) = vacated.pop() {
         let empty = tx.query_row("SELECT parent_id FROM media m WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM media_sources WHERE media_id=m.id) AND NOT EXISTS(SELECT 1 FROM local_trailers WHERE media_id=m.id) AND NOT EXISTS(SELECT 1 FROM media WHERE parent_id=m.id) AND NOT EXISTS(SELECT 1 FROM media_operations WHERE media_id=m.id) AND NOT EXISTS(SELECT 1 FROM retention_candidates WHERE media_id=m.id)", [&media], |r| r.get::<_, Option<String>>(0)).optional()?;

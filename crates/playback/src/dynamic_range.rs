@@ -59,11 +59,11 @@ pub fn video_range(video: &Value) -> (&'static str, &'static str) {
     }
 }
 
-/// Whether converting a video stream, always to SDR BT.709, tone maps its PQ or HLG picture.
+/// Whether transcoding a video stream, always to SDR BT.709, tone maps its PQ or HLG picture.
 /// Fails for Dolby Vision without a standard base layer: FFmpeg can't reproduce its picture.
 pub fn needs_tone_mapping(video: &Value) -> Result<bool> {
     if ["DOVI", "DOVIInvalid"].contains(&video_range(video).1) {
-        bail!("This Dolby Vision video cannot be converted");
+        bail!("This Dolby Vision video cannot be transcoded");
     }
     Ok(["smpte2084", "arib-std-b67"].contains(&video["color_transfer"].as_str().unwrap_or("")))
 }
@@ -99,10 +99,10 @@ mod tests {
         json!({"codec_type":"video","codec_name":"hevc","color_space":"bt2020nc","color_transfer":transfer,"color_primaries":"bt2020","side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":profile,"dv_bl_signal_compatibility_id":compatibility,"rpu_present_flag":1,"bl_present_flag":1,"el_present_flag":0}]})
     }
     #[test]
-    fn dolby_vision_is_named_and_converted_by_its_base_layer() {
+    fn dolby_vision_is_named_and_transcoded_by_its_base_layer() {
         let pq = "smpte2084";
         let hlg = "arib-std-b67";
-        // A conversion tone maps PQ and HLG base layers, and refuses a stream without one.
+        // A transcode tone maps PQ and HLG base layers, and refuses a stream without one.
         for (stream, expected, tone_map) in [
             (dolby_vision(8, 1, pq), ("HDR", "DOVIWithHDR10"), Some(true)),
             (

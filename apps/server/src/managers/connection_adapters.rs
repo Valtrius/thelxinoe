@@ -141,7 +141,7 @@ impl Reach {
             || (port == self.internal && loopback(host))
     }
     /// Whether the address designates this target only through a port published on
-    /// loopback: one written before Thelxinoe took the target over, which no longer works.
+    /// loopback: one written before Thelxinoe took ownership of the target, which no longer works.
     pub(super) fn stale(&self, host: &str, port: Option<u16>) -> bool {
         let host = host.trim().trim_start_matches('[').trim_end_matches(']');
         let Some(port) = port else {
@@ -339,8 +339,8 @@ fn record_address(record: &Value, path: &str) -> Option<(String, Option<u16>)> {
     Some((field("host")?.as_str()?.to_owned(), port))
 }
 
-/// Never silently adopt or duplicate a connection the administrator already made to
-/// this target, however it is addressed, including records from older auto-wiring.
+/// Never silently take over or duplicate a link the administrator already made to
+/// this target, however it is addressed, including records from older automatic linking.
 async fn refuse_unmanaged(
     link: &mut Link,
     c: &Connection<'_>,
@@ -695,7 +695,7 @@ async fn bazarr(
     target: Option<&Endpoint>,
     target_connection: Option<(&Connection<'_>, String)>,
 ) -> Attempt<()> {
-    // Bazarr persists both manager connections through one shared settings
+    // Bazarr persists both manager links through one shared settings
     // document. Serialize its read-modify-write cycle so parallel Radarr and
     // Sonarr links cannot overwrite each other's use_* flag.
     let mutex = lock(state, &format!("bazarr-config:{}", link.source));

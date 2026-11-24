@@ -23,7 +23,7 @@
   } from './api';
   import type {
     AuthState,
-    PlatformAccount,
+    ConnectedAccount,
     SyncStatus,
     YoutubeProgressEvent,
     YoutubeProgressUpdate,
@@ -35,7 +35,7 @@
   import MediaSkeleton from '../ui/MediaSkeleton.svelte';
 
   let {
-    platform,
+    provider,
     admin,
     userId,
     playing,
@@ -44,7 +44,7 @@
     watchlistId,
     watchlistChanged,
   }: {
-    platform: 'youtube' | 'twitch' | 'kick';
+    provider: 'youtube' | 'twitch' | 'kick';
     admin: boolean;
     userId: string;
     playing: PlayingMedia[];
@@ -74,9 +74,9 @@
   } | null>(null);
   let pendingGoogleUntil = $state<number | null>(null);
   let authNow = $state(Date.now());
-  let nativeReady = $state(true);
+  let mpvReady = $state(true);
   let disposed = false;
-  const loadedAccounts = $state<Partial<Record<typeof platform, boolean>>>({});
+  const loadedAccounts = $state<Partial<Record<typeof provider, boolean>>>({});
   const accountRequests = new LatestRequest();
   let lastSnapshot = '';
   let forceData = false;
@@ -91,7 +91,7 @@
       void load();
       return;
     }
-    if (platform !== 'youtube') {
+    if (provider !== 'youtube') {
       dataRevision++;
       return;
     }
@@ -106,12 +106,12 @@
     void watchlistController.loadWatchlists();
   }
   const rawAccount = $derived(
-    platform === 'kick' ? null : accounts[platform as 'youtube' | 'twitch'],
+    provider === 'kick' ? null : accounts[provider as 'youtube' | 'twitch'],
   );
-  const account = $derived<PlatformAccount | null>(
+  const account = $derived<ConnectedAccount | null>(
     rawAccount?.account.status === 'connected'
       ? {
-          platform: platform === 'youtube' ? 'youtube' : 'twitch',
+          provider: provider === 'youtube' ? 'youtube' : 'twitch',
           externalUserId: rawAccount.account.external_id || userId,
           displayName: rawAccount.account.display_name,
           connectedAt: iso(rawAccount.account.updated_at) ?? '',
@@ -123,13 +123,13 @@
     const pending = rawAccount?.pending;
     const expires = pending
       ? pending.expires_at * 1000
-      : platform === 'youtube'
+      : provider === 'youtube'
         ? pendingGoogleUntil
         : null;
     const expired = expires !== null && expires <= authNow;
     return {
-      platform: platform === 'youtube' ? 'youtube' : 'twitch',
-      operationId: platform,
+      provider: provider === 'youtube' ? 'youtube' : 'twitch',
+      operationId: provider,
       phase: pending?.phase === 'connecting' ? 'connecting' : 'waiting',
       status:
         pending?.phase === 'failed'
@@ -175,30 +175,30 @@
     const sync = rawAccount?.sync;
     const kickError = kick?.items.find((c) => c.error)?.error;
     const last =
-      platform === 'kick'
+      provider === 'kick'
         ? kick?.items.length
           ? Math.min(...kick.items.map((c) => c.updated_at))
           : 0
         : sync?.last_complete;
-    const error = platform === 'kick' ? kickError : sync?.error;
+    const error = provider === 'kick' ? kickError : sync?.error;
     return {
-      platform,
-      phase: sync?.phase ?? (sync?.in_progress ? 'Refreshing' : 'Idle'),
-      isRefreshing: (sync?.in_progress ?? false) && !rawAccount?.quota?.blocked,
+      provider,
+      phase: sync?.phase ?? (sync?.in_progress ? 'Syncing' : 'Idle'),
+      isSyncing: (sync?.in_progress ?? false) && !rawAccount?.quota?.blocked,
       completed: 0,
       lastSuccessAt: iso(last),
       stale: !!error || !last,
       quotaPausedUntil:
-        platform === 'youtube' && rawAccount?.quota?.blocked
+        provider === 'youtube' && rawAccount?.quota?.blocked
           ? quotaReset(rawAccount.quota.day)
           : null,
       error: error ? normalizeError(error) : null,
     };
   });
-  // This platform's media, by the platform's own id.
+  // This provider's media, by the provider's own id.
   const activeMedia = $derived<PlayingMedia[]>(
     playing
-      .filter((media: PlayingMedia) => media.id.startsWith(platform + ':'))
+      .filter((media: PlayingMedia) => media.id.startsWith(provider + ':'))
       .map((media: PlayingMedia) => ({
         id: activeMediaId(media),
         launching: media.launching,
@@ -206,7 +206,7 @@
   );
   async function readAccount() {
     if (disposed || !ownsSession()) return;
-    const selected: 'youtube' | 'twitch' | 'kick' = platform;
+    const selected: 'youtube' | 'twitch' | 'kick' = provider;
     const current = accountRequests.begin();
     try {
       const path = `/online/${selected}`;
@@ -215,7 +215,7 @@
         path,
         () => request<OnlineAccount | KickFeed>(path),
         (value) => {
-          if (disposed || !current() || selected !== platform) return;
+          if (disposed || !current() || selected !== provider) return;
           loadedAccounts[selected] = true;
           if (selected === 'kick') kick = value as KickFeed;
           else accounts[selected] = value as OnlineAccount;
@@ -238,7 +238,7 @@
         0,
       );
     } catch (error) {
-      if (!disposed && current() && selected === platform)
+      if (!disposed && current() && selected === provider)
         showToast({
           key: 'providers-load',
           tone: 'error',
@@ -252,7 +252,7 @@
     }
   }
   $effect(() => {
-    void platform;
+    void provider;
     const task = new RefreshTask(readAccount, () =>
       authPending ? 1000 : 5000,
     );
@@ -277,7 +277,7 @@
       }
       // Library and YouTube events change the YouTube feed. Twitch and Kick
       // feeds change with their account's sync, which the read compares.
-      if (platform === 'youtube') forceData = true;
+      if (provider === 'youtube') forceData = true;
       void load();
     });
   });
@@ -285,7 +285,7 @@
     const selected = $preferences['youtube-selected-watchlist-id'];
     const linked = watchlistId;
     if (
-      platform === 'youtube' &&
+      provider === 'youtube' &&
       (linked || selected) &&
       Number.isSafeInteger(Number(linked ?? selected))
     )
@@ -293,7 +293,7 @@
   });
   $effect(() => {
     const selected = watchlistController.selectedWatchlistId;
-    if (platform === 'youtube' && selected !== null)
+    if (provider === 'youtube' && selected !== null)
       preferences.setItem('youtube-selected-watchlist-id', String(selected));
   });
   onMount(() => {
@@ -330,11 +330,11 @@
         .check('mpv')
         .then(() => toolsApi.get())
         .then((value) => {
-          nativeReady = !!value.tools.find((tool) => tool.id === 'mpv')
-            ?.diagnostic?.detected;
+          mpvReady = !!value.tools.find((tool) => tool.id === 'mpv')?.diagnostic
+            ?.detected;
         })
         .catch(() => {
-          nativeReady = false;
+          mpvReady = false;
         });
     return () => {
       disposed = true;
@@ -363,21 +363,21 @@
   }
   function authStarted() {
     pendingGoogleUntil =
-      platform === 'youtube' && desktop ? Date.now() + 600_000 : null;
+      provider === 'youtube' && desktop ? Date.now() + 600_000 : null;
     void load();
   }
 </script>
 
 <div
   class="provider-surface min-w-0 text-[1rem]"
-  class:h-full={platform === 'youtube'}
+  class:h-full={provider === 'youtube'}
 >
-  {#if !loadedAccounts[platform]}
+  {#if !loadedAccounts[provider]}
     <MediaSkeleton
-      label={`Loading ${platform === 'youtube' ? 'YouTube' : platform === 'twitch' ? 'Twitch' : 'Kick'}`}
+      label={`Loading ${provider === 'youtube' ? 'YouTube' : provider === 'twitch' ? 'Twitch' : 'Kick'}`}
       shape="landscape"
     />
-  {:else if platform === 'youtube'}
+  {:else if provider === 'youtube'}
     {#await providerPages.YoutubeView()}<MediaSkeleton
         label="Loading YouTube"
         shape="landscape"
@@ -388,7 +388,7 @@
         onWatchlistSelected={watchlistChanged}
         showWatchlist={watchlistId !== undefined}
         {syncStatus}
-        playerReady={nativeReady}
+        playerReady={mpvReady}
         downloadsEnabled={accounts.youtube?.downloads_enabled ?? false}
         {activeMedia}
         {cardColumns}
@@ -411,7 +411,7 @@
       />{:catch error}<Notice role="alert" variant="error"
         >{String(error)}</Notice
       >{/await}
-  {:else if platform === 'twitch'}
+  {:else if provider === 'twitch'}
     {#await providerPages.TwitchView()}<MediaSkeleton
         label="Loading Twitch"
         shape="landscape"
@@ -419,7 +419,7 @@
         {admin}
         {account}
         {syncStatus}
-        playerReady={nativeReady}
+        playerReady={mpvReady}
         {activeMedia}
         {cardColumns}
         {authState}
@@ -442,7 +442,7 @@
         connected={!!kick?.connected}
         onAccountChanged={load}
         {syncStatus}
-        playerReady={nativeReady}
+        playerReady={mpvReady}
         {activeMedia}
         {cardColumns}
         metadataConfigured={!!kick?.configured}

@@ -843,7 +843,7 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         }
         if configured() {
             if let Err(e) = tick(&state, startup).await {
-                tracing::warn!(code = e.1, error = %e.2, "Product update check did not complete");
+                tracing::warn!(code = e.1, error = %e.2, "Server update check did not complete");
             }
             startup = false;
         }

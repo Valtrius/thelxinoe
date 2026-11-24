@@ -243,7 +243,7 @@ async fn check(State(state): State<AppState>, headers: HeaderMap) -> Result<Json
         .id;
     if !supported() {
         return Err(ApiError::conflict(
-            "Managed server tools require the Linux x86-64 server image",
+            "Server tools require the Linux x86-64 server image",
         ));
     }
     let jobs = storage::jobs(&state.db).await?;
@@ -278,7 +278,7 @@ async fn action(
         .id;
     if !supported() {
         return Err(ApiError::conflict(
-            "Managed server tools require the Linux x86-64 server image",
+            "Server tools require the Linux x86-64 server image",
         ));
     }
     let t = tool(&state, &id).await?;

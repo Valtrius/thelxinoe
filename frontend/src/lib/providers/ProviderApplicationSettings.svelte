@@ -10,17 +10,17 @@
   import { providers } from './availability';
 
   let {
-    platform,
+    provider,
     onConfigured,
   }: {
-    platform: 'twitch' | 'kick';
+    provider: 'twitch' | 'kick';
     onConfigured?: () => void;
   } = $props();
   const definitions = {
     twitch: {
       name: 'Twitch',
       description:
-        'A public Twitch application for device-code sign-in. Each person connects their own account. Replacing the client ID requires everyone to reconnect.',
+        'A public Twitch application for device-code sign-in. Each user connects their own account. Replacing the client ID requires everyone to reconnect.',
       placeholder: 'Public application client ID',
       replacement: 'Configured — enter an ID to replace it',
     },
@@ -32,7 +32,7 @@
       replacement: 'Configured — enter credentials to replace it',
     },
   };
-  const definition = $derived(definitions[platform]);
+  const definition = $derived(definitions[provider]);
   // null until the server has answered, so the setup guide mounts in its
   // final folded or open state instead of folding after load.
   let configured = $state<boolean | null>(null),
@@ -43,7 +43,7 @@
   let generation = 0;
 
   $effect(() => {
-    const selected = platform;
+    const selected = provider;
     const revision = ++generation;
     configured = null;
     clientId = clientSecret = message = '';
@@ -64,9 +64,9 @@
     const revision = generation;
     busy = true;
     try {
-      await api(`/admin/online/${platform}`, 'PUT', {
+      await api(`/admin/online/${provider}`, 'PUT', {
         client_id: clientId.trim(),
-        ...(platform === 'kick' ? { client_secret: clientSecret.trim() } : {}),
+        ...(provider === 'kick' ? { client_secret: clientSecret.trim() } : {}),
       });
       if (revision !== generation) return;
       configured = true;
@@ -83,24 +83,24 @@
 
 <SettingsCard
   title={definition.name}
-  description={$providers[platform]
+  description={$providers[provider]
     ? definition.description
-    : `Turn the integration on to configure a ${definition.name} application.`}
+    : `Enable ${definition.name} to configure its application.`}
 >
   {#snippet badge()}
-    {#if $providers[platform] && configured !== null}
+    {#if $providers[provider] && configured !== null}
       <StatusChip tone={configured ? 'ok' : 'warn'}
         >{configured ? 'Configured' : 'Not configured'}</StatusChip
       >
     {/if}
   {/snippet}
   {#snippet actions()}
-    <ProviderIntegrationSwitch {platform} />
+    <ProviderIntegrationSwitch {provider} />
   {/snippet}
-  {#if $providers[platform]}
+  {#if $providers[provider]}
     {#if configured !== null}
       <div class={cardBlockClass}>
-        <ProviderSetupInstructions {platform} open={!configured} />
+        <ProviderSetupInstructions {provider} open={!configured} />
       </div>
     {/if}
     <form
@@ -124,7 +124,7 @@
               : definition.placeholder}
           />
         </FormField>
-        {#if platform === 'kick'}
+        {#if provider === 'kick'}
           <FormField>
             Kick client secret<input
               class={formControlClass}

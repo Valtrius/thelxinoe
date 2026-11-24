@@ -92,7 +92,7 @@
       if (!(await prepare(serverAddress))) return;
       if (setup && password !== confirmation)
         throw new Error('Passwords do not match.');
-      // The admin's zone becomes the server default, so maintenance runs at their night.
+      // The administrator's zone becomes the server default, so maintenance runs at their night.
       const timezone = setup
         ? Intl.DateTimeFormat().resolvedOptions().timeZone
         : undefined;

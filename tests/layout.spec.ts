@@ -732,7 +732,7 @@ test('long settings content scrolls while navigation stays reachable', async ({
   const fixture = await installUiFixture(page, { settingsSection: 'devices' });
   await page.goto('/');
   await expect(
-    page.getByRole('heading', { name: 'Your devices', exact: true }),
+    page.getByRole('heading', { name: 'Your sessions', exact: true }),
   ).toBeVisible();
   // Only the settings column scrolls; the page header and navigation stay put.
   const settings = page.locator('.settings-scroll');
@@ -755,7 +755,7 @@ test('long settings content scrolls while navigation stays reachable', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('long admin navigation scrolls independently and keeps its last item reachable', async ({
+test('long administrator navigation scrolls independently and keeps its last item reachable', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 560 });
@@ -1297,7 +1297,7 @@ for (const state of ['ready', 'blocked', 'recovery-required', 'committed']) {
 for (const scenario of [
   {
     endpoint: '/admin/managers',
-    label: 'Acquisition managers',
+    label: 'Managers',
     unaffectedService: 'Prowlarr',
     unaffectedVersion: '2.0.0',
   },
@@ -1376,7 +1376,7 @@ for (const state of ['connecting', 'blocked']) {
   });
 }
 
-test('people rows offer automatic request approval to listed users', async ({
+test('user rows offer automatic request approval to listed users', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {
@@ -1405,7 +1405,7 @@ test('people rows offer automatic request approval to listed users', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('people rows hide automatic request approval for unlisted users', async ({
+test('user rows hide automatic request approval for unlisted users', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {

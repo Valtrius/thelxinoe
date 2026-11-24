@@ -136,7 +136,7 @@ if (command === 'check') {
     throw Error('Missing TAURI_UPDATER_PUBLIC_KEY');
   // No build script or bundler step ever runs beside the updater signing key.
   if (process.env.TAURI_SIGNING_PRIVATE_KEY)
-    throw Error('Build the desktop without TAURI_SIGNING_PRIVATE_KEY');
+    throw Error('Build the desktop app without TAURI_SIGNING_PRIVATE_KEY');
   for (const key of [
     'THELXINOE_RELEASE_URL',
     'THELXINOE_RELEASE_PUBLIC_KEY',
@@ -247,7 +247,7 @@ if (command === 'check') {
     database.match(/pub const MIGRATION_BASE: u32 = (\d+)/)[1],
   );
   const core = readFileSync('crates/core/src/lib.rs', 'utf8');
-  // Client APIs this release's server accepts; its desktop speaks the maximum.
+  // Client APIs this release's server accepts; its desktop app speaks the maximum.
   const api = {
     min: Number(core.match(/pub const API_MIN_VERSION: u32 = (\d+)/)[1]),
     max: Number(core.match(/pub const API_VERSION: u32 = (\d+)/)[1]),
@@ -434,7 +434,7 @@ if (command === 'check') {
     metadata.platforms['windows-x86_64'].signature !==
       manifest.windows_x64.signature
   )
-    throw Error('Desktop metadata does not match the signed release');
+    throw Error('Desktop app metadata does not match the signed release');
   for (const component of ['server', 'controller']) {
     const value = manifest[component];
     const repository = `ghcr.io/valtrius/thelxinoe-${component}`;

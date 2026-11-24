@@ -328,7 +328,7 @@ test('movies can leave Radarr and its lists, with the choices remembered', async
   expect(errors).toEqual([]);
 });
 
-test('a whole series or season joins Watch Later and leaves it once watched', async ({
+test('a whole show or season joins Watch Later and leaves it once watched', async ({
   page,
 }) => {
   const errors = track(page);
@@ -625,7 +625,7 @@ test('Home shelves keep every tile landscape without cropping posters', async ({
   expect(errors).toEqual([]);
 });
 
-test('a series only Sonarr knows lists its episodes from Discover and the Shows grid', async ({
+test('a show only Sonarr knows lists its episodes from Discover and the Shows grid', async ({
   page,
 }) => {
   const errors = track(page);
@@ -645,18 +645,18 @@ test('a series only Sonarr knows lists its episodes from Discover and the Shows 
   expect(errors).toEqual([]);
 });
 
-test('libraries list every Sonarr series, sort and filter them, and Discover marks them', async ({
+test('libraries list every Sonarr show, sort and filter them, and Discover marks them', async ({
   page,
 }) => {
   const errors = track(page);
   const tiles = page.locator('article.library-tile');
   await page.goto('/#library/shows');
-  // A series watched long ago that Sonarr keeps without files.
+  // A show watched long ago that Sonarr keeps without files.
   await expect(card(page, 'tmdb:47')).toContainText('Ended');
   await expect(tiles).toHaveCount(26);
   await page.getByRole('button', { name: 'Filter shows', exact: true }).click();
   const filters = page.getByRole('dialog', { name: 'Filter shows' });
-  await filters.getByRole('button', { name: /^Not downloaded/ }).click();
+  await filters.getByRole('button', { name: /^Not available/ }).click();
   await expect(tiles).toHaveCount(1);
   await filters.getByRole('button', { name: /^Upcoming/ }).click();
   await expect(tiles).toHaveCount(2);
@@ -677,7 +677,7 @@ test('libraries list every Sonarr series, sort and filter them, and Discover mar
   await page.reload();
   await expect(tiles).toHaveCount(1);
   await page.getByRole('button', { name: 'Filter shows', exact: true }).click();
-  for (const name of [/^Not downloaded/, /^Upcoming/, /^Ended/])
+  for (const name of [/^Not available/, /^Upcoming/, /^Ended/])
     await expect(filters.getByRole('button', { name })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -759,7 +759,7 @@ test('status changes reach open grids and title pages without reloading', async 
   expect(errors).toEqual([]);
 });
 
-test('Keep on a series covers its seasons and episodes and blocks their deletion', async ({
+test('Keep on a show covers its seasons and episodes and blocks their deletion', async ({
   page,
 }) => {
   const errors = track(page);
@@ -784,13 +784,13 @@ test('Keep on a series covers its seasons and episodes and blocks their deletion
   const keep = page.getByRole('menuitemcheckbox', { name: /^Keep/ });
   await expect(keep).toHaveAttribute('aria-checked', 'true');
   await expect(keep).toHaveAttribute('aria-disabled', 'true');
-  await expect(keep).toContainText('with the series');
+  await expect(keep).toContainText('with the show');
   await expect(
     page.getByRole('menuitemcheckbox', { name: /^Monitored/ }),
   ).toHaveAttribute('aria-disabled', 'true');
   await page.getByRole('menuitem', { name: 'Delete season files…' }).click();
   const dialog = page.getByRole('dialog', { name: /Delete season files/ });
-  await expect(dialog).toContainText('Keep is on for the whole series');
+  await expect(dialog).toContainText('Keep is on for the whole show');
   await expect(
     dialog.getByRole('button', { name: 'Delete season files', exact: true }),
   ).toBeDisabled();
@@ -932,7 +932,7 @@ test('episode rows show stills, mark seasons watched and search Sonarr', async (
   expect(errors).toEqual([]);
 });
 
-test('a series opens where watching goes on and its tabs show what is on disk', async ({
+test('a show opens where watching goes on and its tabs show what is on disk', async ({
   page,
 }) => {
   const errors = track(page);

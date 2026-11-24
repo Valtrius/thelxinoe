@@ -1,4 +1,4 @@
-//! Signed product releases shared by the server, controller and desktop.
+//! Signed releases shared by the server, the controller and the desktop app.
 use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, VerifyingKey};

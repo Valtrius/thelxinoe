@@ -39,9 +39,9 @@
     watchedChanged,
   }: {
     episode: Episode;
-    /** The series name, which episode titles from files may repeat. */
+    /** The show's name, which episode titles from files may repeat. */
     show: string;
-    /** The series as its seasons load, for Sonarr's actions. */
+    /** The show as its seasons load, for Sonarr's actions. */
     series: string | null;
     admin: boolean;
     timezone: string;

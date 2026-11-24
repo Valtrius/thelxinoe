@@ -37,8 +37,8 @@ pub struct Credentials {
     pub(crate) known_token: Option<String>,
 }
 impl Credentials {
-    /// The known-browser token a sign-in presents: a device sends it in the body, a browser
-    /// in its cookie.
+    /// The known-browser token a sign-in presents: the desktop app sends it in the body, a
+    /// browser in its cookie.
     fn known(&self, headers: &HeaderMap) -> Option<String> {
         self.known_token
             .clone()
@@ -54,8 +54,8 @@ pub async fn setup_status(State(state): State<AppState>) -> Result<Json<Value>> 
     ))
 }
 /// Issues the session a completed sign-in earned and answers with it: in a cookie for the web,
-/// or in the body for a device, whose native transport stores and strips it. A device
-/// remembered for two-step sign-in gets its `remember` token the same way, and whatever
+/// or in the body for the desktop app, whose transport stores and strips it. A remembered
+/// device gets its `remember` token the same way, and whatever
 /// signed in gets or refreshes its known-browser token (see `check_credentials`).
 pub(crate) async fn respond_session(
     state: &AppState,
@@ -127,7 +127,7 @@ pub(crate) async fn respond_session(
 pub struct Setup {
     #[serde(flatten)]
     credentials: Credentials,
-    /// The admin browser's zone. It becomes the server default so maintenance windows
+    /// The zone of the administrator's browser. It becomes the server default so maintenance windows
     /// such as 03:00–05:00 fall at local night; an unknown zone keeps UTC.
     #[serde(default)]
     timezone: Option<String>,
@@ -209,8 +209,8 @@ pub(crate) async fn check_credentials(
     if password.len() > 256 || username.len() > 64 {
         return Err(ApiError::unauthorized());
     }
-    // Failures count against the name whether or not the account exists, so throttling
-    // reveals nothing. A browser or client that already signed in to this account counts
+    // Failures count against the name whether or not the user exists, so throttling
+    // reveals nothing. A browser or client that already signed in as this user counts
     // against its own budget instead, so others' guesses can't lock its owner out; that's
     // all it skips, and the per-address limit applies to everyone.
     let throttle = match known {
@@ -250,12 +250,12 @@ pub(crate) async fn allow_password_attempt(state: &AppState, address: String) ->
         return Err(ApiError(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
-            "Too many login attempts. Try again in 15 minutes.".into(),
+            "Too many sign-in attempts. Try again in 15 minutes.".into(),
         ));
     }
     Ok(())
 }
-/// Counts an attempt against the account before its proof is checked, in the same write
+/// Counts an attempt against the user before its proof is checked, in the same write
 /// that checks the limit, so concurrent guesses can't all pass it. A proof that succeeds
 /// gives its attempt back with `release_account_attempt`.
 pub(crate) async fn reserve_account_attempt(state: &AppState, key: &str) -> Result<()> {
@@ -263,7 +263,7 @@ pub(crate) async fn reserve_account_attempt(state: &AppState, key: &str) -> Resu
         return Err(ApiError(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
-            "Too many failed attempts for this account. Try again in 15 minutes.".into(),
+            "Too many failed attempts for this user. Try again in 15 minutes.".into(),
         ));
     }
     Ok(())
@@ -279,7 +279,7 @@ pub struct PasswordChange {
     #[serde(default)]
     current_password: String,
     new_password: String,
-    /// Media apps keep working through client passwords unless these are revoked too.
+    /// Jellyfin clients keep working through client passwords unless these are revoked too.
     #[serde(default)]
     revoke_client_passwords: bool,
 }

@@ -102,7 +102,7 @@
     apiKey = $state('');
   let choosing = $state(false),
     accounts = $state<Account[] | null>(null),
-    people = $state<{ id: string; username: string }[]>([]),
+    users = $state<{ id: string; username: string }[]>([]),
     mapping = $state<Record<string, string>>({}),
     wanted = $state({ watched: true, resume: true, favorites: true }),
     previewing = $state(false),
@@ -197,7 +197,7 @@
             kind: 'sonarr',
             label: 'Sonarr',
             source: overview.library.sonarr,
-            identified: 'Episodes also match by their series IDs',
+            identified: 'Episodes also match by their show IDs',
             titles: 'shows',
             missing:
               'Episodes whose file changed since Jellyfin played them can only match by title.',
@@ -229,7 +229,7 @@
         accounts: Account[];
         people: { id: string; username: string }[];
       }>('/admin/jellyfin-import/accounts');
-      people = value.people;
+      users = value.people;
       mapping = Object.fromEntries(
         value.accounts.map((account) => [
           account.id,
@@ -429,7 +429,7 @@
 
 {#if overview && step === 'choose'}
   <SettingsCard
-    title="People"
+    title="Users"
     description="Choose who receives each Jellyfin account’s state."
   >
     {#if !accounts}
@@ -467,7 +467,7 @@
                         ? 'Disabled in Jellyfin'
                         : 'Administrator'}</small
                     >{/if}
-                  <!-- Phones keep the person choice in view and list the counts here. -->
+                  <!-- Phones keep the user choice in view and list the counts here. -->
                   <small class="hidden compact:block"
                     >{n(account.played)} played · {n(account.in_progress)} in progress
                     · {n(account.favorites)} favorites</small
@@ -490,8 +490,8 @@
                     disabled={previewing}
                   >
                     <option value="">Skip</option>
-                    {#each people as person (person.id)}
-                      <option value={person.id}>{person.username}</option>
+                    {#each users as user (user.id)}
+                      <option value={user.id}>{user.username}</option>
                     {/each}
                   </select>
                   {#if !account.suggested && !mapping[account.id]}<small
@@ -501,7 +501,7 @@
                         type="button"
                         class="text-accent underline-offset-2 hover:underline"
                         onclick={() => openSettings('people')}
-                        >Add them in People</button
+                        >Add them in Users</button
                       ></small
                     >{/if}
                 </td>

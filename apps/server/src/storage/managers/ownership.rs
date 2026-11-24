@@ -2,7 +2,7 @@
 use super::*;
 use thelxinoe_database::Database;
 
-/// Owned, committed and released: both the integration flag and its ownership record agree.
+/// Owned, committed and released: both the service's operational flag and its ownership record agree.
 const OPERATIONAL: &str = "EXISTS(SELECT 1 FROM stack_provisions p WHERE p.service_id=?1 AND p.state='complete' AND p.hold IS NULL) AND EXISTS(SELECT 1 FROM manager_services WHERE id=?1 AND enabled=1 AND operational=1 AND (?2 IS NULL OR generation=?2) UNION ALL SELECT 1 FROM support_services WHERE id=?1 AND operational=1 AND (?2 IS NULL OR generation=?2))";
 
 pub(super) async fn operational(

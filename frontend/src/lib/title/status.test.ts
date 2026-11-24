@@ -57,7 +57,7 @@ describe('title status', () => {
     expect(partial.detail).toMatch(/^Next episode /);
   });
 
-  it('keeps admin-only states distinct from the user wording', () => {
+  it('keeps administrator-only states distinct from the user wording', () => {
     expect(statusText({ state: 'missing' }, 'UTC', now).label).toBe('Missing');
     expect(statusText({ state: 'unmonitored' }, 'UTC', now).label).toBe(
       'Not monitored',
@@ -67,7 +67,7 @@ describe('title status', () => {
     );
   });
 
-  it('counts episodes on series posters and shows nothing for idle titles', () => {
+  it('counts episodes on show posters and shows nothing for idle titles', () => {
     expect(statusChip({ state: 'available' }, 'UTC', now)).toBeNull();
     expect(statusChip(null, 'UTC', now)).toBeNull();
     expect(

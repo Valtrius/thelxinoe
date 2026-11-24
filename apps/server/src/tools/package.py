@@ -138,7 +138,7 @@ def run(args, timeout=60, cwd=None, request=None):
 
 
 def discover(tool, channel):
-    require(platform.system() == "Linux" and platform.machine() == "x86_64", "Managed server tools require Linux x86-64")
+    require(platform.system() == "Linux" and platform.machine() == "x86_64", "Server tools require Linux x86-64")
     candidate = {"tool": tool, "channel": channel, "platform": PLATFORM, "artifacts": [], "python_abi": None}
     if tool == "yt-dlp":
         require(channel in ("nightly", "stable"), "Unsupported yt-dlp channel")
@@ -192,7 +192,7 @@ def discover(tool, channel):
                          source="https://pypi.org/project/streamlink/", license="BSD-2-Clause",
                          python_abi=sys.implementation.cache_tag, artifacts=sorted(wheels, key=lambda a: a["name"]))
     else:
-        raise RuntimeError("Unknown managed tool")
+        raise RuntimeError("Unknown server tool")
     candidate["id"] = identity(candidate)
     return candidate
 
@@ -482,7 +482,7 @@ def probe(root, value):
                     timeout=60, request=canonical({"provider": provider, "channel": channel}) + b"\n")
                 worker = json.loads(output.splitlines()[-1])
                 require(cli.startswith("https://") and any(f.get("url", "").startswith("https://") for f in worker.get("formats", [])),
-                        "Public stream is unavailable")
+                        "Public live stream is unavailable")
             return {"status": "passed", "seconds": round(time.monotonic() - started, 2)}
         except Exception as error:
             message = str(error).lower()

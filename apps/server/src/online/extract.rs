@@ -11,7 +11,7 @@ use crate::{
 use serde_json::Value;
 use std::{ffi::OsString, future::Future, time::Duration};
 
-/// Extraction usually takes one to five seconds; a viewer will not wait minutes.
+/// Extraction usually takes one to five seconds; a user will not wait minutes.
 pub(super) const EXTRACTION: Duration = Duration::from_secs(30);
 
 /// Signed media addresses only work from the returned address family.

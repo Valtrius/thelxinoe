@@ -63,7 +63,9 @@ pub async fn inspect(
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     if input.code.len() != 6 || !input.code.bytes().all(|c| c.is_ascii_digit()) {
-        return Err(ApiError::bad("Enter the six-digit code shown on your TV"));
+        return Err(ApiError::bad(
+            "Enter the six-digit code shown by your Jellyfin client",
+        ));
     }
     let hash = thelxinoe_auth::digest(&input.code);
     let code = hash.clone();
@@ -71,7 +73,9 @@ pub async fn inspect(
     let mut device = storage::inspect(&state.db, code, uid)
         .await?
         .ok_or_else(|| {
-            ApiError::bad("Code is unavailable or expired; check the TV or wait before retrying")
+            ApiError::bad(
+                "Code is unavailable or expired; check the Jellyfin client or wait before retrying",
+            )
         })?;
     device["confirmation"] =
         json!(crate::grants::issue(&state, &p, &format!("quick-connect:{hash}"), 120).await?);

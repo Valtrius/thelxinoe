@@ -59,7 +59,7 @@ pub(super) fn record_at(
         && advanced >= 0.0
         && advanced <= elapsed * 2.0 + 2.0
     {
-        // Clients using the compatibility API only provide playhead samples.
+        // Jellyfin clients only provide playhead samples.
         advanced.min(elapsed)
     } else {
         0.0
@@ -74,7 +74,7 @@ pub(super) fn record_at(
 
     let source = source(&media);
     // Prepared/prefetched or cancelled media has not been played. In particular,
-    // restoring a nonzero resume position alone does not count as a new start.
+    // restoring a nonzero resume point alone does not count as a new start.
     if input.state != "playing"
         && seconds == 0.0
         && tx

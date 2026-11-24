@@ -120,7 +120,7 @@ async fn analyze(
     let src = playback::source(state, media, Some(file))
         .await
         .map_err(|e| anyhow::anyhow!(e.2))?;
-    anyhow::ensure!(src.generation == generation, "Media generation changed");
+    anyhow::ensure!(src.generation == generation, "File version changed");
     let mid = media.to_owned();
     let fid = file.to_owned();
     let season = storage::analyze_read_media(mid, fid, &state.db)

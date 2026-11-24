@@ -187,7 +187,7 @@ async fn a_refresh_looks_up_its_title_by_external_id() {
     server.abort();
 }
 
-// Saving a setting gives the service a new generation. The next refresh keeps the admin's
+// Saving a setting gives the service a new generation. The next refresh keeps the administrator's
 // episode mappings, a two-episode one included, and drops the old generation's episodes.
 #[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
@@ -220,7 +220,7 @@ async fn a_new_generation_keeps_manual_episode_mappings() {
             "service_generation":generation,"external_id":"42"})
     };
     run(&state, &refresh("first")).await.unwrap();
-    // The admin maps the file to both episodes.
+    // The administrator maps the file to both episodes.
     state.db.write("test.manual", |db| {
         for episode in [101, 102] {
             db.execute("INSERT INTO manager_episode_mappings VALUES ('5a02','sonarr','first',?1,'complex')",[episode])?;

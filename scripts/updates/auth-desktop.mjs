@@ -223,7 +223,7 @@ export async function authenticationScenario({
         .click();
       await native.page
         .getByRole('navigation', { name: 'Settings navigation' })
-        .getByRole('link', { name: 'People', exact: true })
+        .getByRole('link', { name: /^(Users|People)$/ })
         .click();
       await native.page
         .getByRole('button', { name: new RegExp(username) })

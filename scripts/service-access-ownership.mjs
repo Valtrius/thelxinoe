@@ -69,7 +69,7 @@ export async function ownershipAccess({ f, scenario, output }) {
         const image = f.services[kind].image;
         await retireService(f, kind);
         const prefix = kind === 'nzbget' ? '' : '/existing-' + kind;
-        const attached = await f.attach(kind, prefix, image, {
+        const connected = await f.connect(kind, prefix, image, {
           authentication: ['radarr', 'sonarr', 'lidarr', 'prowlarr'].includes(
             kind,
           )
@@ -80,9 +80,9 @@ export async function ownershipAccess({ f, scenario, output }) {
           composeOwnership: kind === 'radarr',
         });
         const inspect = () =>
-          JSON.parse(docker('inspect', attached.container))[0];
+          JSON.parse(docker('inspect', connected.container))[0];
         const configPath =
-          attached.directory +
+          connected.directory +
           (kind === 'bazarr'
             ? '/config/config.yaml'
             : kind === 'nzbget'
@@ -91,27 +91,27 @@ export async function ownershipAccess({ f, scenario, output }) {
         const config = () => readFileSync(configPath, 'utf8');
         const root =
           kind === 'radarr' ? '/movies' : kind === 'sonarr' ? '/tv' : null;
-        if (root) await attached.direct('rootfolder', 'POST', { path: root });
+        if (root) await connected.direct('rootfolder', 'POST', { path: root });
         const original = inspect();
         const group = ['radarr', 'sonarr', 'lidarr'].includes(kind)
           ? 'managers'
           : 'support';
         const integration = async () =>
           (await f.api('/admin/' + group)).items.find(
-            (s) => s.id === attached.id,
+            (s) => s.id === connected.id,
           );
 
         // Connected: health and identity only, with no access or operations.
         expect((await stage(f, kind)).stage).toBe('connected');
         expect(
-          (await f.api(`/admin/services/${attached.id}/test`, 'POST')).healthy,
+          (await f.api(`/admin/services/${connected.id}/test`, 'POST')).healthy,
         ).toBe(true);
         expect(await integration()).toMatchObject({
           operational: false,
           access_url: null,
         });
         const links = (await f.api('/admin/service-connections')).items.filter(
-          (l) => l.source_id === attached.id || l.target_id === attached.id,
+          (l) => l.source_id === connected.id || l.target_id === connected.id,
         );
         expect(links.every((l) => !l.enabled)).toBe(true);
         const after = inspect();
@@ -122,20 +122,20 @@ export async function ownershipAccess({ f, scenario, output }) {
         // A stopped original can't be reviewed; nothing changes until it's back.
         let startedAt = original.State.StartedAt;
         if (kind === 'radarr') {
-          docker('stop', attached.container);
-          const blocked = await f.transfer(attached.id, { approve: false });
+          docker('stop', connected.container);
+          const blocked = await f.transfer(connected.id, { approve: false });
           expect(blocked.review.review.blockers.join(' ')).toContain(
             'Start the original',
           );
           await f.api(`/admin/transfers/${blocked.review.id}/cancel`, 'POST');
-          docker('start', attached.container);
+          docker('start', connected.container);
           // Errors are expected until the restarted original answers again.
           await expect
             .poll(
               async () =>
                 (
                   await f
-                    .api(`/admin/services/${attached.id}/test`, 'POST')
+                    .api(`/admin/services/${connected.id}/test`, 'POST')
                     .catch((error) => ({ healthy: error.message }))
                 ).healthy,
               { timeout: 180000 },
@@ -145,7 +145,7 @@ export async function ownershipAccess({ f, scenario, output }) {
         }
         // Compose ownership must be explicitly resolved before anything stops.
         if (kind === 'radarr') {
-          const { review } = await f.transfer(attached.id, { approve: false });
+          const { review } = await f.transfer(connected.id, { approve: false });
           expect(review.review.plan.compose).toBeTruthy();
           await expect(
             f.api(`/admin/transfers/${review.id}/approve`, 'POST', {
@@ -165,7 +165,7 @@ export async function ownershipAccess({ f, scenario, output }) {
         }
 
         const before = config();
-        const { view, review } = await f.transfer(attached.id);
+        const { view, review } = await f.transfer(connected.id);
         expect(view.state, view.error ?? '').toBe('complete');
         // The original is kept stopped and unchanged, with restart disabled.
         const retained = inspect();
@@ -210,12 +210,12 @@ export async function ownershipAccess({ f, scenario, output }) {
   }
 }
 
-export async function attachedConflicts({ f, scenario }) {
+export async function connectedConflicts({ f, scenario }) {
   await scenario(
     'Connected services never get native access or service routes',
     async () => {
       await retireService(f, 'radarr');
-      const radarr = await f.attach('radarr', '/api', f.services.radarr.image);
+      const radarr = await f.connect('radarr', '/api', f.services.radarr.image);
       const record = (await f.api('/admin/managers')).items.find(
         (s) => s.id === radarr.id,
       );

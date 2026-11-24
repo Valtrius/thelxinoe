@@ -56,5 +56,5 @@ for line in sys.stdin:
         streams = session.streams(f"https://{domain}/{channel}", twitch if provider == "twitch" else None)
         result = formats(streams)
     except Exception:
-        result = {"error": "Public stream extraction failed"}
+        result = {"error": "Public extraction failed"}
     print(json.dumps(result, separators=(",", ":")), flush=True)

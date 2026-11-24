@@ -45,7 +45,7 @@
       ? 'Video downloads'
       : policy.domain === 'movies'
         ? 'Movies'
-        : 'TV seasons',
+        : 'Show seasons',
   );
   const description = $derived(
     video
@@ -113,7 +113,7 @@
           label={`Auto-delete watched ${policy.domain === 'movies' ? 'movies' : 'seasons'}`}
           description={policy.trigger_users.length
             ? 'Delete after everyone selected below has watched.'
-            : 'Choose at least one person below to turn this on.'}
+            : 'Choose at least one user below to turn this on.'}
           for={`${ids}-enabled`}
         >
           <Switch
@@ -130,11 +130,11 @@
           <div
             class="w-full min-w-0 border border-line bg-surface-strong text-xs"
             role="group"
-            aria-label="People who must have watched"
+            aria-label="Users who must have watched"
           >
             {#if searchable}
               <label class="relative block border-b border-line">
-                <span class="sr-only">Find a person</span>
+                <span class="sr-only">Find a user</span>
                 <Search
                   size={13}
                   class="pointer-events-none absolute top-2.5 left-2.5 text-muted"
@@ -143,7 +143,7 @@
                 <input
                   type="search"
                   class="w-full border-0 bg-transparent py-2 pr-2 pl-8 text-xs text-foreground placeholder:text-muted focus:outline-none"
-                  placeholder="Find a person"
+                  placeholder="Find a user"
                   bind:value={filter}
                 />
               </label>
@@ -168,7 +168,7 @@
                 </label>
               {:else}
                 <p class="m-0 px-3 py-2 text-muted">
-                  {users.length ? 'No one matches.' : 'No people yet.'}
+                  {users.length ? 'No one matches.' : 'No users yet.'}
                 </p>
               {/each}
             </div>
@@ -204,7 +204,7 @@
           label="Delete after (days)"
           description={video
             ? 'After everyone saving or requesting the download has watched. At least 1 day.'
-            : 'Grace period after the last selected person has watched. At least 1 day.'}
+            : 'Grace period after the last selected user has watched. At least 1 day.'}
           for={`${ids}-grace`}
         >
           <input

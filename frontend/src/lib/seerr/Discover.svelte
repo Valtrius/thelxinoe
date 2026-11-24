@@ -96,9 +96,9 @@
   let feeds = $state<Feed[]>([
     feed('trending', 'Trending'),
     feed('movies', 'Popular movies'),
-    feed('tv', 'Popular series'),
+    feed('tv', 'Popular shows'),
     feed('upcoming', 'Upcoming movies'),
-    feed('upcoming-tv', 'Upcoming series'),
+    feed('upcoming-tv', 'Upcoming shows'),
   ]);
   // Seerr answered ready, so rows may load.
   let feedsReady = $state(false);
@@ -520,10 +520,10 @@
         class={`${formControlClass} min-w-0 flex-1 border-0 bg-transparent py-4 text-sm shadow-none outline-none focus:ring-0`}
         aria-label={tab === 'music'
           ? 'Search albums and artists'
-          : 'Search movies and series'}
+          : 'Search movies and shows'}
         placeholder={tab === 'music'
           ? 'Search albums and artists…'
-          : 'Search movies and series…'}
+          : 'Search movies and shows…'}
         bind:value={query}
         oninput={() => changed()}
         maxlength="200"
@@ -547,7 +547,7 @@
       data-sidebar-group
       aria-label="Discover navigation"
     >
-      {#each [{ id: 'discover', label: 'Discover' }, { id: 'movies', label: 'Movies' }, { id: 'tv', label: 'Series' }, { id: 'music', label: 'Music' }, { id: 'requests', label: user.role === 'admin' ? 'Requests' : 'My requests' }] as item (item.id)}<button
+      {#each [{ id: 'discover', label: 'Discover' }, { id: 'movies', label: 'Movies' }, { id: 'tv', label: 'Shows' }, { id: 'music', label: 'Music' }, { id: 'requests', label: user.role === 'admin' ? 'Requests' : 'My requests' }] as item (item.id)}<button
           class={[
             'shrink-0 border-b-2 px-4 pt-2 pb-3 text-xs font-semibold transition-colors hover:text-foreground',
             tab === item.id
@@ -614,7 +614,7 @@
         />{:else if !requests.length && !musicRequestCount}<p
           class="py-12 text-center text-sm text-muted"
         >
-          No requests yet. Find a movie, series or album to get started.
+          No requests yet. Find a movie, show or album to get started.
         </p>{:else if requests.length}<div class="grid gap-3">
           {#each requests as request (request.id)}<article
               class="flex items-center gap-4 border border-line bg-surface p-4 compact:flex-wrap"
@@ -634,7 +634,7 @@
                   ><strong class="block text-sm"
                     >{request.detail
                       ? title(request.detail)
-                      : `${request.type === 'movie' ? 'Movie' : 'Series'} #${request.media.tmdbId}`}</strong
+                      : `${request.type === 'movie' ? 'Movie' : 'Show'} #${request.media.tmdbId}`}</strong
                   ><span class="mt-1 block text-xs text-muted"
                     >{request.media.status === 5 || request.status === 5
                       ? 'Available'

@@ -165,7 +165,8 @@ fn credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
 fn remembered_credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
     keyring::Entry::new(&app.config().identifier, "server-remember").map_err(|e| e.to_string())
 }
-/// Marks this desktop as one that signed in before, so others' failed guesses can't lock it out.
+/// Marks this desktop app as one that signed in before, so others' failed guesses can't lock it
+/// out.
 fn known_credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
     keyring::Entry::new(&app.config().identifier, "server-known").map_err(|e| e.to_string())
 }
@@ -208,7 +209,7 @@ async fn open_service(app: tauri::AppHandle, id: String) -> Result<(), String> {
             .to_owned());
     }
     if let Some(native) = response["body"]["native_url"].as_str() {
-        let url = url::Url::parse(native).map_err(|_| "Invalid native service address")?;
+        let url = url::Url::parse(native).map_err(|_| "Invalid media service address")?;
         if !matches!(url.scheme(), "http" | "https")
             || url.host_str().is_none()
             || !url.username().is_empty()
@@ -216,7 +217,7 @@ async fn open_service(app: tauri::AppHandle, id: String) -> Result<(), String> {
             || url.query().is_some()
             || url.fragment().is_some()
         {
-            return Err("Invalid native service address".into());
+            return Err("Invalid media service address".into());
         }
         return app
             .opener()

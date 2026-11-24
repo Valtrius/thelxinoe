@@ -1,5 +1,6 @@
-//! Opt-in VAAPI conversion. A probe runs the production filter graphs on each render node
-//! and records what one verifiably does; conversions use only that, and software otherwise.
+//! Opt-in hardware transcoding over VAAPI. A probe runs the production filter graphs on each
+//! render node and records what one verifiably does; transcodes use only that, and software
+//! otherwise.
 use crate::{Capabilities, Conversion, Options};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -22,14 +23,14 @@ use tokio::io::AsyncBufReadExt;
 #[path = "hardware_tests.rs"]
 mod tests;
 
-/// A render node, the libva driver conversions load for it, and what a probe verified.
+/// A render node, the libva driver transcodes load for it, and what a probe verified.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Accelerator {
     pub device: String,
     pub driver: String,
     /// How the driver describes itself.
     pub description: String,
-    /// GPU scaling, which every GPU-decoded conversion uses.
+    /// GPU scaling, which every GPU-decoded transcode uses.
     pub scale: bool,
     pub h264: bool,
     pub hevc: bool,
@@ -55,7 +56,7 @@ pub(crate) struct Hardware {
     enabled: AtomicBool,
     status: Mutex<HardwareStatus>,
     probe: tokio::sync::Mutex<()>,
-    /// Playback sessions whose GPU conversion failed; they convert in software until they end.
+    /// Playback sessions whose GPU transcode failed; they transcode in software until they end.
     failed: Mutex<HashSet<String>>,
 }
 impl Hardware {
@@ -68,7 +69,7 @@ impl Hardware {
     pub(crate) fn status(&self) -> HardwareStatus {
         self.status.lock().unwrap().clone()
     }
-    /// What a session's next conversion uses.
+    /// What a playback session's next transcode uses.
     pub(crate) fn accelerator(&self, session: &str) -> Option<Accelerator> {
         if !self.enabled() || self.failed.lock().unwrap().contains(session) {
             return None;
@@ -82,7 +83,7 @@ impl Hardware {
         tracing::warn!(
             session,
             cause,
-            "Hardware conversion failed; converting in software"
+            "Hardware transcoding failed; transcoding in software"
         );
         self.failed.lock().unwrap().insert(session.to_owned());
     }
@@ -104,7 +105,7 @@ impl Hardware {
     }
 }
 
-/// How a conversion uses the GPU. It always encodes there; it also decodes and filters there
+/// How a transcode uses the GPU. It always encodes there; it also decodes and filters there
 /// when the probe verified everything the source needs, else software decodes and filters.
 pub(crate) struct Plan<'a> {
     pub accelerator: &'a Accelerator,
@@ -239,7 +240,7 @@ fn error_line(line: &str) -> Option<&str> {
         .find_map(|level| line.split_once(level))
         .map(|(_, message)| message.trim())
 }
-/// FFmpeg options that report a conversion's progress to `Watch`.
+/// FFmpeg options that report a transcode's progress to `Watch`.
 pub(crate) const PROGRESS: [&str; 2] = ["-progress", "pipe:1"];
 /// Words in FFmpeg's log that put a failure on the GPU: its device, driver, decoder and filters.
 const GPU_WORDS: [&str; 10] = [
@@ -334,8 +335,8 @@ impl Watch {
             .clone()
             .unwrap_or_else(|| "FFmpeg logged no error".into())
     }
-    /// Whether the GPU ended a conversion that FFmpeg gave up (`exited`) or that ran out of
-    /// time: FFmpeg blamed it, or a conversion out of time had not made a single frame, as on
+    /// Whether the GPU ended a transcode that FFmpeg gave up (`exited`) or that ran out of
+    /// time: FFmpeg blamed it, or a transcode out of time had not made a single frame, as on
     /// a hung GPU. A slow start or a failing input is not the GPU's.
     pub(crate) async fn gpu_failed(&self, exited: bool) -> bool {
         self.ended().await;
@@ -518,7 +519,7 @@ async fn probe_driver(
         })
         .into();
     let pattern = json!({"codec_type":"video","codec_name":"rawvideo","pix_fmt":"yuv420p","width":320,"height":240});
-    conversion(tools, &accelerator, PATTERN, &pattern, &quality("144p"))
+    transcode(tools, &accelerator, PATTERN, &pattern, &quality("144p"))
         .await
         .context("H.264 encoding failed")?;
     accelerator.scale = ffmpeg(
@@ -649,7 +650,7 @@ fn quality(quality: &str) -> Options {
         capabilities: Capabilities::default(),
     }
 }
-/// Whether the GPU decodes and converts a sample once it has `capability`, as production would.
+/// Whether the GPU decodes and transcodes a sample once it has `capability`, as production would.
 async fn verified(
     tools: &MediaTools,
     accelerator: &Accelerator,
@@ -665,15 +666,15 @@ async fn verified(
     if !candidate.plan(Some(stream), options, tone_map).decode {
         return false;
     }
-    conversion(tools, &candidate, sample, stream, options)
+    transcode(tools, &candidate, sample, stream, options)
         .await
         .inspect_err(|error| {
             tracing::info!(device = %candidate.device, driver = %candidate.driver, %error, "{name} on the GPU is unavailable");
         })
         .is_ok()
 }
-/// Runs a production conversion of `input`, a file or a lavfi graph, to nothing.
-async fn conversion(
+/// Runs a production transcode of `input`, a file or a lavfi graph, to nothing.
+async fn transcode(
     tools: &MediaTools,
     accelerator: &Accelerator,
     input: &str,

@@ -116,7 +116,7 @@ pub async fn handle(
             }
             409 => {
                 return Err(ApiError::conflict(
-                    "Your YouTube watchlist and pins can retain at most 1,000 videos",
+                    "Your YouTube watchlists and pins can retain at most 1,000 videos",
                 ));
             }
             _ => {}

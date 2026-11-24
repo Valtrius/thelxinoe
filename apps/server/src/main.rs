@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
         thelxinoe_server::run_service_updates,
     ));
     workers.spawn(supervise(
-        "service connections",
+        "service links",
         state.clone(),
         thelxinoe_server::run_service_connections,
     ));
@@ -99,7 +99,7 @@ async fn main() -> Result<()> {
         thelxinoe_server::run_services_watch,
     ));
     workers.spawn(supervise(
-        "retention",
+        "auto-delete",
         state.clone(),
         thelxinoe_server::run_retention,
     ));
@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
         thelxinoe_server::backups::run,
     ));
     workers.spawn(supervise(
-        "product updates",
+        "server updates",
         state.clone(),
         thelxinoe_server::product::run,
     ));

@@ -663,7 +663,7 @@ pub(super) async fn provision(
     input: Value,
 ) -> Result<Json<Value>> {
     let mut input: Register = serde_json::from_value(input)
-        .map_err(|_| ApiError::bad("Invalid managed service configuration"))?;
+        .map_err(|_| ApiError::bad("Invalid service configuration"))?;
     input.setup = Some(setup.to_owned());
     register_with_actor(state, input, actor).await
 }

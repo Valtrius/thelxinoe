@@ -12,7 +12,7 @@ const page = browser
   .contexts()[0]
   .pages()
   .find((page) => page.url().startsWith('http://tauri.localhost'));
-if (!page) throw new Error('No native desktop test window');
+if (!page) throw new Error('No desktop app test window');
 const invoke = (command, args = {}) =>
   page.evaluate(
     ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args),
@@ -32,9 +32,11 @@ const results = [];
 let started = false;
 try {
   if ((await invoke('server_url')) !== origin)
-    throw new Error('The selected desktop is connected to a different server');
+    throw new Error(
+      'The selected desktop app is connected to a different server',
+    );
   if ((await invoke('mpv_state')).status !== 'stopped')
-    throw new Error('Stop playback in the isolated test desktop first');
+    throw new Error('Stop playback in the isolated test desktop app first');
   await api('/auth/me');
   const twitch = (await api('/online/twitch/feed')).items[0];
   const video = (await api('/online/youtube/feed')).items.find((video) =>
@@ -80,7 +82,7 @@ try {
         state.status !== 'playing' ||
         state.position < 1
       )
-        throw new Error('Native playback did not advance');
+        throw new Error('MPV player playback did not advance');
       results.push(result);
       console.log(JSON.stringify(result));
       await invoke('mpv_command', { command: 'stop', value: null });

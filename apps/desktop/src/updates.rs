@@ -88,9 +88,9 @@ async fn candidate(app: &tauri::AppHandle) -> Result<Option<Manifest>, String> {
 fn summary(release: &Manifest) -> Value {
     json!({"version":release.version,"notes":release.notes,"bytes":release.windows_x64.bytes,"api":release.api.max})
 }
-/// A release's desktop speaks its `api.max`; a server accepts clients within its
+/// A release's desktop app speaks its `api.max`; a server accepts clients within its
 /// `api_min..=api_max` (older servers report only `api_version`). An offline or
-/// unknown server must not prevent maintaining this desktop.
+/// unknown server must not prevent maintaining this desktop app.
 fn server_hold(health: &Value, version: &str, api: u32) -> Option<String> {
     if health["status"] != 200 {
         return None;
@@ -112,7 +112,7 @@ fn server_hold(health: &Value, version: &str, api: u32) -> Option<String> {
     Some(if behind {
         format!("Update the server to {version} first")
     } else {
-        format!("The connected server does not support desktop {version}")
+        format!("The connected server does not support desktop app {version}")
     })
 }
 async fn held(app: &tauri::AppHandle, version: &str, api: u32) -> Option<String> {
@@ -181,8 +181,8 @@ async fn download(app: &tauri::AppHandle, release: Manifest) -> Result<(), Strin
     let endpoint = thelxinoe_releases::https(&release.windows_x64.url)
         .and_then(|url| Ok(url.join("windows-x64.json")?))
         .map_err(|_| "Invalid desktop release endpoint")?;
-    // The installer must verify against the updater key built into this desktop. The manifest
-    // names its key only so a release for a different key is refused up front.
+    // The installer must verify against the updater key built into this desktop app. The
+    // manifest names its key only so a release for a different key is refused up front.
     let trusted = app
         .config()
         .plugins
@@ -224,7 +224,7 @@ async fn download(app: &tauri::AppHandle, release: Manifest) -> Result<(), Strin
         || update.download_url.as_str() != release.windows_x64.url
         || update.signature != release.windows_x64.signature
     {
-        return Err("Desktop metadata does not match the signed product release".into());
+        return Err("Desktop app metadata does not match the signed release".into());
     }
     let limit = release.windows_x64.bytes;
     let overflow = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -502,7 +502,7 @@ pub fn start(app: tauri::AppHandle) {
                     .expect("desktop update backoff")
                     .allows(version, thelxinoe_core::now())
             });
-            // Personal update preferences apply to a signed-in desktop, and to one the
+            // Personal update preferences apply to a signed-in desktop app, and to one the
             // server rejects as incompatible (HTTP 426): updating is then the only way in.
             if automatic_candidate(&status)
                 && due
@@ -555,13 +555,13 @@ mod tests {
         );
         assert_eq!(
             server_hold(&server, "0.0.3", 1).as_deref(),
-            Some("The connected server does not support desktop 0.0.3")
+            Some("The connected server does not support desktop app 0.0.3")
         );
         // Older servers report only the API version they speak.
         let legacy = health(json!({"version":"0.0.1","api_version":1}));
         assert_eq!(server_hold(&legacy, "0.0.2", 1), None);
         assert!(server_hold(&legacy, "0.0.2", 2).is_some());
-        // A failing or unknown server never holds the desktop.
+        // A failing or unknown server never holds the desktop app.
         let failing = json!({"status":503,"body":{"api_version":1}});
         assert_eq!(server_hold(&failing, "0.0.2", 2), None);
         assert_eq!(server_hold(&health(json!({})), "0.0.2", 2), None);
