@@ -1,6 +1,4 @@
-import type Hls from 'hls.js';
 import { api } from './api';
-import { inBackground } from './page-readiness';
 import { captureSession } from './session';
 import {
   appendedQueue,
@@ -10,25 +8,26 @@ import {
   removedQueue,
   wraps,
 } from './music/queue-follow';
-import { PlaybackActivity } from './playback-activity';
 import {
   capabilities,
   mediaUrl,
-  prepare,
   playbackRequest,
   replayGain,
   scheduleBuffer,
-  sessionRefused,
   type MediaChoice,
   type MediaInfo,
   type Playback,
 } from './playback';
+import {
+  Heartbeat,
+  PlaybackSession,
+  type SessionSetup,
+} from './playback-session';
 /** A track streamed through a media element instead of decoded in memory. */
 type Stream = {
   element: HTMLAudioElement;
   source: MediaElementAudioSourceNode;
   gain: GainNode;
-  hls?: Hls;
   started: boolean;
   ended: boolean;
 };
@@ -36,16 +35,13 @@ type Entry = {
   choice: MediaChoice;
   /** The choice's place in the queue. */
   at: number;
-  playback: Playback;
+  session: PlaybackSession;
   buffer?: AudioBuffer;
   stream?: Stream;
-  sequence: number;
   start: number;
   offset: number;
   end: number;
   node?: ReturnType<typeof scheduleBuffer>;
-  reports: Promise<unknown>;
-  activity: PlaybackActivity;
 };
 export type Repeat = 'off' | 'all' | 'one';
 export type MusicState = {
@@ -95,8 +91,6 @@ const decodeMargin = 3;
 const loadAhead = 60;
 /** How many seconds from a stream's end the track after it goes on the audio clock. */
 const followStream = 1.5;
-/** The server ends a session two minutes after its last heartbeat. */
-const sessionLifetime = 100_000;
 const android = /Android/.test(navigator.userAgent);
 let silence: string | undefined;
 /**
@@ -161,7 +155,7 @@ export class GaplessQueue {
   private loading = false;
   private initialized = false;
   private timer: ReturnType<typeof setInterval>;
-  private heartbeat: ReturnType<typeof setInterval>;
+  private heartbeat: Heartbeat;
   private lastCurrent?: Entry;
   private preparation = new AbortController();
   private presence = android ? silentElement() : undefined;
@@ -169,11 +163,24 @@ export class GaplessQueue {
   private sounding?: HTMLAudioElement;
   /** The queue plays unless paused, by the user or the system. */
   private playing = true;
-  private lastHeartbeat = Date.now();
   /** Where the next track read starts, after a session ended under the queue. */
   private resumeAt = 0;
   /** The session of the track being read, which has no entry to keep it alive. */
-  private reading?: string;
+  private reading?: PlaybackSession;
+  /** The queue's side of each track's playback session. */
+  private sessions: SessionSetup = {
+    owns: this.ownsSession,
+    loadHls: async () => (await import('hls.js')).default,
+    hooks: {
+      interrupted: (session) => {
+        if (this.closed || !this.entries.some((e) => e.session === session))
+          return;
+        this.failed(new Error('Playback was interrupted.'));
+        void this.close();
+      },
+      refused: (_, e) => this.refused(e),
+    },
+  };
   /** Opened as it was left: nothing is read until it plays. */
   private parked = false;
   /** Reading the rest of the list this queue started from; clearing ends it. */
@@ -194,7 +201,7 @@ export class GaplessQueue {
     this.next = this.index;
     this.volume.connect(this.context.destination);
     this.timer = setInterval(() => this.update(), 100);
-    this.heartbeat = setInterval(() => void this.keepalive(), 10000);
+    this.heartbeat = new Heartbeat(() => void this.keepalive());
     if (this.presence) this.followSystem(this.presence);
     if (parked) {
       this.parked = true;
@@ -267,19 +274,23 @@ export class GaplessQueue {
       source.tracks
         .filter((t) => t.kind === 'audio')
         .every((t) => memoryCodecs.includes(t.codec));
-    const playback = await prepare(
-      choice,
+    const session = await PlaybackSession.open(
       {
-        quality: memory ? 'original' : info.preferences.quality,
-        audio: null,
-        subtitle: 'off',
-        capabilities: capabilities(source?.probe),
+        choice,
+        options: {
+          quality: memory ? 'original' : info.preferences.quality,
+          audio: null,
+          subtitle: 'off',
+          capabilities: capabilities(source?.probe),
+        },
+        at: first ? undefined : resumeAt,
+        preparation: pending,
       },
-      first ? undefined : resumeAt,
-      pending,
+      this.sessions,
     );
+    const { playback } = session;
     let entry: Entry | undefined;
-    this.reading = playback.id;
+    this.reading = session;
     try {
       if (stale()) return;
       const buffer =
@@ -290,19 +301,16 @@ export class GaplessQueue {
       entry = {
         choice,
         at,
-        playback,
+        session,
         buffer,
-        sequence: 0,
         start: 0,
         offset: playback.position,
         end: 0,
-        reports: Promise.resolve(),
-        activity: new PlaybackActivity(),
       };
       if (!buffer) {
         entry.stream = this.element();
         try {
-          await this.attach(entry, playback.url, playback.position);
+          await this.attach(entry, playback.position);
         } catch (e) {
           this.release(entry);
           entry = undefined;
@@ -317,8 +325,7 @@ export class GaplessQueue {
       this.entries.push(entry);
     } finally {
       this.reading = undefined;
-      if (!entry && this.ownsSession())
-        await api(`/playback/${playback.id}`, 'DELETE').catch(() => {});
+      if (!entry) await session.discard();
     }
   }
   /**
@@ -449,44 +456,11 @@ export class GaplessQueue {
         .finally(() => presence.pause());
     else if (previous === presence) presence.pause();
   }
-  private async attach(entry: Entry, url: string, at: number) {
+  private attach(entry: Entry, at: number) {
     const stream = entry.stream!;
-    const { element } = stream;
-    stream.gain.gain.value = replayGain(
-      entry.playback.probe,
-      entry.playback.replay_gain,
-    );
-    stream.hls?.destroy();
-    stream.hls = undefined;
-    const from = Math.max(0, at - entry.playback.timeline_start);
-    const playlist = new URL(url, location.href).pathname.endsWith('.m3u8');
-    const { default: HlsPlayer } = playlist
-      ? await import('hls.js')
-      : { default: undefined };
-    if (
-      !HlsPlayer ||
-      (!HlsPlayer.isSupported() &&
-        element.canPlayType('application/vnd.apple.mpegurl'))
-    ) {
-      element.src = mediaUrl(url);
-      element.onloadedmetadata = from
-        ? () => (element.currentTime = from)
-        : null;
-      return;
-    }
-    const hls = new HlsPlayer({
-      enableWorker: false,
-      startPosition: from,
-      maxBufferLength: 30,
-    });
-    stream.hls = hls;
-    hls.loadSource(mediaUrl(url));
-    hls.attachMedia(element);
-    hls.on(HlsPlayer.Events.ERROR, (_, data) => {
-      if (!data.fatal || this.closed || !this.entries.includes(entry)) return;
-      this.failed(new Error('Playback was interrupted.'));
-      void this.close();
-    });
+    const { playback } = entry.session;
+    stream.gain.gain.value = replayGain(playback.probe, playback.replay_gain);
+    return entry.session.attach(stream.element, at);
   }
   private release(entry: Entry) {
     entry.node?.source.stop();
@@ -495,24 +469,22 @@ export class GaplessQueue {
     const stream = entry.stream;
     if (!stream) return;
     stream.element.onended = null;
-    stream.element.onloadedmetadata = null;
     stream.element.onerror = null;
     stream.element.onpause = null;
     stream.element.onplay = null;
     stream.element.pause();
-    stream.hls?.destroy();
-    stream.hls = undefined;
+    entry.session.detach();
     stream.element.removeAttribute('src');
     stream.element.load();
     stream.source.disconnect();
     stream.gain.disconnect();
   }
   private duration(entry: Entry) {
-    return entry.buffer?.duration ?? entry.playback.duration;
+    return entry.buffer?.duration ?? entry.session.playback.duration;
   }
   private position(entry: Entry) {
     const value = entry.stream
-      ? entry.stream.element.currentTime + entry.playback.timeline_start
+      ? entry.session.timeline(entry.stream.element.currentTime)
       : this.context.currentTime - entry.start + entry.offset;
     return Math.max(0, Math.min(this.duration(entry), value));
   }
@@ -562,7 +534,10 @@ export class GaplessQueue {
         entry.buffer!,
         when,
         entry.offset,
-        replayGain(entry.playback.probe, entry.playback.replay_gain),
+        replayGain(
+          entry.session.playback.probe,
+          entry.session.playback.replay_gain,
+        ),
         this.volume,
       );
       // Timers slow down on a hidden page; this still catches the end on time.
@@ -603,8 +578,7 @@ export class GaplessQueue {
     if (this.closed || !this.initialized) return;
     while (this.entries.length && this.done(this.entries[0])) {
       const finished = this.entries.shift()!;
-      finished.activity.setActive(false);
-      void this.report(finished, 'stopped', this.duration(finished));
+      void finished.session.stop(this.duration(finished));
       this.release(finished);
       this.lastCurrent = undefined;
       this.index =
@@ -654,39 +628,14 @@ export class GaplessQueue {
         (current.stream
           ? current.stream.started && !current.stream.element.paused
           : this.context.currentTime >= current.start);
-      const activityChanged = current.activity.setActive(playing);
+      const activityChanged = current.session.activity.setActive(playing);
       if (this.lastCurrent !== current || activityChanged) {
         this.lastCurrent = current;
-        void this.report(current, playing ? 'playing' : 'paused', position);
+        void current.session.report(playing ? 'playing' : 'paused', position);
       }
     }
     this.sound();
     this.changed(this.snapshot(current));
-  }
-  private report(entry: Entry, state: string, position: number) {
-    const sequence = entry.sequence++;
-    const activeSeconds = entry.activity.seconds();
-    entry.reports = entry.reports
-      .catch(() => {})
-      // Progress reports never hold back the page being opened.
-      .then(() =>
-        this.ownsSession()
-          ? inBackground(() =>
-              api(`/playback/${entry.playback.id}/progress`, 'POST', {
-                sequence,
-                state,
-                position,
-                active_seconds: activeSeconds,
-              }),
-            )
-          : undefined,
-      );
-    return entry.reports.catch((e) => {
-      if (sessionRefused(e)) this.refused(e);
-    });
-  }
-  private lapsed() {
-    return Date.now() - this.lastHeartbeat >= sessionLifetime;
   }
   /**
    * The server refused a session. Under a paused queue, or after it heard
@@ -694,7 +643,7 @@ export class GaplessQueue {
    */
   private refused(e: unknown) {
     if (this.closed) return;
-    if (!this.playing) this.lastHeartbeat = 0;
+    if (!this.playing) this.heartbeat.lapse();
     else if (this.wake()) this.update();
     else {
       this.failed(e);
@@ -706,8 +655,8 @@ export class GaplessQueue {
    * its sessions. The track is read again from where it stopped.
    */
   private wake() {
-    if (!this.lapsed()) return false;
-    this.lastHeartbeat = Date.now();
+    if (!this.heartbeat.lapsed) return false;
+    this.heartbeat.heard();
     this.reading = undefined;
     const current = this.entries[0];
     if (!current) return false;
@@ -722,28 +671,21 @@ export class GaplessQueue {
   private async keepalive() {
     if (this.closed || !this.ownsSession()) return;
     // Playing on reads the track again; a report now would be refused.
-    if (!this.playing && this.lapsed()) return;
-    try {
-      for (const e of this.entries) {
-        if (this.closed || !this.ownsSession()) return;
-        await inBackground(() =>
-          api(`/playback/${e.playback.id}/keepalive`, 'POST'),
-        );
-      }
-      const { reading } = this;
-      if (reading && !this.closed && this.ownsSession())
-        await inBackground(() => api(`/playback/${reading}/keepalive`, 'POST'));
-      this.lastHeartbeat = Date.now();
-      const current = this.entries[0];
-      if (current)
-        await this.report(
-          current,
-          this.context.state === 'running' ? 'playing' : 'paused',
-          this.position(current),
-        );
-    } catch (e) {
-      if (sessionRefused(e)) this.refused(e);
+    if (!this.playing && this.heartbeat.lapsed) return;
+    for (const e of this.entries) {
+      if (this.closed || !this.ownsSession()) return;
+      if (!(await e.session.keepalive())) return;
     }
+    const { reading } = this;
+    if (reading && !this.closed && this.ownsSession())
+      if (!(await reading.keepalive())) return;
+    this.heartbeat.heard();
+    const current = this.entries[0];
+    if (current)
+      await current.session.report(
+        this.context.state === 'running' ? 'playing' : 'paused',
+        this.position(current),
+      );
   }
   toggle() {
     return !this.parked && this.context.state === 'running'
@@ -782,7 +724,7 @@ export class GaplessQueue {
     }
     const current = this.entries[0];
     if (!current) return;
-    current.activity.setActive(false);
+    current.session.activity.setActive(false);
     const to = Math.min(Math.max(0, position), this.duration(current) - 0.001);
     for (const e of this.entries) {
       if (e.stream) continue;
@@ -793,20 +735,13 @@ export class GaplessQueue {
     }
     if (current.stream) {
       current.stream.ended = false;
-      if (current.playback.mode === 'direct')
-        current.stream.element.currentTime = to;
-      else {
-        // A transcode starts again where the track is sought.
-        const next = await api<{
-          url: string;
-          timeline_start: number;
-          position: number;
-        }>(`/playback/${current.playback.id}/seek`, 'POST', {
-          position: Math.min(to, current.playback.duration - 0.05),
-        });
-        if (this.closed || this.entries[0] !== current) return;
-        current.playback = { ...current.playback, ...next };
-        await this.attach(current, next.url, next.position);
+      const direct = current.session.playback.mode === 'direct';
+      // A transcode starts again where the track is sought.
+      const sought = await current.session.seek(to, {
+        current: () => !this.closed && this.entries[0] === current,
+      });
+      if (!direct) {
+        if (!sought) return;
         if (this.context.state === 'running')
           await current.stream.element.play().catch(() => {});
       }
@@ -819,16 +754,15 @@ export class GaplessQueue {
     const current = this.entries[0];
     if (!current) return;
     const position = this.position(current);
-    current.activity.setActive(false);
+    current.session.activity.setActive(false);
     this.release(current);
-    void this.report(current, 'stopped', position);
+    void current.session.stop(position);
   }
   /** Silence entries and end their sessions. */
   private discard(entries: Entry[]) {
     for (const e of entries) {
       this.release(e);
-      if (this.ownsSession())
-        void api(`/playback/${e.playback.id}`, 'DELETE').catch(() => {});
+      void e.session.discard();
     }
   }
   /** Drop what was loaded ahead, so it is read again under the new order. */
@@ -1087,7 +1021,7 @@ export class GaplessQueue {
     this.preparation.abort();
     this.extension.abort();
     clearInterval(this.timer);
-    clearInterval(this.heartbeat);
+    this.heartbeat.stop();
     this.sounding = undefined;
     if (this.presence) {
       this.presence.onpause = null;
@@ -1101,7 +1035,7 @@ export class GaplessQueue {
     const positions = entries.map((e) => this.position(e));
     const playing = entries.map((e) => !!e.node || !!e.stream?.started);
     for (const e of entries) {
-      e.activity.setActive(false);
+      e.session.activity.setActive(false);
       this.release(e);
     }
     // The audio is freed once the context closes; a queue replacing this one
@@ -1109,9 +1043,8 @@ export class GaplessQueue {
     void (async () => {
       for (const [i, e] of entries.entries()) {
         if (!this.ownsSession()) break;
-        if (i === 0 && playing[i])
-          await this.report(e, 'stopped', positions[i]);
-        else await api(`/playback/${e.playback.id}`, 'DELETE').catch(() => {});
+        if (i === 0 && playing[i]) await e.session.stop(positions[i]);
+        else await e.session.discard();
       }
     })();
     this.closing = this.context.close();
