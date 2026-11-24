@@ -28,7 +28,7 @@ export type TitleStatus = {
 
 export type StatusTone = 'success' | 'accent' | 'warning' | 'muted';
 
-// A movie or series known only to Radarr/Sonarr is addressed by its TMDB or
+// A movie or show known only to Radarr/Sonarr is addressed by its TMDB or
 // TVDB id instead of a library id.
 export const isTitleRef = (id: string) => /^(tmdb|tvdb):\d+$/.test(id);
 

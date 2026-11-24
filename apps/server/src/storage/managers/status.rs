@@ -33,7 +33,7 @@ pub(super) async fn configured(db: &Database) -> anyhow::Result<HashSet<String>>
     .await
 }
 
-fn select_links(db: &rusqlite::Connection, ids: &str) -> rusqlite::Result<Vec<Link>> {
+fn select_locators(db: &rusqlite::Connection, ids: &str) -> rusqlite::Result<Vec<Locator>> {
     db.prepare(&format!("SELECT e.id,e.kind,{PRESENT},b.service_id,b.manager_entity_id,b.external_id,
                 CAST(json_extract(r.metadata,'$.tmdb_id') AS INTEGER),CAST(json_extract(r.metadata,'$.tvdb_id') AS INTEGER),
                 CASE e.kind WHEN 'season' THEN e.sort_number WHEN 'episode' THEN p.sort_number END,
@@ -42,7 +42,7 @@ fn select_links(db: &rusqlite::Connection, ids: &str) -> rusqlite::Result<Vec<Li
             LEFT JOIN media r ON r.id=CASE e.kind WHEN 'season' THEN p.id WHEN 'episode' THEN g.id ELSE e.id END
             LEFT JOIN metadata_bindings b ON b.media_id=r.id
             WHERE e.id IN (SELECT value FROM json_each(?1)) AND e.kind IN ('movie','show','season','episode')"))?
-            .query_map([ids], |r| Ok(Link {
+            .query_map([ids], |r| Ok(Locator {
                 id: r.get(0)?, kind: r.get(1)?, available: r.get(2)?, service_id: r.get(3)?, entity_id: r.get(4)?,
                 external_id: r.get(5)?, tmdb_id: r.get::<_, Option<i64>>(6)?.filter(|v| *v > 0),
                 tvdb_id: r.get::<_, Option<i64>>(7)?.filter(|v| *v > 0), season: r.get(8)?, episode: r.get(9)?,
@@ -51,21 +51,21 @@ fn select_links(db: &rusqlite::Connection, ids: &str) -> rusqlite::Result<Vec<Li
             .collect()
 }
 
-/// Links for movies, shows, seasons and episodes.
-pub(super) async fn links(db: &Database, ids: Vec<String>) -> anyhow::Result<Vec<Link>> {
+/// Locators for movies, shows, seasons and episodes.
+pub(super) async fn locators(db: &Database, ids: Vec<String>) -> anyhow::Result<Vec<Locator>> {
     let ids = serde_json::to_string(&ids)?;
-    db.read("managers.status.links", move |db| {
-        Ok(select_links(db, &ids)?)
+    db.read("managers.status.locators", move |db| {
+        Ok(select_locators(db, &ids)?)
     })
     .await
 }
 
-/// Links for movies, shows, seasons and episodes, and the playable episodes of each show
+/// Locators for movies, shows, seasons and episodes, and the playable episodes of each show
 /// or season among them.
 pub(super) async fn catalog(db: &Database, ids: Vec<String>) -> anyhow::Result<Catalog> {
     let ids = serde_json::to_string(&ids)?;
     db.read("managers.status.catalog", move |db| {
-        let links = select_links(db, &ids)?;
+        let locators = select_locators(db, &ids)?;
         let mut present = HashMap::<String, Vec<Present>>::new();
         let mut query = db.prepare(&format!("SELECT t.id,s.sort_number,e.sort_number,{MAPPED} FROM media t
                 JOIN media s ON s.parent_id=t.id AND s.kind='season' JOIN media e ON e.parent_id=s.id AND e.kind='episode'
@@ -79,19 +79,19 @@ pub(super) async fn catalog(db: &Database, ids: Vec<String>) -> anyhow::Result<C
             let (id, episode) = row?;
             present.entry(id).or_default().push(episode);
         }
-        Ok(Catalog { links, present })
+        Ok(Catalog { locators, present })
     })
     .await
 }
 
 /// Manager titles already represented by a catalog movie or show.
-pub(super) async fn linked(
+pub(super) async fn cataloged(
     db: &Database,
     kind: String,
     present_only: bool,
-) -> anyhow::Result<Linked> {
-    db.read("managers.status.linked", move |db| {
-        let mut linked = Linked::default();
+) -> anyhow::Result<Cataloged> {
+    db.read("managers.status.cataloged", move |db| {
+        let mut cataloged = Cataloged::default();
         let mut query = db.prepare("SELECT b.service_id,b.manager_entity_id,CAST(json_extract(m.metadata,'$.tmdb_id') AS INTEGER),CAST(json_extract(m.metadata,'$.tvdb_id') AS INTEGER),b.external_id FROM media m LEFT JOIN metadata_bindings b ON b.media_id=m.id WHERE m.kind=?1 AND (NOT ?2 OR EXISTS(SELECT 1 FROM media_sources ms JOIN media_files f ON f.id=ms.file_id WHERE ms.media_id=m.id AND f.present=1))")?;
         let rows = query.query_map(params![kind, present_only], |r| {
             Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<i64>>(3)?, r.get::<_, Option<String>>(4)?))
@@ -107,12 +107,12 @@ pub(super) async fn linked(
                 tvdb = tvdb.or(external);
             }
             if let (Some(service), Some(entity)) = (service, entity) {
-                linked.entities.insert((service, entity));
+                cataloged.entities.insert((service, entity));
             }
-            linked.tmdb.extend(tmdb.filter(|v| *v > 0));
-            linked.tvdb.extend(tvdb.filter(|v| *v > 0));
+            cataloged.tmdb.extend(tmdb.filter(|v| *v > 0));
+            cataloged.tvdb.extend(tvdb.filter(|v| *v > 0));
         }
-        Ok(linked)
+        Ok(cataloged)
     })
     .await
 }

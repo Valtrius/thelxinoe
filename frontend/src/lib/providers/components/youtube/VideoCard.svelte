@@ -43,7 +43,7 @@
     onMenuToggle,
     onShortcutDeleteRequest,
     onShortcutDeleteCancel,
-    platformIcon = false,
+    providerIcon = false,
   }: {
     actions: YoutubeVideoActions;
     video: YoutubeVideo;
@@ -64,7 +64,7 @@
     onShortcutDeleteRequest: () => void;
     onShortcutDeleteCancel: () => void;
     /** Shows the YouTube logo under the avatar, for rows that mix media. */
-    platformIcon?: boolean;
+    providerIcon?: boolean;
   } = $props();
 
   const current = $derived(withNativePosition(video));
@@ -190,7 +190,7 @@
       >{:else if video.isUpcoming}<span
         class={`${signalBadgeClass} absolute top-2 left-2`}>Upcoming</span
       >{:else if video.isLiveReplay}<span
-        class={`${signalBadgeClass} absolute top-2 left-2`}>Replay</span
+        class={`${signalBadgeClass} absolute top-2 left-2`}>Live replay</span
       >{/if}
     {#if downloadReady && activeDownload}<span
         class={`${downloadBadgeClass} absolute left-2 flex items-center gap-1 ${signalShown ? 'top-10' : 'top-2'}`}
@@ -235,8 +235,8 @@
           {video.channelName.slice(0, 1).toUpperCase()}
         </span>
       {/if}
-      {#if platformIcon}<PlatformIcon
-          platform="youtube"
+      {#if providerIcon}<PlatformIcon
+          provider="youtube"
           class="size-4.5 text-accent"
         />{/if}
     </div>

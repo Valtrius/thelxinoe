@@ -94,46 +94,46 @@ fn queue_records_become_download_progress() {
         sizeleft: left,
         ..QueueItem::default()
     };
-    let downloading = transfer(&[record("downloading", "downloading", 400, 100)]).unwrap();
+    let downloading = download_progress(&[record("downloading", "downloading", 400, 100)]).unwrap();
     assert_eq!(downloading.state, Phase::Downloading);
     assert_eq!(downloading.progress, Some(0.75));
     // Importing counts as complete and outweighs nothing else in its bytes.
-    let importing = transfer(&[
+    let importing = download_progress(&[
         record("completed", "importPending", 100, 0),
         record("downloading", "downloading", 100, 100),
     ])
     .unwrap();
     assert_eq!(importing.progress, Some(0.5));
     assert_eq!(
-        transfer(&[record("completed", "importing", 0, 0)])
+        download_progress(&[record("completed", "importing", 0, 0)])
             .unwrap()
             .progress,
         Some(1.0)
     );
     for status in ["queued", "delay", "paused", "downloadClientUnavailable"] {
-        let queued = transfer(&[record(status, "downloading", 10, 10)]).unwrap();
+        let queued = download_progress(&[record(status, "downloading", 10, 10)]).unwrap();
         assert_eq!(queued.state, Phase::Queued, "{status}");
         assert_eq!(queued.progress, None);
     }
     // Failures and warnings only count while their download is still running.
-    assert!(transfer(&[record("failed", "failed", 10, 5)]).is_none());
-    assert!(transfer(&[record("warning", "importBlocked", 10, 0)]).is_none());
+    assert!(download_progress(&[record("failed", "failed", 10, 5)]).is_none());
+    assert!(download_progress(&[record("warning", "importBlocked", 10, 0)]).is_none());
     // A finished download waiting on, or blocked before, its import is importing.
     assert_eq!(
-        transfer(&[record("completed", "importBlocked", 10, 0)])
+        download_progress(&[record("completed", "importBlocked", 10, 0)])
             .unwrap()
             .progress,
         Some(1.0)
     );
     assert_eq!(
-        transfer(&[record("warning", "downloading", 10, 5)])
+        download_progress(&[record("warning", "downloading", 10, 5)])
             .unwrap()
             .state,
         Phase::Downloading
     );
     let mut timed = record("queued", "downloading", 10, 10);
     timed.estimated_completion_time = Some(FUTURE.into());
-    assert_eq!(transfer(&[timed]).unwrap().eta, Some(FUTURE_AT));
+    assert_eq!(download_progress(&[timed]).unwrap().eta, Some(FUTURE_AT));
 }
 
 #[test]
@@ -456,64 +456,66 @@ fn snapshot_of(inventory: Inventory) -> Snapshot {
 }
 
 #[test]
-fn catalog_links_prefer_bindings_then_provider_identities() {
+fn catalog_locators_prefer_bindings_then_provider_identities() {
     let snapshot = snapshot(vec![("radarr", radarr()), ("sonarr", sonarr())]);
-    let link = |kind: &str| Link {
+    let locator = |kind: &str| Locator {
         id: "item".into(),
         kind: kind.into(),
-        ..Link::default()
+        ..Locator::default()
     };
-    let bound = Link {
+    let bound = Locator {
         service_id: Some("radarr-1".into()),
         entity_id: Some(4),
         external_id: Some("104".into()),
         tmdb_id: Some(101),
-        ..link("movie")
+        ..locator("movie")
     };
     assert_eq!(find(&snapshot, "radarr", &bound).unwrap().title.id, 4);
     // A binding whose manager identity changed falls back to the provider identity.
-    let stale = Link {
+    let stale = Locator {
         external_id: Some("999".into()),
         ..bound.clone()
     };
     assert_eq!(find(&snapshot, "radarr", &stale).unwrap().title.id, 1);
-    assert!(find(&snapshot, "radarr", &link("movie")).is_none());
-    let season = Link {
+    assert!(find(&snapshot, "radarr", &locator("movie")).is_none());
+    let season = Locator {
         tvdb_id: Some(201),
         season: Some(1),
-        ..link("season")
+        ..locator("season")
     };
     assert_eq!(
-        link_status(&snapshot, &season, &[], NOW).unwrap().state,
+        locator_status(&snapshot, &season, &[], NOW).unwrap().state,
         Phase::Downloading
     );
     // Episodes use a confirmed mapping first, else their season and episode numbers.
-    let mapped = Link {
+    let mapped = Locator {
         tmdb_id: Some(301),
         season: Some(1),
         episode: Some(3),
         mapped: vec![("sonarr-1".into(), 1002)],
-        ..link("episode")
+        ..locator("episode")
     };
     assert_eq!(
-        link_status(&snapshot, &mapped, &[], NOW).unwrap().state,
+        locator_status(&snapshot, &mapped, &[], NOW).unwrap().state,
         Phase::Missing
     );
-    let numbered = Link {
+    let numbered = Locator {
         mapped: vec![("other".into(), 1002)],
         ..mapped.clone()
     };
     assert_eq!(
-        link_status(&snapshot, &numbered, &[], NOW).unwrap().state,
+        locator_status(&snapshot, &numbered, &[], NOW)
+            .unwrap()
+            .state,
         Phase::Downloading
     );
-    let unknown = Link {
+    let unknown = Locator {
         mapped: Vec::new(),
         episode: Some(40),
         ..mapped
     };
-    assert!(link_status(&snapshot, &unknown, &[], NOW).is_none());
-    assert!(link_status(&snapshot, &link("track"), &[], NOW).is_none());
+    assert!(locator_status(&snapshot, &unknown, &[], NOW).is_none());
+    assert!(locator_status(&snapshot, &locator("track"), &[], NOW).is_none());
 }
 
 #[test]
@@ -681,13 +683,13 @@ fn series_actions_know_what_a_missing_search_fetches() {
 #[test]
 fn manager_titles_without_catalog_items_become_virtual_items() {
     let snapshot = snapshot(vec![("radarr", radarr()), ("sonarr", sonarr())]);
-    let linked = Linked {
+    let cataloged = Cataloged {
         entities: HashSet::from([("radarr-1".to_owned(), 1)]),
         tmdb: HashSet::from([102]),
         tvdb: HashSet::new(),
     };
     // Wanted or not, every title with an identity is listed.
-    let movies = virtual_items(&snapshot, "movie", &linked, false, NOW, "g");
+    let movies = virtual_items(&snapshot, "movie", &cataloged, false, NOW, "g");
     assert_eq!(
         movies
             .iter()
@@ -713,15 +715,15 @@ fn manager_titles_without_catalog_items_become_virtual_items() {
             }
         )
     );
-    let admin = virtual_items(&snapshot, "movie", &linked, true, NOW, "g");
+    let admin = virtual_items(&snapshot, "movie", &cataloged, true, NOW, "g");
     assert_eq!(admin[2].0["status"]["state"], "unmonitored");
     assert_eq!(admin[3].0["status"]["state"], "queued");
     assert_eq!(admin[3].0["status"]["monitored"], true);
     // A title whose file the library has not found yet is listed too.
-    let unscanned = virtual_items(&snapshot, "movie", &Linked::default(), true, NOW, "g");
+    let unscanned = virtual_items(&snapshot, "movie", &Cataloged::default(), true, NOW, "g");
     assert_eq!(unscanned[0].0["id"], "tmdb:101");
     assert_eq!(unscanned[0].0["status"]["state"], "available");
-    let shows = virtual_items(&snapshot, "show", &Linked::default(), true, NOW, "g");
+    let shows = virtual_items(&snapshot, "show", &Cataloged::default(), true, NOW, "g");
     assert_eq!(
         shows
             .iter()
@@ -744,18 +746,18 @@ fn manager_titles_without_catalog_items_become_virtual_items() {
         json!([]),
     );
     let tvdb_only = snapshot_of(tvdb_only);
-    let shows = virtual_items(&tvdb_only, "show", &Linked::default(), false, NOW, "g");
+    let shows = virtual_items(&tvdb_only, "show", &Cataloged::default(), false, NOW, "g");
     assert_eq!(shows[0].0["id"], "tvdb:203");
     assert_eq!(
         shows[0].0["artwork_url"],
         "/api/v1/catalog/titles/sonarr-1/12/artwork/poster?grant=g"
     );
     assert_eq!(shows[0].0["status"]["state"], "upcoming");
-    let linked = Linked {
+    let cataloged = Cataloged {
         tvdb: HashSet::from([203]),
-        ..Linked::default()
+        ..Cataloged::default()
     };
-    assert!(virtual_items(&tvdb_only, "show", &linked, false, NOW, "g").is_empty());
+    assert!(virtual_items(&tvdb_only, "show", &cataloged, false, NOW, "g").is_empty());
 }
 
 #[test]

@@ -12,16 +12,16 @@
   import { cardBlockClass, formControlClass } from './ui/styles';
   import { twMerge } from 'tailwind-merge';
   import { reveal } from './ui/reveal';
-  // `approval` is undefined for people the server does not list for
+  // `approval` is undefined for users the server does not list for
   // automatic request approval; the row is hidden for them.
   let {
-    person,
+    user,
     approval,
     currentId,
     changed,
     close,
   }: {
-    person: User;
+    user: User;
     approval?: boolean;
     currentId: string;
     changed: () => Promise<void>;
@@ -38,13 +38,13 @@
     busy = true;
     try {
       const executed = await withVerification(async () => {
-        await api(`/users/${person.id}`, 'PUT', {
+        await api(`/users/${user.id}`, 'PUT', {
           role,
         });
       });
       if (!executed) return;
       close();
-      if (person.id === currentId) location.reload();
+      if (user.id === currentId) location.reload();
       else await changed();
     } catch (e) {
       error = String(e);
@@ -57,7 +57,7 @@
     busy = true;
     try {
       await withVerification(async () => {
-        await api(`/users/${person.id}`, 'DELETE');
+        await api(`/users/${user.id}`, 'DELETE');
         await changed();
       });
     } catch (e) {
@@ -70,7 +70,7 @@
     error = '';
     busy = true;
     try {
-      await api(`/admin/acquisition/users/${person.id}`, 'PUT', { enabled });
+      await api(`/admin/acquisition/users/${user.id}`, 'PUT', { enabled });
       await changed();
     } catch (caught) {
       error = String(caught);
@@ -84,7 +84,7 @@
     try {
       await withVerification(async () => {
         recoveryUrl = (
-          await api<{ url: string }>(`/users/${person.id}/recovery`, 'POST')
+          await api<{ url: string }>(`/users/${user.id}/recovery`, 'POST')
         ).url;
         recoveryUrl = new URL(
           recoveryUrl,
@@ -99,28 +99,27 @@
   }
 </script>
 
-<Accordion.Item value={person.id} class="person">
+<Accordion.Item value={user.id} class="user">
   <Accordion.Header>
     <Accordion.Trigger
       class="group flex w-full items-center gap-3 px-5.5 py-3.5 text-left hover:bg-surface-soft compact:px-4"
       disabled={busy}
       onclick={() => {
-        role = person.role;
+        role = user.role;
         error = '';
       }}
     >
       <span
         class="grid size-8 shrink-0 place-items-center rounded-full border border-line-strong bg-surface-strong text-xs font-semibold text-accent"
-        aria-hidden="true">{person.username[0]?.toUpperCase() ?? '?'}</span
+        aria-hidden="true">{user.username[0]?.toUpperCase() ?? '?'}</span
       >
       <strong class="min-w-0 flex-1 truncate text-[13px] font-[550]"
-        >{person.username}</strong
+        >{user.username}</strong
       >
-      <StatusChip
-        tone={person.role === 'admin' ? 'info' : 'neutral'}
-        dot={false}>{person.role}</StatusChip
+      <StatusChip tone={user.role === 'admin' ? 'info' : 'neutral'} dot={false}
+        >{user.role === 'admin' ? 'Administrator' : 'User'}</StatusChip
       >
-      {#if person.id === currentId}<StatusChip dot={false}>You</StatusChip>{/if}
+      {#if user.id === currentId}<StatusChip dot={false}>You</StatusChip>{/if}
       <ChevronDown
         class="size-4 shrink-0 text-muted transition-transform group-data-[state=open]:rotate-180"
       />
@@ -141,7 +140,7 @@
             >
               <SettingRow
                 label="Role"
-                description="Saving revokes this user's devices. Deleting removes their personal state, playlists and linked credentials; shared media remains in the library."
+                description="Saving revokes this user's sessions. Deleting removes their personal state, playlists and linked credentials; shared media remains in the library."
                 for={`${ids}-role`}
               >
                 <select
@@ -163,7 +162,7 @@
             {#if approval !== undefined}
               <SettingRow
                 label="Automatic request approval"
-                description="Seerr requests from this person are accepted without review."
+                description="Seerr requests from this user are accepted without review."
               >
                 {#snippet children({ labelId })}
                   <Switch
@@ -175,10 +174,10 @@
                 {/snippet}
               </SettingRow>
             {/if}
-            {#if person.id !== currentId}
+            {#if user.id !== currentId}
               <SettingRow
                 label="Recovery link"
-                description="Lets this person set up sign-in again. Their previous sign-in methods and devices are revoked; the link expires in 10 minutes."
+                description="Lets this user set up sign-in again. Their previous sign-in methods and sessions are revoked; the link expires in 10 minutes."
               >
                 <Button
                   variant="secondary"
@@ -199,28 +198,28 @@
                 >
                 <p class="m-0 text-xs text-muted">
                   Expires in 10 minutes. The user's previous sign-in methods and
-                  devices have been revoked.
+                  sessions have been revoked.
                 </p>
               </div>
             {/if}
-            {#if person.id !== currentId}
+            {#if user.id !== currentId}
               <SettingRow
                 label="Delete user and personal data"
-                description={`Type ${person.username} to confirm. Removes their personal state, playlists and linked credentials.`}
+                description={`Type ${user.username} to confirm. Removes their personal state, playlists and linked credentials.`}
                 for={`${ids}-confirm`}
               >
                 <input
                   id={`${ids}-confirm`}
                   class={twMerge(formControlClass, 'w-44')}
-                  aria-label={`Type ${person.username} to confirm deletion`}
-                  placeholder={person.username}
+                  aria-label={`Type ${user.username} to confirm deletion`}
+                  placeholder={user.username}
                   bind:value={confirm}
                   autocomplete="off"
                 />
                 <Button
                   variant="danger"
                   size="form"
-                  disabled={busy || confirm !== person.username}
+                  disabled={busy || confirm !== user.username}
                   onclick={() => void remove()}
                   >Delete user and personal data</Button
                 >

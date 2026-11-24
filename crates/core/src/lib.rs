@@ -8,7 +8,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The API this build speaks as a client. The web build reads it from here too.
 pub const API_VERSION: u32 = 1;
 /// The oldest client API this server still accepts. Raising it turns away older
-/// desktops until they update; web tabs reload into the server's own build.
+/// desktop apps until they update; web app tabs reload into the server's own build.
 pub const API_MIN_VERSION: u32 = 1;
 const _: () = assert!(0 < API_MIN_VERSION && API_MIN_VERSION <= API_VERSION);
 
@@ -16,8 +16,8 @@ pub fn service_gateway_auth(kind: &str) -> bool {
     matches!(kind, "radarr" | "sonarr" | "lidarr" | "prowlarr")
 }
 
-/// Native UI mounts for newly provisioned services. Attached services retain
-/// their explicitly configured URL base.
+/// The URL base a newly installed media service serves its own interface under. Connected
+/// media services keep their explicitly configured URL base.
 pub fn service_url_base(kind: &str) -> &'static str {
     match kind {
         "radarr" => "/services/radarr",

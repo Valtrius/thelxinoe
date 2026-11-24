@@ -17,7 +17,7 @@
   import type {
     AppError,
     AuthState,
-    PlatformAccount,
+    ConnectedAccount,
     SyncStatus,
     TwitchLiveStream,
   } from '../../types';
@@ -46,7 +46,7 @@
     onCardColumnsChange,
   }: {
     admin: boolean;
-    account?: PlatformAccount | null;
+    account?: ConnectedAccount | null;
     syncStatus: SyncStatus;
     playerReady: boolean;
     activeMedia: PlayingMedia[];
@@ -124,7 +124,7 @@
         key: 'twitch-playback-missing',
         tone: 'warning',
         title: 'Playback dependencies missing',
-        message: 'Configure the Windows player in Settings to watch channels.',
+        message: 'Configure the MPV player in Settings to watch channels.',
         actionLabel: 'Player settings',
         onAction: () => onNavigateSettings('tools'),
         durationMs: null,
@@ -166,11 +166,11 @@
       tone: syncStatus.rateLimitedUntil ? 'warning' : 'error',
       title: syncStatus.rateLimitedUntil
         ? 'Twitch rate limit reached'
-        : 'Twitch refresh failed',
+        : 'Twitch sync failed',
       message: `${syncError.message}${streams.length > 0 ? ` Cached channels remain available. Last good sync ${relativeTime(syncStatus.lastSuccessAt)}.` : ''}`,
       detail: syncError.technical,
       actionLabel: syncStatus.rateLimitedUntil ? null : 'Retry',
-      onAction: syncStatus.rateLimitedUntil ? null : refresh,
+      onAction: syncStatus.rateLimitedUntil ? null : sync,
       durationMs: syncStatus.rateLimitedUntil ? null : 10_000,
     });
   });
@@ -235,7 +235,7 @@
     }
   }
 
-  async function refresh() {
+  async function sync() {
     error = null;
     try {
       await api.syncTwitch();
@@ -338,19 +338,19 @@
         </Button>
       </form>
       <span class="ml-auto text-[0.65rem] text-muted">
-        {#if syncStatus.isRefreshing}{syncStatus.phase}{:else}Updated {relativeTime(
+        {#if syncStatus.isSyncing}{syncStatus.phase}{:else}Updated {relativeTime(
             syncStatus.lastSuccessAt,
           )}{/if}
       </span>
       <Button
         size="sm"
         variant="secondary"
-        disabled={syncStatus.isRefreshing}
-        onclick={refresh}
+        disabled={syncStatus.isSyncing}
+        onclick={sync}
       >
         <RefreshCw
-          class={`size-3.5 ${syncStatus.isRefreshing ? 'animate-spin' : ''}`}
-        />Refresh
+          class={`size-3.5 ${syncStatus.isSyncing ? 'animate-spin' : ''}`}
+        />Sync
       </Button>
     </div>
   {/if}
@@ -436,7 +436,7 @@
           </p>
         {/if}
         <ProviderConnection
-          platform="twitch"
+          provider="twitch"
           {admin}
           configured={clientConfigured}
           onConfigured={onAccountChanged}
@@ -444,9 +444,9 @@
           {connecting}
         />
       {/if}
-    {:else if streams.length === 0 && (loading || (syncStatus.isRefreshing && !syncStatus.lastSuccessAt))}
+    {:else if streams.length === 0 && (loading || (syncStatus.isSyncing && !syncStatus.lastSuccessAt))}
       <MediaSkeleton
-        label="Loading Twitch streams"
+        label="Loading Twitch live streams"
         layout="feed"
         shape="landscape"
       />
@@ -461,15 +461,15 @@
               : 'Twitch API unavailable'}
           message={syncStatus.error.message}
           actionLabel="Retry"
-          onAction={refresh}
+          onAction={sync}
         />
       {:else}
         <EmptyState
           eyebrow="FOLLOWED / OFFLINE"
           title="No followed channels are live"
-          message="The snapshot contains only followed channels that are streaming now. It refreshes every minute."
-          actionLabel="Refresh now"
-          onAction={refresh}
+          message="The snapshot contains only followed channels that are live now. It syncs every minute."
+          actionLabel="Sync now"
+          onAction={sync}
         />
       {/if}
     {:else}

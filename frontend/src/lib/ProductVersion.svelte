@@ -48,7 +48,7 @@
   }
 </script>
 
-<VersionCard version={card.version} label="Product version" {inline}>
+<VersionCard version={card.version} label="Server version" {inline}>
   <OrbitAction
     label={view.label ??
       (view.action ? 'Check for server updates' : view.title)}

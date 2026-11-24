@@ -49,7 +49,7 @@ async fn jellyfin_segments_follow_only_this_devices_selected_edition() {
     assert!(for_jellyfin(&state, &p, "m").await.unwrap().is_empty());
 }
 #[tokio::test]
-async fn manual_overrides_are_authorized_bounded_and_specific_to_file_generation() {
+async fn manual_overrides_are_authorized_bounded_and_specific_to_file_version() {
     let (_temp, state, alice) = fixture().await;
     state.db.write("test.fixture", |db|{
         db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;

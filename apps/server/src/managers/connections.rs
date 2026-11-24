@@ -1,4 +1,4 @@
-//! Automatic, independently retried service connections with durable manual disconnection.
+//! Automatic, independently retried service links with durable manual disconnection.
 use super::*;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;

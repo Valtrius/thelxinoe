@@ -290,7 +290,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 return save(state, turn, false, storage::Page::CursorOnly).await;
             }
             // Reuse the channel metadata batch to refresh the connected profile.
-            // Existing accounts acquire an avatar without needing to reconnect.
+            // Existing online accounts acquire an avatar without needing to reconnect.
             let mut ids = channels.clone();
             if let Some(profile) = &profile
                 && !ids.contains(profile)
@@ -499,7 +499,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
 }
 async fn short(state: &AppState, video: &str) -> Option<bool> {
     // A duration alone cannot distinguish a Short from a regular short video.
-    // This public HEAD request carries no viewer token and follows no redirects.
+    // This public HEAD request carries no user's token and follows no redirects.
     let response = state
         .online
         .http

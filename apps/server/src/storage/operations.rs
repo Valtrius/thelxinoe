@@ -54,7 +54,7 @@ pub(super) async fn delete_user(
         let current=tx.query_row("SELECT role FROM users WHERE id=?1",[&key],|r|r.get::<_,String>(0)).optional()?;
         if current.is_none(){return Ok(None);}
         let playbacks=tx.prepare("SELECT id FROM playback_sessions WHERE user_id=?1")?.query_map([&key],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        // Provisioned services survive removal of the administrator who installed them.
+        // Installed media services survive removal of the administrator who installed them.
         tx.execute("UPDATE stack_provisions SET actor_id=?1 WHERE actor_id=?2",params![p.user.id,key])?;
         tx.execute("DELETE FROM events WHERE user_id=?1",[&key])?;
         tx.execute("UPDATE retention_policies SET trigger_users=(SELECT COALESCE(json_group_array(value),'[]') FROM json_each(trigger_users) WHERE value<>?1),updated_at=?2 WHERE EXISTS(SELECT 1 FROM json_each(trigger_users) WHERE value=?1)",params![key,now()])?;

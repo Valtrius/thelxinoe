@@ -277,8 +277,8 @@ impl<'a> Matcher<'a> {
         )
     }
 
-    /// Resolves every account's items at once: a series is the show its played files belong
-    /// to, so files matched for one person place the other people's episodes too.
+    /// Resolves every Jellyfin account's items at once: a series is the show its played files
+    /// belong to, so files matched for one Jellyfin account place the other accounts' episodes too.
     pub fn resolve(
         &self,
         accounts: &[Vec<Item>],

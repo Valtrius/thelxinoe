@@ -159,7 +159,7 @@ async fn image_labels(
 ) -> Result<Value> {
     let mut manifest = registry_json(client, base, repository, token, "manifests", digest).await?;
     if let Some(platforms) = manifest["manifests"].as_array() {
-        // Managed-service preflight currently supports Linux amd64 only.
+        // Service update preflight currently supports Linux amd64 only.
         let platform = platforms
             .iter()
             .find(|item| {

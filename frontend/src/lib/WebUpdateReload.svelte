@@ -20,7 +20,7 @@
   // An open page failed to load code the server no longer has.
   let codeMissing = $state(false);
   // Each server version gets one automatic reload per tab. Still running the
-  // old build afterwards (e.g. a proxy cached index.html) asks the person instead.
+  // old build afterwards (e.g. a proxy cached index.html) asks the user instead.
   const attemptKey = 'thelxinoe:web-reload';
   const stalled = $derived(
     !desktop &&

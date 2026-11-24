@@ -65,7 +65,7 @@ async fn metadata(discovery: &str, expected: Option<&str>) -> Result<CoreProvide
         .map_err(|_| ApiError::bad("Invalid OIDC discovery document"))?;
     if expected.is_some_and(|iss| iss != metadata.issuer().as_str()) {
         return Err(ApiError::bad(
-            "OIDC issuer changed; configure the provider again",
+            "The issuer changed; configure the identity provider again",
         ));
     }
     endpoint(metadata.issuer().as_str())?;
@@ -73,7 +73,7 @@ async fn metadata(discovery: &str, expected: Option<&str>) -> Result<CoreProvide
     endpoint(metadata.jwks_uri().as_str())?;
     let token = metadata
         .token_endpoint()
-        .ok_or_else(|| ApiError::bad("OIDC provider has no token endpoint"))?;
+        .ok_or_else(|| ApiError::bad("The identity provider has no token endpoint"))?;
     endpoint(token.as_str())?;
     let response = client
         .get(metadata.jwks_uri().as_str())
@@ -205,7 +205,7 @@ async fn start(
         input.purpose.as_str()
     };
     if !matches!(purpose, "login" | "link" | "verify") {
-        return Err(ApiError::bad("Unsupported OIDC action"));
+        return Err(ApiError::bad("Unsupported identity-provider action"));
     }
     let p = if purpose == "login" {
         None
@@ -222,7 +222,7 @@ async fn start(
     };
     let provider = storage::provider(&state.db)
         .await?
-        .ok_or_else(|| ApiError::bad("OIDC is not configured"))?;
+        .ok_or_else(|| ApiError::bad("No identity provider is configured"))?;
     let metadata = metadata(&provider.discovery_url, Some(&provider.issuer)).await?;
     let redirect = format!("{}/api/v1/auth/oidc/callback", context.origin);
     endpoint(&redirect)?;
@@ -331,18 +331,18 @@ async fn complete(
         .exchange_code(AuthorizationCode::new(
             input.code.clone().ok_or_else(ApiError::unauthorized)?,
         ))
-        .map_err(|_| ApiError::bad("OIDC code exchange is unavailable"))?
+        .map_err(|_| ApiError::bad("The identity provider's code exchange is unavailable"))?
         .set_pkce_verifier(PkceCodeVerifier::new(pending.pkce))
         .request_async(&|request| crate::bounded::oauth(http.clone(), request))
         .await
-        .map_err(|_| ApiError::bad("OIDC code exchange failed"))?;
+        .map_err(|_| ApiError::bad("The identity provider's code exchange failed"))?;
     let id_token = response
         .id_token()
-        .ok_or_else(|| ApiError::bad("OIDC provider did not return an identity token"))?;
+        .ok_or_else(|| ApiError::bad("The identity provider did not return an identity token"))?;
     let verifier = client.id_token_verifier();
     let claims = id_token
         .claims(&verifier, &Nonce::new(pending.nonce))
-        .map_err(|_| ApiError::bad("OIDC identity verification failed"))?;
+        .map_err(|_| ApiError::bad("Identity verification failed with the identity provider"))?;
     if let Some(expected) = claims.access_token_hash() {
         let actual = AccessTokenHash::from_token(
             response.access_token(),
@@ -367,7 +367,7 @@ async fn complete(
         let account = storage::oidc_account(&state.db, issuer.clone(), subject.clone())
             .await?
             .ok_or_else(|| {
-                ApiError::bad("This identity-provider account is not linked to a Thelxinoe account")
+                ApiError::bad("This identity-provider account is not linked to a Thelxinoe user")
             })?;
         accounts::respond_session(
             state,

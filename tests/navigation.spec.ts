@@ -21,7 +21,7 @@ for (const section of ['Discover', 'Movies'] as const) {
     await page.goto('/');
     const input = page.getByRole('textbox', {
       name:
-        section === 'Discover' ? 'Search movies and series' : 'Search movies',
+        section === 'Discover' ? 'Search movies and shows' : 'Search movies',
       exact: true,
     });
     await input.click();
@@ -261,7 +261,7 @@ test('a shared video asks which watchlist to join when there are several', async
     sharedAddress({ share_url: 'https://www.youtube.com/watch?v=xwdamnfS6IM' }),
   );
   const dialog = page.getByRole('dialog', {
-    name: 'Save to watchlist',
+    name: 'Add to watchlist',
     exact: true,
   });
   await testInfo.attach('shared-video-choice', {
@@ -970,7 +970,7 @@ for (const manualScroll of [false, true]) {
       .getByRole('link', { name: 'Devices', exact: true })
       .dispatchEvent('click');
     await expect(
-      page.locator('[role="status"][aria-label="Loading devices"]'),
+      page.locator('[role="status"][aria-label="Loading sessions"]'),
     ).toBeAttached();
     await expect(page.locator('[data-page-region="settings"]')).toHaveCSS(
       'opacity',
@@ -1036,7 +1036,10 @@ test('rapid settings switches keep the latest scroll while a section first loads
   await nav.getByRole('link', { name: 'Devices', exact: true }).click();
   chunks.release();
   await expect(
-    page.getByRole('heading', { name: 'Connect a TV', includeHidden: true }),
+    page.getByRole('heading', {
+      name: 'Connect a Jellyfin client',
+      includeHidden: true,
+    }),
   ).toBeAttached();
   devices.release();
   await expect(page.getByText('Browser 39', { exact: true })).toBeAttached();

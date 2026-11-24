@@ -13,7 +13,8 @@ pub struct Queue(pub Database);
 pub struct Job {
     pub id: String,
     pub kind: String,
-    /// What the job acts on: a library root, request, transfer, provision or media item.
+    /// What the job acts on: a library folder, request, ownership transfer, service install or
+    /// media item.
     pub subject: String,
     pub payload: serde_json::Value,
     pub state: String,

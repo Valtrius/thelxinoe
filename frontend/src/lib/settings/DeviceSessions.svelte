@@ -79,14 +79,14 @@
 </script>
 
 <SettingsCard
-  title="Your devices"
-  description="Browsers and desktops signed in to your account. Revoking this device signs you out."
+  title="Your sessions"
+  description="Browsers, desktop apps and Jellyfin clients signed in as you. Revoking this session signs you out."
 >
   {#if error}<div class={cardBlockClass}>
       <Notice variant="error" role="alert" class="mb-0">{error}</Notice>
     </div>{/if}
   {#if !sessions && !error}<div class={cardBlockClass}>
-      <ContentSkeleton label="Loading devices" />
+      <ContentSkeleton label="Loading sessions" />
     </div>{/if}
   {#each sessions ?? [] as session (session.id)}
     {@const Icon = transportIcon(session.transport)}
@@ -99,7 +99,7 @@
       {/snippet}
       {#snippet badge()}
         {#if session.id === current}<StatusChip tone="info" dot={false}
-            >This device</StatusChip
+            >This session</StatusChip
           >{/if}
         {#if session.remembered}<StatusChip dot={false}>Remembered</StatusChip
           >{/if}

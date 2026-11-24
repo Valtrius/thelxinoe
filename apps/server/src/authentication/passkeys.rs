@@ -70,10 +70,10 @@ struct Start {
 }
 #[derive(Serialize, Deserialize)]
 enum Authentication {
-    /// Usernameless sign-in: the authenticator chooses the account, so no username is
-    /// sent and the response reveals nothing about which accounts exist.
+    /// Usernameless sign-in: the authenticator chooses the user, so no username is
+    /// sent and the response reveals nothing about which users exist.
     Login(DiscoverableAuthentication),
-    /// Re-verification of the signed-in account.
+    /// Verification of the signed-in user.
     Verify(PasskeyAuthentication),
 }
 fn unknown_passkey() -> ApiError {
@@ -100,7 +100,7 @@ async fn start(
             .start_passkey_authentication(
                 &passkeys.into_iter().map(|(_, _, p)| p).collect::<Vec<_>>(),
             )
-            .map_err(|_| ApiError::bad("No passkey is available for this account"))?;
+            .map_err(|_| ApiError::bad("No passkey is available for this user"))?;
         let attempt = save_attempt(
             &state,
             "passkey",
@@ -276,7 +276,7 @@ async fn register_start(
             ),
         )
         .map_err(|_| ApiError::bad("Cannot create a passkey"))?;
-    // Usernameless sign-in needs the authenticator to store the account (a discoverable
+    // Usernameless sign-in needs the authenticator to store the user (a discoverable
     // credential); the library only asks for that as a preference.
     let mut options = serde_json::to_value(options).map_err(anyhow::Error::from)?;
     if let Some(selection) = options

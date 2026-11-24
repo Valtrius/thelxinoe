@@ -68,7 +68,7 @@
   >
   <span class="mt-0.5 block text-[10px] text-muted"
     >{year(item)}{year(item) ? ' · ' : ''}{kind(item) === 'tv'
-      ? 'Series'
+      ? 'Show'
       : 'Movie'}</span
   >
 </button>

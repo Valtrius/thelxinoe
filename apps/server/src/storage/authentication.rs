@@ -14,7 +14,7 @@ pub(super) enum Fault {
     SelfRecovery,
     /// Rejected input, with a stable code and a user-facing explanation.
     Invalid(&'static str, &'static str),
-    /// Conflicts with the account's current state, with a stable code and explanation.
+    /// Conflicts with the user's current state, with a stable code and explanation.
     State(&'static str, &'static str),
 }
 impl std::fmt::Display for Fault {
@@ -258,7 +258,7 @@ pub(super) async fn finish_totp(
 }
 /// Records that whatever holds `presented` (a hash) signed in to `user`, and returns whether
 /// it keeps that token, refreshed. Otherwise it gets `fresh`, which also takes over the other
-/// accounts `presented` was known to, so a token another account planted is never kept.
+/// users `presented` was known to, so a token another user planted is never kept.
 pub(crate) fn know(
     c: &Connection,
     user: &str,
@@ -383,7 +383,7 @@ pub(super) async fn totp_confirm(
             Some((_, true)) => {
                 return Err(Fault::State(
                     "totp_enabled",
-                    "An authenticator app is already enabled for this account.",
+                    "An authenticator app is already enabled for this user.",
                 )
                 .into());
             }
@@ -770,7 +770,7 @@ pub(super) struct DesktopInfo {
 fn desktop_ended() -> Fault {
     Fault::State(
         "desktop_request_ended",
-        "This desktop request expired, was canceled or was already used. Start again from the desktop app.",
+        "This desktop approval expired, was canceled or was already used. Start again from the desktop app.",
     )
 }
 pub(super) async fn desktop_info(db: &Database, key: String) -> Result<DesktopInfo> {

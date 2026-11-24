@@ -1,8 +1,8 @@
-//! Native routes use registered prefixes without changing service configuration.
+//! Proxied routes use each service's saved URL Base without changing service configuration.
 use super::*;
 
 fn available(db: &rusqlite::Connection) -> anyhow::Result<Vec<Destination>> {
-    // Native access is an Owned capability; Connected and held services stay API-validation only.
+    // Proxied access is an Owned capability; Connected and held services stay API-validation only.
     let services = db.prepare("SELECT s.id,s.kind,s.container_id,s.port,s.url_base,s.access_revision,s.media_source
         FROM (SELECT id,kind,container_id,port,url_base,access_revision,media_source FROM manager_services WHERE enabled=1 AND operational=1
               UNION ALL SELECT id,kind,container_id,port,url_base,access_revision,media_source FROM support_services WHERE kind IN ('prowlarr','bazarr','nzbget') AND operational=1) s

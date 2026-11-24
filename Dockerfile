@@ -6,7 +6,7 @@ COPY frontend/package.json frontend/package.json
 # Node.js 25+ ships no Corepack; install the pnpm that package.json pins.
 RUN npm install --global "$(node -p "require('./package.json').packageManager")" && pnpm install --frozen-lockfile
 COPY frontend frontend
-# The web client sends the API version declared in crates/core.
+# The web app sends the API version declared in crates/core.
 COPY crates/core/src/lib.rs crates/core/src/lib.rs
 COPY scripts/version.mjs scripts/generate-segment-fixtures.mjs scripts/precompress-web.mjs scripts/
 COPY Cargo.toml Cargo.toml
@@ -31,7 +31,7 @@ COPY scripts/prepare-server-tools.py scripts/server-tools.lock.json scripts/
 RUN python scripts/prepare-server-tools.py /opt/thelxinoe/tools --compact
 
 FROM python:3.11-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535 AS server
-# VAAPI for the managed FFmpeg, which loads the system libva. Intel GPUs before Ice Lake
+# VAAPI for the FFmpeg server tool, which loads the system libva. Intel GPUs before Ice Lake
 # encode and scale with shader kernels that only Debian's non-free drivers ship.
 RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini libva2 libva-drm2 intel-media-va-driver-non-free i965-va-driver-shaders && rm -rf /var/lib/apt/lists/* && groupadd -g 10001 thelxinoe && useradd -u 10001 -g 10001 thelxinoe && mkdir -p /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chown -R 10001:10001 /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chmod 2770 /run/thelxinoe
 ARG VERSION=0.0.29

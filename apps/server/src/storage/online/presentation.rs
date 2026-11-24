@@ -24,12 +24,12 @@ pub(super) async fn cancel(
     .await
 }
 
-pub(super) async fn refresh(
+pub(super) async fn sync(
     db: &Database,
     provider: String,
     p: thelxinoe_core::Principal,
 ) -> anyhow::Result<usize> {
-    db.write("online.presentation.refresh", move|db|{
+    db.write("online.presentation.sync", move|db|{
         if provider=="twitch" {Ok(db.execute("UPDATE twitch_sync SET next_run=?1 WHERE user_id=?2 AND failures=0 AND (last_complete IS NULL OR last_complete<?1-30) AND EXISTS(SELECT 1 FROM online_accounts a WHERE a.user_id=twitch_sync.user_id AND a.provider='twitch' AND a.status='connected' AND a.generation=twitch_sync.generation)",params![now(),p.user.id])?)}
         else {Ok(db.execute("UPDATE kick_channels SET next_run=?1 WHERE user_id=?2 AND failures=0 AND updated_at<?1-30 AND EXISTS(SELECT 1 FROM online_accounts a WHERE a.user_id=kick_channels.user_id AND a.provider='kick' AND a.status='connected')",params![now(),p.user.id])?)}
     }).await

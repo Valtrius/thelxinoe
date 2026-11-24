@@ -83,7 +83,7 @@
     favorite?: boolean;
     /** Title pages link TMDB themselves. */
     tmdbLink?: boolean;
-    /** The Sonarr series (as its seasons are loaded) and season or episode. */
+    /** The show in Sonarr (as its seasons are loaded) and season or episode. */
     sonarr?: { series: string; season: number; episode?: number | null } | null;
     /** The `tmdb:` reference of a movie only Radarr lists. */
     radarr?: string | null;
@@ -109,7 +109,7 @@
     generation = 0;
   const present = $derived(item?.files?.filter((file) => file.present) ?? []);
   const facts = $derived(present[0] ? mediaFacts(present[0].probe) : null);
-  // A season or series' Keep covers this item; its own switch has no effect.
+  // A season or show's Keep covers this item; its own switch has no effect.
   const inherited = $derived(item?.kept_by ?? null);
   const kept = $derived(item ? keptReason(item) : '');
   const tmdb = $derived(metadataNumber(item, 'tmdb_id'));
@@ -123,7 +123,7 @@
   const removable = $derived(admin && !id && !!radarr);
   // Without files, a library movie can only be removed from Radarr.
   const fileless = $derived(kind === 'movie' && !present.length);
-  // A series page already shows its own Watch Later, Favorite and TMDB link.
+  // A show's page already has its own Watch Later, Favorite and TMDB link.
   const empty = $derived(
     id
       ? !admin &&
@@ -484,7 +484,7 @@
                     >Keep{#if inherited}<span
                         class="ml-auto pl-3 text-[0.65rem]"
                         >with the {inherited === 'show'
-                          ? 'series'
+                          ? 'show'
                           : 'season'}</span
                       >{:else if item?.kept_within}<span
                         class="ml-auto pl-3 text-[0.65rem]"
@@ -518,7 +518,7 @@
                     class="{itemClass} text-danger! data-[highlighted]:bg-danger/12"
                     onSelect={() => (requested = 'delete')}
                     ><Trash2 />{kind === 'show'
-                      ? 'Delete series files…'
+                      ? 'Delete show files…'
                       : kind === 'season'
                         ? 'Delete season files…'
                         : 'Delete files…'}</DropdownMenu.Item

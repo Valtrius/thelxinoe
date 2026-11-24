@@ -163,7 +163,7 @@ fn label(service: &Value, unavailable: bool) -> (&'static str, &'static str) {
     } else if runtime["running"] == true {
         ("Running", "ok")
     } else if !integration.is_null() {
-        ("Connected", "ok")
+        ("API reachable", "ok")
     } else if unavailable {
         ("Status unavailable", "warn")
     } else {

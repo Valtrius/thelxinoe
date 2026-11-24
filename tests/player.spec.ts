@@ -327,7 +327,7 @@ async function fixture(
     verticalQualities?: { value: string; label: string }[];
     local?: boolean;
     stalled?: boolean;
-    // The conversion's playlist is gone: until a seek restarts it, or for good.
+    // The transcode's playlist is gone: until a seek restarts it, or for good.
     lost?: 'once' | 'always';
     tools?: 'metadata' | 'playback';
     music?: boolean;
@@ -2523,7 +2523,7 @@ function drawnWidth(
   return Math.max(0, right - left);
 }
 
-test('styled subtitles load their renderer when shown, both renderers follow the offset and size, and picture subtitles convert the video', async ({
+test('styled subtitles load their renderer when shown, both renderers follow the offset and size, and picture subtitles transcode the video', async ({
   page,
 }, info) => {
   const requests: string[] = [];
@@ -2538,7 +2538,7 @@ test('styled subtitles load their renderer when shown, both renderers follow the
   });
   const player = page.getByRole('region', { name: 'Media player' });
   const video = page.locator('video');
-  // The server chooses forced subtitles until the viewer picks some, and can
+  // The server chooses forced subtitles until the user picks some, and can
   // burn picture ones in.
   expect(state.starts[0].options).toMatchObject({
     subtitle: null,
@@ -2568,7 +2568,7 @@ test('styled subtitles load their renderer when shown, both renderers follow the
   const styledRenderer = () =>
     requests.filter((url) => /jassub|styled-subtitles/.test(url));
   expect(styledRenderer()).toEqual([]);
-  // Turning subtitles on prefers a text track to one that needs a conversion.
+  // Turning subtitles on prefers a text track to one that needs a transcode.
   await player.focus();
   await page.keyboard.press('c');
   await expect
@@ -2637,7 +2637,7 @@ test('styled subtitles load their renderer when shown, both renderers follow the
     .toBeLessThan(larger / 1.35);
   await page.screenshot({ path: info.outputPath('webvtt.png') });
 
-  // A picture subtitle starts a conversion that burns it in, and leaving it
+  // A picture subtitle starts a transcode that burns it in, and leaving it
   // starts one without.
   await choose('en DVD (Forced)');
   await expect.poll(() => state.starts.length).toBe(2);
@@ -3250,7 +3250,7 @@ test('failed streams can retry and closing during preparation stops a late sessi
   expect(pending.errors).toEqual([]);
 });
 
-test('a conversion that dies restarts once where it stopped', async ({
+test('a transcode that dies restarts once where it stopped', async ({
   page,
 }) => {
   const restarted = await fixture(page, { mode: 'remux', lost: 'once' });
@@ -3438,7 +3438,7 @@ test('Original playback shows its decoded resolution', async ({
   await fixture(page, { local: true });
   await decoded(page);
   const quality = page.getByRole('button', { name: 'Quality', exact: true });
-  await expect(page.locator('.playback-mode')).toHaveText('540p · Original');
+  await expect(page.locator('.playback-mode')).toHaveText('540p · Direct play');
   await quality.click();
   await expect(
     page.getByRole('menuitemradio', { name: 'Auto (540p)', exact: true }),
@@ -3446,7 +3446,7 @@ test('Original playback shows its decoded resolution', async ({
   await page
     .getByRole('menuitemradio', { name: 'Original (540p)', exact: true })
     .click();
-  await expect(page.locator('.playback-mode')).toHaveText('540p · Original');
+  await expect(page.locator('.playback-mode')).toHaveText('540p · Direct play');
   await expect(quality).toBeEnabled();
   await quality.click();
   await expect(
@@ -3463,7 +3463,7 @@ test('Original playback shows its decoded resolution', async ({
 test('a vertical picture is named after its short side', async ({ page }) => {
   await fixture(page, { local: true, portrait: true });
   await decoded(page);
-  await expect(page.locator('.playback-mode')).toHaveText('270p · Original');
+  await expect(page.locator('.playback-mode')).toHaveText('270p · Direct play');
   await page.getByRole('button', { name: 'Quality', exact: true }).click();
   await expect(
     page.getByRole('menuitemradio', { name: 'Auto (270p)', exact: true }),

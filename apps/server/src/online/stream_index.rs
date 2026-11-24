@@ -1,6 +1,6 @@
 //! YouTube's fragmented MP4 files index their keyframe-aligned fragments in a
 //! `sidx` box after the initialization segment. Clients play and seek them as
-//! byte ranges of the original file, without conversion or probing.
+//! byte ranges of the original file, without transcoding or probing.
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::{StatusCode, header};
 use std::{fmt::Write, time::Duration};

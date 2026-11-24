@@ -129,7 +129,7 @@
       Sync in progress. Editing is available when it finishes.
     </p>{/if}
   {#if configuration?.mode === 'defaults'}<p class="text-[11px] text-muted">
-      Defaults update with Recyclarr upgrades.
+      Defaults change with Recyclarr service updates.
     </p>{/if}
   {#if error}<p class="text-xs text-danger" role="alert">
       {error}

@@ -222,7 +222,7 @@ async fn first_followed_snapshot_does_not_wait_for_avatars() {
 }
 
 #[tokio::test]
-async fn connected_twitch_avatar_uses_the_viewer_and_refreshes_existing_connections() {
+async fn connected_twitch_avatar_uses_the_user_and_refreshes_existing_connections() {
     let (_temp, state, cookie, control, server) = setup().await;
     let attempt = start_attempt(&state, &cookie).await;
     control.mode.store(1, Ordering::SeqCst);

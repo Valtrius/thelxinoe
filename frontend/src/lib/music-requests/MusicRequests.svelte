@@ -28,7 +28,7 @@
     active = true;
   const admin = $derived(user.role === 'admin');
 
-  // Pending requests one person made for one artist are decided together.
+  // Pending requests one user made for one artist are decided together.
   const sorted = $derived.by(() => {
     const groups: Record<string, MusicRequest[]> = {};
     for (const request of requests)

@@ -48,7 +48,7 @@
       if (current()) loading = false;
     }
   }
-  // Retention and download events bump the settings revision.
+  // Auto-delete and download events bump the settings revision.
   $effect(() => {
     void revisions.settings;
     untrack(() => void refresh());
@@ -66,13 +66,13 @@
 {/if}
 {#if !loaded && loading}
   <ContentSkeleton
-    label="Loading retention settings"
+    label="Loading auto-delete settings"
     variant="settings"
     class="col-span-full"
   />
 {/if}
 {#if policies.some((policy) => policy.domain !== 'videos')}
-  <!-- Movies and TV seasons are symmetric, so they share a row. -->
+  <!-- Movies and show seasons are symmetric, so they share a row. -->
   <div class="settings-pair col-span-full">
     {#each policies as policy, i (policy.domain)}
       {#if policy.domain !== 'videos'}

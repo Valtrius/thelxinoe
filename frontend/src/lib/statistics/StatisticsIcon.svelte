@@ -14,4 +14,4 @@
 {#if platform === 'movies'}<Film class={className} />
 {:else if platform === 'shows'}<Tv class={className} />
 {:else if platform === 'music'}<Music class={className} />
-{:else}<PlatformIcon {platform} class={className} />{/if}
+{:else}<PlatformIcon provider={platform} class={className} />{/if}

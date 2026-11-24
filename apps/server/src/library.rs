@@ -48,7 +48,9 @@ pub async fn add_root(
         || input.name.len() > 100
         || !matches!(input.kind.as_str(), "movies" | "shows" | "music")
     {
-        return Err(ApiError::bad("Enter a library name and valid media type"));
+        return Err(ApiError::bad(
+            "Enter a library folder name and choose its library",
+        ));
     }
     let path =
         thelxinoe_catalog::approved_path(std::path::Path::new(&input.path), &state.config.media)
@@ -58,7 +60,7 @@ pub async fn add_root(
     let path = path.to_string_lossy().to_string();
     let added = storage::add_root(&state.db, input, p, rid, path).await?;
     if !added {
-        return Err(ApiError::conflict("Library roots cannot overlap"));
+        return Err(ApiError::conflict("Library folders cannot overlap"));
     }
     enqueue_scan(&state, &root_id).await?;
     Ok(Json(json!({"id":root_id})))
@@ -67,8 +69,8 @@ pub async fn add_root(
 pub struct RootChange {
     name: String,
 }
-/// Only the name changes. Every entry's identity comes from the folder's location and
-/// media type, so changing either is adding the folder again.
+/// Only the name changes. Every media item's identity comes from the folder's location and
+/// library, so changing either is adding the folder again.
 pub async fn rename_root(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -77,7 +79,7 @@ pub async fn rename_root(
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageLibrary).await?;
     if input.name.trim().is_empty() || input.name.len() > 100 {
-        return Err(ApiError::bad("Enter a library name"));
+        return Err(ApiError::bad("Enter a library folder name"));
     }
     if !storage::rename_root(&state.db, p, root_id.clone(), input.name).await? {
         return Err(ApiError::not_found());
@@ -87,9 +89,9 @@ pub async fn rename_root(
         .await?;
     Ok(Json(json!({"saved":true})))
 }
-/// Removes a library and its entries, with everyone's state for them. Files on disk and
-/// watch history stay. Media operations in progress finish first, and a running scan of
-/// the library stops without writing.
+/// Removes a library folder and its media items, with everyone's state for them. Files on
+/// disk and playback history stay. Media operations in progress finish first, and a running
+/// scan of the folder stops without writing.
 pub async fn remove_root(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -130,7 +132,7 @@ pub async fn scan(
 pub struct Browse {
     kind: Option<String>,
     parent: Option<String>,
-    /// Everything under this item, two levels down: an artist's tracks, a series'
+    /// Everything under this item, two levels down: an artist's tracks, a show's
     /// episodes.
     ancestor: Option<String>,
     q: Option<String>,
@@ -561,7 +563,7 @@ pub async fn detail(
     }
     Ok(Json(item))
 }
-/// A root is rescanned once its changes pause this long, so a burst becomes one scan. A
+/// A library folder is rescanned once its changes pause this long, so a burst becomes one scan. A
 /// file still being written is skipped by that scan and its next write triggers another.
 const QUIET: std::time::Duration = std::time::Duration::from_secs(5);
 /// Continuous activity is still scanned at least this often.
@@ -569,7 +571,7 @@ const BUSY: std::time::Duration = std::time::Duration::from_secs(600);
 /// Full rescans catch anything missed: rarely while live updates work, more often without.
 const WATCHED: std::time::Duration = std::time::Duration::from_secs(3600);
 const UNWATCHED: std::time::Duration = std::time::Duration::from_secs(900);
-/// The first and latest change seen for each root since it was last scanned.
+/// The first and latest change seen for each library folder since it was last scanned.
 type Activity = std::sync::Arc<
     std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, std::time::Instant)>>,
 >;
@@ -580,12 +582,13 @@ struct Watch {
 }
 pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
     let activity = Activity::default();
-    // One watcher per library root, never the whole media mount: downloads and other
+    // One watcher per library folder, never the whole media mount: downloads and other
     // folders don't trigger scans or spend the system's file-watch budget.
     let mut watches = std::collections::HashMap::<String, Watch>::new();
     let mut scanned = std::collections::HashMap::<String, std::time::Instant>::new();
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
-    // Startup catches up on every root; a root added later is scanned by whoever added it.
+    // Startup catches up on every library folder; one added later is scanned by whoever
+    // added it.
     let mut started = false;
     loop {
         tick.tick().await;
@@ -630,7 +633,7 @@ pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
         started = true;
     }
 }
-/// A root needs a scan once its changes settle, or when its periodic refresh is due.
+/// A library folder needs a scan once its changes settle, or when its periodic rescan is due.
 fn due(
     changed: Option<(std::time::Instant, std::time::Instant)>,
     scanned: Option<std::time::Instant>,
@@ -860,7 +863,7 @@ mod presentation_tests {
             for (id,kind,parent) in [("movie","movie",None),("show","show",None),("a","season",Some("show")),("b","season",Some("show")),("a1","episode",Some("a")),("a2","episode",Some("a")),("b1","episode",Some("b"))] {
                 db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES (?1,'root',?2,?3,?1,?1,1)",rusqlite::params![id,kind,parent])?;
             }
-            // Specials never keep the whole series in Watch Later.
+            // Specials never keep the whole show in Watch Later.
             db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('sp','root','season','show','sp','Specials',0,1),('sp1','root','episode','sp','sp1','sp1',1,1)",[])?;
             // Another user's list is never touched by Alice watching.
             db.execute("INSERT INTO media_state(user_id,media_id,updated_at,watch_later) VALUES ('bob','show',1,1),('bob','a',1,1)",[])?;
@@ -984,9 +987,9 @@ mod root_tests {
             .unwrap()
     }
 
-    // Only administrators manage library folders. Removing one takes its entries, and
-    // everyone's state for them, out of the library and retires its queued work, while its
-    // files, watch history and other libraries stay.
+    // Only administrators manage library folders. Removing one takes its media items, and
+    // everyone's state for them, out of the catalog and retires its queued work, while its
+    // files, playback history and other library folders stay.
     #[tokio::test]
     async fn administrators_add_rename_and_remove_library_folders() {
         let (_temp, state, alice) = fixture().await;
@@ -1060,7 +1063,7 @@ mod root_tests {
                 db.execute("INSERT INTO media_sources VALUES (?1,?2)", [media, file])?;
                 db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice',?1,1,1)", [media])?;
             }
-            // Rows that refer to the entries and files without cascading.
+            // Rows that refer to the media items and files without cascading.
             db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('trailer',?1,'trailer','g',1,'1','t','{}',1)", [&m])?;
             db.execute("INSERT INTO local_trailers VALUES ('film','trailer')", [])?;
             db.execute("INSERT INTO media_operations(id,media_id,action,state,targets,created_at,updated_at) VALUES ('operation','film','delete','complete','[]',1,1)", [])?;
@@ -1119,7 +1122,7 @@ mod root_tests {
             ["Film"]
         );
         assert!(film.exists(), "files on disk stay");
-        // The new library's scan and the entry's refresh are done; the other library's
+        // The new folder's scan and the media item's refresh are done; the other folder's
         // scan still waits.
         let s = shows.clone();
         let jobs = state
@@ -1182,7 +1185,7 @@ mod root_tests {
         out
     }
 
-    // A library removed while its scan was probing: the scan writes nothing and its job
+    // A library folder removed while its scan was probing: the scan writes nothing and its job
     // completes rather than failing.
     #[tokio::test]
     async fn a_scan_of_a_library_removed_while_it_ran_completes_without_writing() {

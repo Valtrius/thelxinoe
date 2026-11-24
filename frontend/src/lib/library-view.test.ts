@@ -25,7 +25,7 @@ it('asks the server only for what differs from its defaults', () => {
   expect(viewQuery(changed, true)).toBe(
     'sort=added&order=desc&watch=unwatched%2Cin_progress&availability=not_downloaded&series=ended&genre=Science+Fiction',
   );
-  // Movies have no series state.
+  // Movies have no show status.
   expect(viewQuery({ ...view, series: 'ended' }, false)).toBe('');
   expect(filtering({ ...view, series: 'ended' }, false)).toBe(false);
   expect(filtering({ ...view, sort: 'year' }, false)).toBe(false);

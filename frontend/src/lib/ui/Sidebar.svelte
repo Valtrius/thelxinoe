@@ -34,9 +34,9 @@
   } = $props();
   const library = ['Home', 'Discover', 'Movies', 'Shows', 'Music'] as const;
   const providers = [
-    { name: 'YouTube', platform: 'youtube' },
-    { name: 'Twitch', platform: 'twitch' },
-    { name: 'Kick', platform: 'kick' },
+    { name: 'YouTube', provider: 'youtube' },
+    { name: 'Twitch', provider: 'twitch' },
+    { name: 'Kick', provider: 'kick' },
   ] as const;
   // Linked accounts are marked on their own provider instead.
   const settingsAttention = $derived(
@@ -129,7 +129,7 @@
       {#if Object.values($availability).some(Boolean)}<div
           class="h-px bg-line"
         ></div>{/if}
-      {#each providers.filter((item) => $availability[item.platform]) as item (item.name)}<SidebarButton
+      {#each providers.filter((item) => $availability[item.provider]) as item (item.name)}<SidebarButton
           label={item.name}
           resizeWithSidebar={false}
           {collapsed}
@@ -138,7 +138,7 @@
           description={attentionDescription(
             $attention.filter(
               (entry) =>
-                entry.target === 'online' && entry.resource === item.platform,
+                entry.target === 'online' && entry.resource === item.provider,
             ),
           )}
           active={section === item.name}
@@ -153,7 +153,7 @@
             ><SectionIcon section={item.name} /><AttentionDot
               items={$attention.filter(
                 (entry) =>
-                  entry.target === 'online' && entry.resource === item.platform,
+                  entry.target === 'online' && entry.resource === item.provider,
               )}
               class="absolute -top-1 -right-1.5"
             /></span

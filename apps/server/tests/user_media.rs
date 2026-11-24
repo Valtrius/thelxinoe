@@ -937,7 +937,7 @@ async fn resuming(state: &AppState, token: &str) -> Vec<String> {
         .collect()
 }
 #[tokio::test]
-async fn episodes_follow_series_order_and_the_files_they_share() {
+async fn episodes_follow_show_order_and_the_files_they_share() {
     let (_temp, state) = fixture().await;
     state.db.write("test.fixture", |db| {
         for (id,kind,parent,number) in [("season2","season","show",2),("e3","episode","season2",1),("e4","episode","season2",2)] {

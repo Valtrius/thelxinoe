@@ -80,7 +80,7 @@ const STEPS: [(&str, &str, &str); 12] = [
     ("stop", "Stop the original", "backend"),
     ("copy", "Copy appdata", "backend"),
     ("validate", "Validate a disposable copy", "backend"),
-    ("activate", "Start the managed replacement", "backend"),
+    ("activate", "Start the replacement", "backend"),
     ("commit", "Commit ownership", "backend"),
     ("setup", "Run reviewed setup", "backend"),
     ("checks", "Verify required checks", "backend"),
@@ -393,7 +393,7 @@ async fn validate_recyclarr(
 
 // ---------- Review and approval ----------
 
-/// Review a Connected service's takeover. Reopening returns the unfinished operation.
+/// Review a Connected service's ownership transfer. Reopening returns the unfinished operation.
 async fn review(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -536,7 +536,7 @@ async fn recyclarr_targets(
         }
         targets.push(json!({"service_id":s.id,"generation":s.generation,"kind":kind,"name":s.name,"trash_id":imported["trash_id"],
             "quality_sizes":imported["quality_sizes"],"groups":imported["groups"],"overrides":imported["overrides"],"guide_name":imported["guide_name"],
-            "rewrite":{"before":imported["url"],"after":format!("Thelxinoe's managed {} connection",failures::label(kind))}}));
+            "rewrite":{"before":imported["url"],"after":format!("Thelxinoe's {} connection",failures::label(kind))}}));
     }
     if targets.is_empty() && blockers.is_empty() {
         blockers
@@ -1425,7 +1425,7 @@ async fn recovery_plan(
     recovery["transfer_written"] = json!(written);
     recovery["peer_compensation"] = json!([]);
     recovery["peer_note"] = json!(
-        "Takeover setup doesn't write peer services; links are created only after completion"
+        "Transfer setup doesn't write peer services; service links are created only after completion"
     );
     // Earlier commands and superseded generations stay part of the record.
     let mut history = t.recovery["history"]
@@ -1686,13 +1686,13 @@ async fn project_recovery(
             .await?;
         }
         _ => {
-            // Repair or a restored candidate repeats commit agreement, setup and required
-            // checks. A restored candidate is new appdata, so earlier setup no longer counts.
+            // Repair or a restored replacement repeats commit agreement, setup and required
+            // checks. A restored replacement is new appdata, so earlier setup no longer counts.
             let replacement = status["replacement"].as_str().map(str::to_owned);
             let (next, rebind) = match &t.replacement_id {
                 Some(current) => (
                     "committed",
-                    replacement.filter(|candidate| candidate != current),
+                    replacement.filter(|restored| restored != current),
                 ),
                 None => ("running", None),
             };

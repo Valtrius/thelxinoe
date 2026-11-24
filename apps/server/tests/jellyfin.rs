@@ -2519,7 +2519,7 @@ async fn local_video_plays_through_each_negotiated_delivery_for_its_own_device_s
         format!("bytes 0-1023/{}", original.len()).as_str()
     );
     assert!(body[..] == original[..1024]);
-    // Range requests are served on the play session; none mints a grant on the writer.
+    // Range requests are served on the playback session; none mints a grant on the writer.
     assert_eq!(grants(&state).await, issued);
     for other in [&bob, &second] {
         assert_eq!(

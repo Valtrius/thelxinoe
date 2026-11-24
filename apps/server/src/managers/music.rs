@@ -286,8 +286,8 @@ fn artist_card(row: &Value) -> Option<Value> {
     }))
 }
 
-/// How the viewer stands with an artist: whether Lidarr holds and monitors its new
-/// releases, the viewer's latest request to monitor them, and its library artist.
+/// How the user stands with an artist: whether Lidarr holds and monitors its new
+/// releases, the user's latest request to monitor them, and its library artist.
 async fn artist_standing(
     state: &AppState,
     user: &str,
@@ -1202,7 +1202,7 @@ async fn artwork(
         .acquire()
         .await
         .map_err(|_| artwork_unavailable())?;
-    // Another viewer may have fetched it, or failed to, meanwhile.
+    // Another user may have fetched it, or failed to, meanwhile.
     if let Some(bytes) = cached(&path, width).await {
         return served(bytes);
     }

@@ -278,7 +278,7 @@ async fn check_modes(pipelines: &Pipelines, source: &Source, options: &Options, 
 }
 
 #[tokio::test]
-async fn audio_only_vod_remux_and_conversion_keep_the_requested_interval() {
+async fn audio_only_vod_remux_and_transcode_keep_the_requested_interval() {
     let temp = tempfile::tempdir().unwrap();
     let media = temp.path().join("levels.m4a");
     run(
@@ -531,7 +531,7 @@ fn colour(path: &Path, x0: usize, x1: usize) -> [f64; 3] {
     sum.map(|total| total / (64 * (x1 - x0)) as f64)
 }
 #[tokio::test]
-async fn vod_conversion_tone_maps_pq_and_hlg_and_refuses_dolby_vision_without_a_base_layer() {
+async fn vod_transcode_tone_maps_pq_and_hlg_and_refuses_dolby_vision_without_a_base_layer() {
     let temp = tempfile::tempdir().unwrap();
     let pipelines = Pipelines::open(
         &temp.path().join("cache"),
@@ -625,7 +625,7 @@ async fn vod_conversion_tone_maps_pq_and_hlg_and_refuses_dolby_vision_without_a_
             ..Capabilities::default()
         },
     };
-    // A Jellyfin client conversion, at half the frame rate of the source.
+    // A Jellyfin client transcode, at half the frame rate of the source.
     let jellyfin = Options {
         capabilities: Capabilities {
             hls: true,
@@ -710,12 +710,12 @@ async fn vod_conversion_tone_maps_pq_and_hlg_and_refuses_dolby_vision_without_a_
         pipelines.stop(id).await;
     }
     // Dolby Vision profile 5 has no base layer FFmpeg reproduces: its video is refused, while
-    // its audio still converts.
+    // its audio still transcodes.
     let mut source = sources.remove(0);
     source.probe["streams"][0]["side_data_list"] = serde_json::json!([{"side_data_type":"DOVI configuration record","dv_profile":5,"dv_bl_signal_compatibility_id":0,"rpu_present_flag":1,"bl_present_flag":1,"el_present_flag":0}]);
     assert_eq!(
         decision(&source, &browser).unwrap_err().to_string(),
-        "This Dolby Vision video cannot be converted"
+        "This Dolby Vision video cannot be transcoded"
     );
     let mut dolby_vision = browser.clone();
     dolby_vision.capabilities.video.push("hevc".into());

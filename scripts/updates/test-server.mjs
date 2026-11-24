@@ -603,7 +603,7 @@ export async function serverScenarios({
       expect(operations().items.some((item) => item.id === update.id)).toBe(
         false,
       );
-      const version = page.getByLabel('Product version', { exact: true });
+      const version = page.getByLabel(/^(Server|Product) version$/);
       await expect(
         version.getByRole('button', {
           name: `Downloading ${downloading.download.component} update`,
@@ -657,7 +657,7 @@ export async function serverScenarios({
         page.getByRole('button', { name: 'Retry server update', exact: true }),
       ).toBeVisible({ timeout: 45000 });
       await expect(
-        page.getByLabel('Product version', { exact: true }).locator('strong'),
+        page.getByLabel(/^(Server|Product) version$/).locator('strong'),
       ).toHaveText(lab.base);
       marker('fail-live-validation', 'p.unlink(missing_ok=True)');
     },
@@ -757,7 +757,7 @@ export async function serverScenarios({
       if (native) {
         await expect(
           native.page
-            .getByLabel('Product version', { exact: true })
+            .getByLabel(/^(Server|Product) version$/)
             .locator('strong'),
         ).toHaveText(lab.next, { timeout: 45000 });
       }
@@ -766,7 +766,7 @@ export async function serverScenarios({
         .toBeGreaterThan(0);
       page.off('request', navigated);
       await expect(
-        page.getByLabel('Product version', { exact: true }).locator('strong'),
+        page.getByLabel(/^(Server|Product) version$/).locator('strong'),
       ).toHaveText(lab.next, { timeout: 45000 });
       await page.screenshot({ path: join(output, 'server-committed.png') });
       await expect(
@@ -823,7 +823,7 @@ export async function serverScenarios({
         }),
       ).toHaveValue('Asia/Tokyo', { timeout: 45000 });
       await page
-        .getByLabel('Product version', { exact: true })
+        .getByLabel(/^(Server|Product) version$/)
         .getByRole('button', { name: 'Rollback', exact: true })
         .click();
       const restore = page.getByRole('dialog');

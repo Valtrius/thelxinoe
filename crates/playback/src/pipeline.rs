@@ -38,7 +38,7 @@ pub struct RunHandle {
 pub enum CleanupReason {
     Inactive,
     ProcessFailed,
-    /// The GPU failed; the session converts in software from its next start.
+    /// The GPU failed; the playback session transcodes in software from its next start.
     HardwareFailed,
     CacheUnreadable,
     CacheLimit,
@@ -94,14 +94,14 @@ impl Pipelines {
             hardware,
         })
     }
-    /// Whether new video conversions may use the probed GPU.
+    /// Whether new video transcodes may use the probed GPU.
     pub fn use_hardware(&self, enabled: bool) {
         self.hardware.enable(enabled);
     }
     pub fn hardware(&self) -> crate::HardwareStatus {
         self.hardware.status()
     }
-    /// Finds the GPU conversions use, replacing the previous finding.
+    /// Finds the GPU transcodes use, replacing the previous finding.
     pub async fn probe_hardware(&self) -> crate::HardwareStatus {
         self.hardware
             .probe(self.tools.media(), &self.root.join("hardware-probe"))
@@ -195,16 +195,16 @@ impl Pipelines {
             .filter(|_| encoding.video && encoding.subtitle.is_none());
         if running.len() >= 4 {
             bail!(
-                "All four conversion slots are busy; try direct playback or wait for a session to finish"
+                "All four remux and transcode slots are busy; try direct play or wait for a playback session to finish"
             );
         }
         let slot = self
             .slots
             .clone()
             .try_acquire_owned()
-            .context("All four conversion slots are busy")?;
+            .context("All four remux and transcode slots are busy")?;
         if fs2::available_space(&self.root)? < 1024 * 1024 * 1024 {
-            bail!("Conversion requires at least 1 GB of free cache space");
+            bail!("Remuxing and transcoding require at least 1 GB of free cache space");
         }
         let revision = uuid::Uuid::new_v4().to_string();
         let directory = self.root.join(&revision);
@@ -223,7 +223,7 @@ impl Pipelines {
                 .output
                 .iter()
                 .position(|arg| arg == "-vf")
-                .context("Burning a subtitle requires a video conversion")?;
+                .context("Burning a subtitle requires a video transcode")?;
             args.output[filter] = "-filter_complex".into();
             args.output[filter + 1] = crate::burn_graph(
                 &args.output[filter + 1],
@@ -385,9 +385,7 @@ impl Pipelines {
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
-        let mut child = command
-            .spawn()
-            .context("Start FFmpeg playback conversion")?;
+        let mut child = command.spawn().context("Start FFmpeg remux or transcode")?;
         let watch = Watch::new(&mut child);
         running.insert(
             id.to_owned(),
@@ -637,7 +635,7 @@ impl Pipelines {
     }
 }
 
-/// The seconds a conversion that burns in a subtitle reads before `start`. A seek starts the
+/// The seconds a transcode that burns in a subtitle reads before `start`. A seek starts the
 /// demuxer at the keyframe before its position, so a subtitle whose packet comes earlier, though
 /// still showing, is never read.
 fn burn_preroll(start: f64) -> f64 {
@@ -646,7 +644,7 @@ fn burn_preroll(start: f64) -> f64 {
 
 #[cfg(test)]
 impl Pipelines {
-    /// Ends a session's conversion as if the GPU ran it and FFmpeg logged `error` first.
+    /// Ends a playback session's transcode as if the GPU ran it and FFmpeg logged `error` first.
     pub(crate) async fn end_gpu_run(&self, id: &str, error: &str) {
         let mut runs = self.running.lock().await;
         let run = runs.get_mut(id).unwrap();

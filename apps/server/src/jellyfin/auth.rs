@@ -111,7 +111,7 @@ pub fn device(headers: &HeaderMap) -> Result<Device> {
     Ok(device)
 }
 impl Device {
-    /// What a client that has signed in before is known by. Media clients keep no cookie, so
+    /// What a client that has signed in before is known by. Jellyfin clients keep no cookie, so
     /// this is their stable identity; values can't hold the control character that separates them.
     fn known(&self) -> String {
         thelxinoe_auth::digest(&format!("jellyfin\n{}\n{}", self.client, self.id))
@@ -236,8 +236,8 @@ pub async fn user_dto(state: &AppState, p: &Principal) -> Result<Value> {
 mod tests {
     use super::*;
 
-    // A media client that signed in to the account before keeps signing in while others'
-    // guesses lock the account; a client new to it is still locked out.
+    // A Jellyfin client that signed in as the user before keeps signing in while others'
+    // guesses lock the user out; a client new to them is still locked out.
     #[tokio::test]
     async fn a_known_media_client_is_not_locked_out_by_others() {
         let (_temp, state, _) = crate::test_support::fixture().await;

@@ -257,7 +257,7 @@ export async function desktopScenarios({
         await check();
         await native.invoke('desktop_update_download');
         await expect(native.invoke('desktop_update_install')).rejects.toThrow(
-          `The connected server does not support desktop ${lab.next}`,
+          `The connected server does not support desktop app ${lab.next}`,
         );
         expect((await native.invoke('desktop_update_status')).phase).toBe(
           'ready',

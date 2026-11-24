@@ -179,7 +179,7 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
             if origin != context.origin && !desktop && cors.is_none() {
                 // Development WebViews use their dev-server origin. Their Rust
                 // transport already authenticated to obtain this short-lived,
-                // single-use device ticket; no browser cookie authorizes it.
+                // single-use desktop app ticket; no browser cookie authorizes it.
                 let device_ticket = if request.method() == Method::GET
                     && request.uri().path() == "/api/v1/events"
                     && let Ok(axum::extract::Query(cursor)) =
@@ -310,13 +310,13 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
         .get::<crate::managers::access::NativeResponse>()
         .is_some()
     {
-        // Native login forms need their same-origin Origin header. no-referrer
+        // A media service's own login forms need their same-origin Origin header. no-referrer
         // makes browsers send Origin: null on form POSTs, which we reject.
         response
             .headers_mut()
             .insert("referrer-policy", "same-origin".parse().unwrap());
-        // Servarr's bootstrap contains inline configuration and native styles.
-        // Its scripts share this origin; only trusted, admin-selected services
+        // Servarr's bootstrap contains inline configuration and its own styles.
+        // Its scripts share this origin; only trusted services an administrator selected
         // are exposed. Service workers must never take control of Thelxinoe.
         response.headers_mut().insert("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; worker-src 'none'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'".parse().unwrap());
     } else {

@@ -66,10 +66,10 @@ export const watchStates: [WatchState, string][] = [
   ['watched', 'Watched'],
 ];
 export const availabilities: [Availability, string][] = [
-  ['downloaded', 'Downloaded'],
+  ['downloaded', 'Available'],
   ['downloading', 'Downloading'],
   ['upcoming', 'Upcoming'],
-  ['not_downloaded', 'Not downloaded'],
+  ['not_downloaded', 'Not available'],
 ];
 export const seriesStates: [SeriesState, string][] = [
   ['any', 'Any'],

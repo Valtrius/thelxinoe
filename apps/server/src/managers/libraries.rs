@@ -81,7 +81,7 @@ async fn refresh(state: &AppState) -> anyhow::Result<()> {
         .unwrap_or_else(|e| e.into_inner())
         .retain(|id, _| services.iter().any(|(key, _)| key == id));
 
-    // Local-only libraries use the same directories as managed installations.
+    // Local-only libraries use the same directories as fresh installs.
     for (manager, folder) in [("radarr", "movies"), ("sonarr", "tv"), ("lidarr", "music")] {
         if services.iter().any(|(_, kind)| kind == manager) {
             continue;

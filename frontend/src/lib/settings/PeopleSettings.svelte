@@ -18,7 +18,7 @@
 
   let { user }: { user: User } = $props();
   let users = $state<User[] | null>(null),
-    // Who may request without review, keyed by user id. Only people the
+    // Who may request without review, keyed by user id. Only users the
     // server lists get a toggle.
     approvals = $state<Record<string, boolean>>({}),
     approvalError = $state(''),
@@ -38,7 +38,7 @@
   async function load() {
     const latest = requests.begin();
     try {
-      const [people, approval] = await Promise.all([
+      const [listed, approval] = await Promise.all([
         api<{ items: User[] }>('/users'),
         api<{ items: ApprovalUser[] }>('/admin/acquisition/users').then(
           (value) => ({ items: value.items, error: '' }),
@@ -49,7 +49,7 @@
         ),
       ]);
       if (!latest()) return;
-      users = people.items;
+      users = listed.items;
       approvals = Object.fromEntries(
         approval.items.map((entry) => [entry.id, entry.enabled]),
       );
@@ -84,7 +84,7 @@
 
 <SettingsCard
   title="Add user"
-  description="New people sign in with a username and password. They can add passkeys or link an identity provider later."
+  description="New users sign in with a username and password. They can add passkeys or link an identity provider later."
   padded
 >
   <form
@@ -125,7 +125,7 @@
 </SettingsCard>
 <SettingsCard
   title="User access"
-  description="Roles, automatic request approval, recovery links and account removal for everyone on this server."
+  description="Roles, automatic request approval, recovery links and removal for every user on this server."
 >
   {#if !users && !error}<div class={cardBlockClass}>
       <ContentSkeleton label="Loading users" />
@@ -144,9 +144,9 @@
     bind:value={expandedUser}
     class="divide-y divide-line"
   >
-    {#each users ?? [] as person (person.id)}<UserAdministration
-        {person}
-        approval={approvals[person.id]}
+    {#each users ?? [] as listed (listed.id)}<UserAdministration
+        user={listed}
+        approval={approvals[listed.id]}
         currentId={user.id}
         changed={load}
         close={() => (expandedUser = '')}

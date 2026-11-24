@@ -1,4 +1,4 @@
-//! Database operations for accounts.
+//! Database operations for users and their sign-in.
 use super::*;
 use thelxinoe_database::Database;
 
@@ -65,7 +65,7 @@ pub(super) async fn setup(
         .await
 }
 
-/// Whether `token_hash` belongs to a browser or client known to the account named `username`.
+/// Whether `token_hash` belongs to a browser or client known to the user named `username`.
 pub(super) async fn known(
     db: &Database,
     username: String,
@@ -110,7 +110,7 @@ pub(crate) const PER_CLIENT: Budget = Budget {
     max: 20,
     window: 900,
 };
-/// Failed proofs per account, whatever addresses they come from.
+/// Failed proofs per user, whatever addresses they come from.
 pub(crate) const PER_ACCOUNT: Budget = Budget {
     max: 10,
     window: 900,

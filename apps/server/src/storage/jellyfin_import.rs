@@ -105,8 +105,8 @@ pub(super) async fn overview(db: &Database) -> anyhow::Result<Value> {
     .await
 }
 
-pub(super) async fn people(db: &Database) -> anyhow::Result<Vec<(String, String)>> {
-    db.read("jellyfin_import.people", |db| {
+pub(super) async fn users(db: &Database) -> anyhow::Result<Vec<(String, String)>> {
+    db.read("jellyfin_import.users", |db| {
         Ok(db
             .prepare("SELECT id,username FROM users ORDER BY username COLLATE NOCASE")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -141,7 +141,7 @@ pub(super) async fn forget(db: &Database, actor: String) -> anyhow::Result<()> {
     .await
 }
 
-/// One Jellyfin item's state for one person here.
+/// One Jellyfin item's state for one user here.
 pub(super) struct Entry {
     pub account: usize,
     pub user: String,
@@ -170,7 +170,7 @@ impl std::ops::AddAssign for Counts {
 
 pub(super) struct Applied {
     pub accounts: Vec<Counts>,
-    /// What each title-matched group adds, per account, so leaving one out can be shown.
+    /// What each title-matched group adds, per Jellyfin account, so leaving one out can be shown.
     pub groups: HashMap<String, Vec<Counts>>,
     /// Movies and seasons the import makes eligible for watched-state auto-delete.
     pub retention: usize,

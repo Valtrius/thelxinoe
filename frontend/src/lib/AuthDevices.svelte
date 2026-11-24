@@ -75,7 +75,7 @@
 </SettingsCard>
 <SettingsCard
   title="Client passwords"
-  description="For compatible media clients. These passwords bypass TOTP and can only access the Jellyfin-compatible API."
+  description="For Jellyfin clients. These passwords skip the authenticator app code and can only access the Jellyfin-compatible API."
 >
   {#each clients as client (client.id)}
     <SettingRow label={client.name}>

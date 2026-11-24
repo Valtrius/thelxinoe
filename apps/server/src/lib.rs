@@ -116,7 +116,7 @@ pub struct AppState {
     pub(crate) release_command: Arc<tokio::sync::Mutex<()>>,
     pub(crate) release_check: Arc<tokio::sync::Mutex<()>>,
     pub(crate) release_install: Arc<tokio::sync::Mutex<()>>,
-    /// Library roots by ID, and whether filesystem changes reach them live.
+    /// Library folders by ID, and whether filesystem changes reach them live.
     pub(crate) library_watch: Arc<std::sync::Mutex<std::collections::HashMap<String, bool>>>,
     /// The last measured size of the state and cache folders, and when.
     pub(crate) folder_sizes: Arc<tokio::sync::Mutex<operations::FolderSizes>>,
@@ -422,7 +422,7 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
 }
 
 /// The first wait after a job lane's database access failed; repeated failures wait longer.
-/// A playlist has no track limit, and a released desktop saves a whole one at a time.
+/// A playlist has no track limit, and a released desktop app saves a whole one at a time.
 const PLAYLIST_BODY_LIMIT: usize = 2 * 1024 * 1024;
 const JOB_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -509,7 +509,7 @@ async fn scan_library(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Re
         .into_iter()
         .find(|r| Some(r.id.as_str()) == job.payload["root_id"].as_str())
     else {
-        // Removing a library retires its queued scans; one claimed just before has nothing
+        // Removing a library folder retires its queued scans; one claimed just before has nothing
         // left to do.
         return Ok(());
     };
@@ -553,7 +553,7 @@ async fn scan_library(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Re
         Ok(scanned) => scanned.commit(&state.db).await,
         Err(error) => Err(error),
     };
-    // A library removed during its scan stopped it; that's no failure.
+    // A library folder removed during its scan stopped it; that's no failure.
     let removed = result.is_err()
         && !thelxinoe_catalog::roots(&state.db)
             .await?
@@ -737,7 +737,7 @@ mod job_tests {
             .enqueue("service.transfer", "t", json!({}))
             .await
             .unwrap();
-        // A scan of a library that no longer exists has nothing to do.
+        // A scan of a library folder that no longer exists has nothing to do.
         assert_eq!(finished(&state, &general).await, ("complete".into(), None));
         assert_eq!(
             finished(&state, &service).await,

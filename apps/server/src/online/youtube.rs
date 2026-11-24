@@ -141,7 +141,7 @@ pub(super) async fn get(
     query: &[(&str, &str)],
 ) -> Result<Value> {
     super::availability::require_enabled(state, "youtube").await?;
-    // The endpoint is internal, never a viewer-supplied URL.
+    // The endpoint is internal, never a user-supplied URL.
     if !matches!(
         endpoint,
         "subscriptions" | "channels" | "playlistItems" | "videos"

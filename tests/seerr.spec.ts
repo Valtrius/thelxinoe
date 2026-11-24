@@ -497,7 +497,7 @@ for (const entry of ['search', 'direct link'] as const) {
       new RegExp(`#discover${query.replace('?', '\\?')}$`),
     );
     await expect(
-      page.getByRole('textbox', { name: 'Search movies and series' }),
+      page.getByRole('textbox', { name: 'Search movies and shows' }),
     ).toHaveValue(entry === 'search' ? 'Arrival' : '');
     await expect(heading('Contact')).toHaveCount(0);
     await expect(
@@ -530,7 +530,7 @@ test('posters align at the top of discovery rows and search rows with wrapped ti
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
     const search = page.getByRole('textbox', {
-      name: 'Search movies and series',
+      name: 'Search movies and shows',
     });
     for (const query of ['', 'title']) {
       await search.fill(query);
@@ -571,7 +571,7 @@ test('discovery rows fit a phone while a later row is still loading', async ({
   await page.route('**/api/v1/seerr/discover/upcoming-tv', () => {});
   await page.goto('/');
   await expect(
-    page.getByRole('status', { name: 'Loading Upcoming series' }),
+    page.getByRole('status', { name: 'Loading Upcoming shows' }),
   ).toBeVisible();
   const rail = page
     .getByRole('region', { name: 'Trending', exact: true })
@@ -595,7 +595,7 @@ test('search opens dedicated details, requests once, and returns to the search',
   const fixture = await discoverFixture(page);
   await page.goto('/');
   await page
-    .getByRole('textbox', { name: 'Search movies and series' })
+    .getByRole('textbox', { name: 'Search movies and shows' })
     .fill('Arrival');
   await page.getByRole('button', { name: 'View Arrival', exact: true }).click();
   await expect(page).toHaveURL(/#discover\/movie\/11\?q=Arrival$/);
@@ -612,7 +612,7 @@ test('search opens dedicated details, requests once, and returns to the search',
   ]);
   await page.getByRole('button', { name: 'Back to discover' }).click();
   await expect(
-    page.getByRole('textbox', { name: 'Search movies and series' }),
+    page.getByRole('textbox', { name: 'Search movies and shows' }),
   ).toHaveValue('Arrival');
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
@@ -1144,7 +1144,7 @@ test('late search responses cannot replace a newer query', async ({ page }) => {
     await route.fulfill({ json: results(old ? [movie] : [show]) });
   });
   await page.goto('/');
-  const input = page.getByRole('textbox', { name: 'Search movies and series' });
+  const input = page.getByRole('textbox', { name: 'Search movies and shows' });
   const first = page.waitForRequest('**/seerr/search?q=Arrival*');
   await input.fill('Arrival');
   await first;

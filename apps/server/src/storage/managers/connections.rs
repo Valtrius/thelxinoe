@@ -1,5 +1,5 @@
-//! Small, typed connection configuration records share the existing settings store.
-//! Credentials remain in the encrypted integrations; ownership evidence is hashed.
+//! Small, typed service link records share the existing settings store.
+//! Credentials remain in the encrypted connections; ownership evidence is hashed.
 use super::*;
 use thelxinoe_database::Database;
 const PREFIX: &str = "services.connection.";

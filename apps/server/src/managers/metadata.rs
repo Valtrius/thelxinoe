@@ -202,7 +202,7 @@ async fn refresh(
             "Find a metadata match before refreshing this item",
         ));
     }
-    // A refresh already waiting for this media returns its job instead of adding one.
+    // A refresh already waiting for this media item returns its job instead of adding one.
     let job = thelxinoe_jobs::Queue(state.db.clone())
         .enqueue(
             "metadata.refresh",

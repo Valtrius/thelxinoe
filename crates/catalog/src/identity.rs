@@ -36,9 +36,9 @@ fn normalize(s: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-/// The folder of `path` below `root`, nearest first, that is named after `series` up to a
+/// The folder of `path` below `root`, nearest first, that is named after `show` up to a
 /// `(year)`, tags such as `{imdb-tt0121955}`, case and punctuation; without its tags.
-fn series_folder(root: &Path, path: &Path, series: &str) -> Result<Option<String>> {
+fn show_folder(root: &Path, path: &Path, show: &str) -> Result<Option<String>> {
     let tags = Regex::new(r"\{[^}]*\}|\[[^\]]*\]")?;
     let year = Regex::new(r"\((?:19|20)\d{2}\)")?;
     let plain = |name: &str| {
@@ -48,7 +48,7 @@ fn series_folder(root: &Path, path: &Path, series: &str) -> Result<Option<String
             .flat_map(char::to_lowercase)
             .collect::<String>()
     };
-    let wanted = plain(series);
+    let wanted = plain(show);
     Ok(path
         .ancestors()
         .skip(1)
@@ -58,7 +58,7 @@ fn series_folder(root: &Path, path: &Path, series: &str) -> Result<Option<String
         .find(|name| !wanted.is_empty() && plain(name) == wanted))
 }
 pub fn identify(
-    domain: &str,
+    library: &str,
     root: &Path,
     path: &Path,
     probe: &Value,
@@ -68,7 +68,7 @@ pub fn identify(
         .and_then(|s| s.to_str())
         .unwrap_or("Untitled");
     let stem = normalize(filename);
-    if domain == "movies" {
+    if library == "movies" {
         let edition_pattern = Regex::new(r"(?i)\{edition-([^}]+)\}")?;
         let edition = edition_pattern
             .captures(filename)
@@ -88,10 +88,10 @@ pub fn identify(
         movie.year = year;
         return Ok((vec![movie], edition));
     }
-    if domain == "shows" {
+    if library == "shows" {
         let pattern = Regex::new(r"(?i)S(\d{1,3})[ ._-]*E(\d{1,3})((?:[ ._-]*E\d{1,3})*)")?;
         let Some(c) = pattern.captures(filename) else {
-            bail!("TV filename must contain season/episode evidence such as S01E02");
+            bail!("Show filename must contain season/episode evidence such as S01E02");
         };
         let season = c[1].parse::<i64>()?;
         let first = c[2].parse::<i64>()?;
@@ -107,9 +107,9 @@ pub fn identify(
                 .unwrap_or("Unknown show")
                 .to_string()
         } else {
-            // Sonarr keeps a series in one folder but doesn't rename files when its naming
+            // Sonarr keeps a show in one folder but doesn't rename files when its naming
             // changes, so the folder names the show its files agree on.
-            series_folder(root, path, &title)?.unwrap_or(title)
+            show_folder(root, path, &title)?.unwrap_or(title)
         };
         let key = title.to_lowercase();
         let season_key = format!("{key}:s{season}");
@@ -144,7 +144,7 @@ pub fn identify(
         }
         return Ok((result, String::new()));
     }
-    if domain == "music" {
+    if library == "music" {
         let tags = probe["format"]["tags"].as_object();
         let tag = |keys: &[&str]| -> Option<String> {
             tags.and_then(|t| {
@@ -202,7 +202,7 @@ pub fn identify(
         );
         return Ok((vec![a, b, t], String::new()));
     }
-    bail!("Unknown library domain")
+    bail!("Unknown library")
 }
 #[cfg(test)]
 mod tests {
@@ -232,7 +232,7 @@ mod tests {
         assert!(c[2].key.contains("release-track-id"));
     }
     #[test]
-    fn a_series_folder_names_the_show_its_files_agree_on() {
+    fn a_show_folder_names_the_show_its_files_agree_on() {
         let show = |file: &str| {
             let (items, _) = identify(
                 "shows",
@@ -266,7 +266,7 @@ mod tests {
             show("Demon Slayer - Kimetsu no Yaiba (2019) {imdb-tt9335498}/Season 1/Demon.Slayer.Kimetsu.no.Yaiba.S01E01.mkv").0,
             "demon slayer - kimetsu no yaiba (2019)"
         );
-        // Same-named series stay apart, and a folder named otherwise leaves the file's name.
+        // Same-named shows stay apart, and a folder named otherwise leaves the file's name.
         assert_eq!(
             show("Doctor Who (1963)/Season 1/Doctor Who - S01E01.mkv").0,
             "doctor who (1963)"

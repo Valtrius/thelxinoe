@@ -247,7 +247,7 @@
   };
   const recoveryLabels: Record<string, string> = {
     repair: 'Repair and continue',
-    restore_snapshot: 'Restore the transfer snapshot into a new candidate',
+    restore_snapshot: 'Restore the transfer snapshot into a new replacement',
     return_original: 'Return to the original',
     suspend: 'Suspend for manual resolution',
   };
@@ -261,10 +261,10 @@
     releasing: 'Releasing the replacement',
     'starting-original': 'Restarting the original',
     'removing-replacement': 'Removing the replacement',
-    'preserving-appdata': 'Keeping the replaced appdata as a generation',
-    building: 'Building a new candidate from the snapshot',
-    creating: 'Creating the new candidate',
-    activating: 'Starting the new candidate',
+    'preserving-appdata': 'Keeping the replaced appdata',
+    building: 'Building a new replacement from the transfer snapshot',
+    creating: 'Creating the new replacement',
+    activating: 'Starting the new replacement',
   };
   const explanations: Record<string, string> = {
     prerequisites:
@@ -276,11 +276,11 @@
     confirm:
       'Confirm to stop the original and start the transfer. You can close this window afterwards; the work continues.',
     stop: 'Thelxinoe disables the original’s restart policy and stops it. Its container and appdata are kept.',
-    copy: 'The stopped appdata is copied into an untouched snapshot and checked for completeness.',
+    copy: 'The stopped appdata is copied into an untouched transfer snapshot and checked for completeness.',
     validate:
       'A separate copy runs in isolation with synthetic media and no network route to prove the state is preserved and readable.',
     activate:
-      'The managed replacement is built from the snapshot plus your reviewed changes, created and started.',
+      'The replacement is built from the transfer snapshot plus your reviewed changes, created and started.',
     commit:
       'Thelxinoe and its controller record the replacement as an Owned service. Normal operations stay held.',
     setup: 'Only the setup actions you reviewed run against the replacement.',
@@ -409,9 +409,9 @@
           <Notice tone="info" role="status">
             <strong>{label} is now Owned by Thelxinoe.</strong>
             <p>
-              The managed replacement passed every required check and normal
-              operations are released. The original container stays stopped with
-              restart disabled, and its appdata at <code
+              The replacement passed every required check and normal operations
+              are released. The original container stays stopped with restart
+              disabled, and its appdata at <code
                 >{plan.source.appdata.source}</code
               > is preserved.
             </p>
@@ -598,20 +598,20 @@
         <dd class="wrap-anywhere">
           {plan!.source.name} · {plan!.source.image} ({plan!.source.version})
         </dd>
-        <dt class="text-muted">Managed replacement</dt>
+        <dt class="text-muted">Replacement</dt>
         <dd class="wrap-anywhere">
           {plan!.target.image} ({plan!.target
             .version}){#if plan!.target.decision.decision === 'upgrade'}<span
               class="block text-warning">{plan!.target.decision.reason}</span
             >{/if}
         </dd>
-        <dt class="text-muted">Source appdata</dt>
+        <dt class="text-muted">Original appdata</dt>
         <dd class="wrap-anywhere">
           {plan!.source.appdata.kind}
           {plan!.source.appdata.source} at {plan!.source.appdata.destination}
           — preserved unchanged
         </dd>
-        <dt class="text-muted">Managed appdata</dt>
+        <dt class="text-muted">Replacement appdata</dt>
         <dd class="wrap-anywhere">{plan!.target.appdata}</dd>
         <dt class="text-muted">Runtime identity</dt>
         <dd>

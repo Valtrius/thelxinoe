@@ -1,4 +1,5 @@
-export type Platform = 'youtube' | 'twitch' | 'kick';
+import type { Provider } from './availability';
+
 export type Route =
   '/youtube' | '/twitch' | '/kick' | '/statistics' | '/settings';
 export type Theme = 'system' | 'light' | 'dark';
@@ -55,8 +56,8 @@ export interface AppError {
   technical: string;
 }
 
-export interface PlatformAccount {
-  platform: 'youtube' | 'twitch';
+export interface ConnectedAccount {
+  provider: 'youtube' | 'twitch';
   externalUserId: string;
   displayName?: string | null;
   avatarUrl?: string | null;
@@ -66,10 +67,10 @@ export interface PlatformAccount {
 }
 
 export interface SyncStatus {
-  platform: Platform;
+  provider: Provider;
   operationId?: string | null;
   phase: string;
-  isRefreshing: boolean;
+  isSyncing: boolean;
   completed: number;
   total?: number | null;
   lastSuccessAt?: string | null;
@@ -262,7 +263,7 @@ export interface ExecutableDiagnostic {
 }
 
 export type StatisticsRange = '7d' | '30d' | '90d' | 'all';
-export type StatisticsPlatform = 'all' | Platform;
+export type StatisticsPlatform = 'all' | Provider;
 
 export interface StatisticsActivityPoint {
   periodStart: string;
@@ -280,12 +281,12 @@ export interface StatisticsRhythmPoint {
 }
 
 export interface StatisticsPlatformTotal {
-  platform: Platform;
+  platform: Provider;
   activeSeconds: number;
 }
 
 export interface StatisticsChannel {
-  platform: Platform;
+  platform: Provider;
   name: string;
   activeSeconds: number;
   watchedDays: number;
@@ -319,7 +320,7 @@ export interface StatisticsOverview {
 }
 
 export interface AuthState {
-  platform: 'youtube' | 'twitch';
+  provider: 'youtube' | 'twitch';
   phase?: 'waiting' | 'connecting';
   operationId?: string | null;
   status:

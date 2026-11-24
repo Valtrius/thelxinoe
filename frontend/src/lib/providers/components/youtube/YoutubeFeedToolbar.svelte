@@ -42,7 +42,7 @@
   let {
     filters = $bindable(),
     watchlistSidebarOpen = $bindable(),
-    refreshing,
+    syncing,
     channels,
     counts,
     syncStatus,
@@ -56,11 +56,11 @@
     submitSearch,
     clearFilters,
     setGrouping,
-    refresh,
+    sync,
   }: {
     filters: YoutubeFeedPreferences;
     watchlistSidebarOpen: boolean;
-    refreshing: boolean;
+    syncing: boolean;
     channels: YoutubeChannelOption[];
     counts: YoutubeVideoCounts;
     syncStatus: SyncStatus;
@@ -74,7 +74,7 @@
     submitSearch: (event: SubmitEvent) => Promise<void>;
     clearFilters: () => void;
     setGrouping: (group: YoutubeGrouping) => Promise<void>;
-    refresh: (mode: 'normal' | 'full') => Promise<void>;
+    sync: (mode: 'normal' | 'full') => Promise<void>;
   } = $props();
   let openMenu = $state<'sort' | 'filter' | 'group' | null>(null);
   function setMenuOpen(menu: 'sort' | 'filter' | 'group', open: boolean) {
@@ -353,7 +353,7 @@
             class={`h-8 border px-2.5 text-xs ${filters.showLiveReplays ? 'border-line-strong bg-accent-soft text-accent' : 'border-line text-muted'}`}
             aria-pressed={filters.showLiveReplays}
             onclick={() => (filters.showLiveReplays = !filters.showLiveReplays)}
-            >Replays <span class="opacity-60">{counts.liveReplays}</span
+            >Live replays <span class="opacity-60">{counts.liveReplays}</span
             ></button
           >
           <button
@@ -468,14 +468,14 @@
   <Button
     size="icon"
     variant="ghost"
-    disabled={refreshing}
-    aria-label="Refresh YouTube feed"
-    title={syncStatus.isRefreshing
+    disabled={syncing}
+    aria-label="Sync YouTube feed"
+    title={syncStatus.isSyncing
       ? `Server sync: ${syncStatus.phase}. Click to reload the cached feed.`
-      : `Refresh · updated ${relativeTime(syncStatus.lastSuccessAt)}`}
-    onclick={() => refresh('normal')}
+      : `Sync · updated ${relativeTime(syncStatus.lastSuccessAt)}`}
+    onclick={() => sync('normal')}
     ><RefreshCw
-      class={`size-4 ${syncStatus.isRefreshing ? 'animate-spin' : ''}`}
+      class={`size-4 ${syncStatus.isSyncing ? 'animate-spin' : ''}`}
     /></Button
   >
   <span class="mx-0.5 h-5 w-px bg-line" aria-hidden="true"></span>

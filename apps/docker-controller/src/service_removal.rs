@@ -1,4 +1,4 @@
-//! Remove stopped, owned containers before deleting their private configuration.
+//! Remove the stopped containers of Owned services before deleting their private configuration.
 use super::*;
 use std::path::{Path, PathBuf};
 

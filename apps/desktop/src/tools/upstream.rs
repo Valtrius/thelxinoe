@@ -182,7 +182,7 @@ impl Github<'_> {
 }
 
 /// Days a commit stays on the default branch before it is recommended, so a pushed mistake
-/// (or a push with a stolen token) is usually reverted before any desktop installs it.
+/// (or a push with a stolen token) is usually reverted before any desktop app installs it.
 const COMMIT_SETTLE_DAYS: i64 = 7;
 /// Recommend the newest commit that has settled, or the oldest one known when none has.
 fn mark_settled(packages: &mut [Package], now: DateTime<Utc>) -> AppResult<()> {

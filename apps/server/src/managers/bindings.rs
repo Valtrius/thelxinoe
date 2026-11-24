@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 /// Every manager kind.
 pub(super) const ALL: &[&str] = &["radarr", "sonarr", "lidarr"];
-/// The movie and series managers auto-delete goes through; it never reads music libraries.
+/// Radarr and Sonarr, the managers auto-delete goes through; it never reads music libraries.
 pub(super) const RETAINED: &[&str] = &["radarr", "sonarr"];
 /// How old a read of a whole library can be for auto-delete to rely on it. Each deletion still
 /// reads its own movie or series before changing anything.
@@ -21,7 +21,7 @@ pub(super) struct ServiceInventory {
     pub claims: Result<BTreeMap<(i64, i64), Claim>>,
 }
 pub(super) struct ManagerInventory {
-    /// The manager kinds read, and so the files whose ownership this inventory decides.
+    /// The manager kinds read, and so the files this inventory decides are managed or not.
     kinds: &'static [&'static str],
     pub services: BTreeMap<String, ServiceInventory>,
     files: BTreeMap<String, (String, String)>,

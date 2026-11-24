@@ -711,7 +711,7 @@ for (const [section, kind] of [
     await expect.poll(() => acknowledgments.length).toBe(1);
     await expect(poster.locator('[data-attention-severity]')).toBeVisible();
     await expect(poster.locator('.card-primary')).toHaveAccessibleDescription(
-      'Could not clear this marker. Hover again to retry.',
+      'Could not dismiss this attention item. Hover again to retry.',
     );
     await page.mouse.move(0, 0);
     fail = false;
@@ -807,7 +807,7 @@ test('a newer available request remains marked when an older hover acknowledgmen
   expect(fixture.unexpected).toEqual([]);
 });
 
-// Movies open the same way, without the series type mapping.
+// Movies open the same way, without the show type mapping.
 test('available tv requests open their title from the request list', async ({
   page,
 }, testInfo) => {
@@ -853,9 +853,7 @@ test('available tv requests open their title from the request list', async ({
     }),
   ).toBeVisible();
   await expect(
-    page
-      .getByRole('article', { name: 'Available request' })
-      .getByText(/^Series/),
+    page.getByRole('article', { name: 'Available request' }).getByText(/^Show/),
   ).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Back to discover', exact: true }),

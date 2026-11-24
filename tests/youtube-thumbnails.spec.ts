@@ -161,7 +161,7 @@ test('A video YouTube no longer serves is labelled without requesting its thumbn
   await expect(
     page
       .locator('article[data-video-id="wxyzabcdefg"]')
-      .getByText('Replay', { exact: true }),
+      .getByText('Live replay', { exact: true }),
   ).toHaveCount(0);
   await expect(
     page

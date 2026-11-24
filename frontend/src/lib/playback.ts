@@ -79,7 +79,7 @@ export type Playback = {
   timeline_start: number;
   video: boolean;
   tracks: Track[];
-  /** A subtitle without an address is a picture, which a conversion burns in. */
+  /** A subtitle without an address is a picture, which a transcode burns in. */
   subtitles: {
     id: string;
     language: string;

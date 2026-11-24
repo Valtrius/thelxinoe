@@ -39,8 +39,8 @@ fn open(app: &tauri::App) -> AppResult<Arc<ToolManager>> {
     Ok(manager)
 }
 
-/// Only another running instance is fatal; it keeps the tools and desktop updates.
-/// Any other failure leaves playback and tools unavailable, while the rest of the
+/// Only another running instance is fatal; it keeps the desktop tools and desktop updates.
+/// Any other failure leaves playback and desktop tools unavailable, while the rest of the
 /// app and desktop updates keep running so a fixed release can be installed.
 pub fn initialize(app: &tauri::App) -> AppResult<()> {
     let manager = match open(app) {
@@ -52,7 +52,7 @@ pub fn initialize(app: &tauri::App) -> AppResult<()> {
                 tools: Err(AppError::configuration(
                     "tools_unavailable",
                     format!(
-                        "Player and tools could not start: {}. Restart Thelxinoe or install a desktop update.",
+                        "The MPV player and desktop tools could not start: {}. Restart Thelxinoe or install a desktop update.",
                         error.technical.trim_end_matches('.')
                     ),
                     "Restart Thelxinoe or install a desktop update.",

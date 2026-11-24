@@ -55,10 +55,10 @@ fn gpu() -> Accelerator {
 }
 
 #[test]
-fn a_conversion_limits_the_short_side_of_a_picture() {
+fn a_transcode_limits_the_short_side_of_a_picture() {
     let temp = tempfile::tempdir().unwrap();
     let output = temp.path().join("output.mp4");
-    let convert = |input: &[&str], name: &str| {
+    let transcode = |input: &[&str], name: &str| {
         let stream = json!({ "streams": [{ "codec_type": "video" }] });
         let args = crate::video_conversion_args(&quality(name), &stream, None).unwrap();
         let mut command = vec!["-v", "error", "-y"];
@@ -84,7 +84,7 @@ fn a_conversion_limits_the_short_side_of_a_picture() {
     ] {
         let source = format!("color=s={size}:d=0.1");
         assert_eq!(
-            convert(&["-f", "lavfi", "-i", &source], name),
+            transcode(&["-f", "lavfi", "-i", &source], name),
             expected,
             "{size} at {name}"
         );
@@ -123,13 +123,13 @@ fn a_conversion_limits_the_short_side_of_a_picture() {
         ],
     );
     assert_eq!(
-        convert(&["-i", rotated.to_str().unwrap()], "720p"),
+        transcode(&["-i", rotated.to_str().unwrap()], "720p"),
         (720, 1280)
     );
 }
 
 #[test]
-fn a_picture_within_a_resolution_is_not_converted() {
+fn a_picture_within_a_resolution_is_not_transcoded() {
     let options = |name: &str| Options {
         capabilities: Capabilities {
             video: vec!["h264".into()],
@@ -138,7 +138,7 @@ fn a_picture_within_a_resolution_is_not_converted() {
         },
         ..quality(name)
     };
-    for ((width, height), name, converted) in [
+    for ((width, height), name, transcoded) in [
         ((1920, 1080), "1080p", false),
         ((1080, 1920), "1080p", false),
         ((720, 1280), "720p", false),
@@ -160,15 +160,15 @@ fn a_picture_within_a_resolution_is_not_converted() {
         };
         let planned = crate::decision(&source, &options(name)).unwrap();
         assert_eq!(
-            planned.encoding.video, converted,
+            planned.encoding.video, transcoded,
             "{width}x{height} at {name}"
         );
     }
 }
 
 #[test]
-fn gpu_conversions_use_only_what_the_probe_verified() {
-    let convert = |accelerator: Option<&Accelerator>, stream: &Value, options: &Options| {
+fn gpu_transcodes_use_only_what_the_probe_verified() {
+    let transcode = |accelerator: Option<&Accelerator>, stream: &Value, options: &Options| {
         let args =
             crate::video_conversion_args(options, &json!({ "streams": [stream] }), accelerator)
                 .unwrap();
@@ -181,7 +181,7 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
     };
     let hdr10 = json!({"codec_type":"video","codec_name":"hevc","pix_fmt":"yuv420p10le","width":3840,"height":2160,"color_transfer":"smpte2084","color_primaries":"bt2020","color_space":"bt2020nc","side_data_list":[{"side_data_type":"Mastering display metadata"}]});
     let hd = quality("1080p");
-    let (decoded, filter, output) = convert(Some(&gpu()), &hdr10, &hd);
+    let (decoded, filter, output) = transcode(Some(&gpu()), &hdr10, &hd);
     assert!(decoded);
     assert_eq!(
         filter,
@@ -191,7 +191,7 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
     let mut untagged = hdr10.clone();
     untagged["color_primaries"] = json!("unknown");
     untagged.as_object_mut().unwrap().remove("color_space");
-    let (decoded, filter, _) = convert(Some(&gpu()), &untagged, &hd);
+    let (decoded, filter, _) = transcode(Some(&gpu()), &untagged, &hd);
     assert!(decoded);
     assert!(
         filter.contains(
@@ -199,7 +199,7 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
         ),
         "{filter}"
     );
-    // The software conversion's rate limits and SDR tags.
+    // The software transcode's rate limits and SDR tags.
     for pair in [
         ["-c:v", "h264_vaapi"],
         ["-rc_mode", "VBR"],
@@ -213,7 +213,7 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
     // Software decodes and filters what the GPU can't, and the GPU still encodes: HDR it can't
     // tone-map (tonemap_vaapi needs PQ with mastering display metadata), other codecs and
     // rotated pictures.
-    let (_, software, _) = convert(None, &hdr10, &hd);
+    let (_, software, _) = transcode(None, &hdr10, &hd);
     let mut pq = hdr10.clone();
     pq["side_data_list"] = json!([]);
     let mut hlg = hdr10.clone();
@@ -232,7 +232,7 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
         (&gpu(), &av1),
         (&gpu(), &rotated),
     ] {
-        let (decoded, filter, output) = convert(Some(accelerator), stream, &hd);
+        let (decoded, filter, output) = transcode(Some(accelerator), stream, &hd);
         assert!(!decoded, "{stream}");
         assert!(output.windows(2).any(|w| w == ["-c:v", "h264_vaapi"]));
         if stream != &rotated {
@@ -251,7 +251,7 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
         fit: false,
     });
     rotated["side_data_list"] = json!([]);
-    let (decoded, filter, output) = convert(Some(&gpu()), &rotated, &tv);
+    let (decoded, filter, output) = transcode(Some(&gpu()), &rotated, &tv);
     assert!(decoded);
     assert_eq!(
         filter,
@@ -261,7 +261,7 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
     let mut fast = rotated.clone();
     fast["avg_frame_rate"] = json!("50/1");
     assert_eq!(
-        convert(Some(&gpu()), &fast, &tv).1,
+        transcode(Some(&gpu()), &fast, &tv).1,
         "deinterlace_vaapi,fps=23.976000,scale_vaapi=w=1280:h=720:format=nv12,setsar=1"
     );
     // One reference frame, which h264_vaapi only keeps without B-frames.
@@ -283,11 +283,11 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
         deinterlace: false,
         ..gpu()
     };
-    let (decoded, filter, _) = convert(Some(&progressive), &rotated, &tv);
+    let (decoded, filter, _) = transcode(Some(&progressive), &rotated, &tv);
     assert!(!decoded);
     assert!(filter.starts_with("yadif=") && filter.ends_with(",format=nv12,hwupload"));
-    // Without hardware, the conversion is unchanged.
-    let (decoded, _, output) = convert(None, &rotated, &tv);
+    // Without hardware, the transcode is unchanged.
+    let (decoded, _, output) = transcode(None, &rotated, &tv);
     assert!(!decoded);
     assert_eq!(
         output[..8],
@@ -304,7 +304,7 @@ fn gpu_conversions_use_only_what_the_probe_verified() {
 }
 
 #[test]
-fn a_burned_subtitle_converts_in_software() {
+fn a_burned_in_subtitle_transcodes_in_software() {
     let probe = json!({"streams":[
         {"codec_type":"video","codec_name":"h264","pix_fmt":"yuv420p","width":1920,"height":1080},
         {"index":3,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle"}]});
@@ -324,7 +324,7 @@ fn a_burned_subtitle_converts_in_software() {
         "{graph}"
     );
     assert!(args.output.windows(2).any(|w| w == ["-c:v", "libx264"]));
-    // Without the subtitle, the same conversion runs on the GPU.
+    // Without the subtitle, the same transcode runs on the GPU.
     let plain = Encoding {
         subtitle: None,
         ..burn
@@ -340,7 +340,7 @@ async fn clip(root: &Path) -> (Pipelines, Source, Options) {
     clip_with(root, tools).await
 }
 
-/// Pipelines and a 12 s H.264 clip, for a browser without H.264 so the video converts.
+/// Pipelines and a 12 s H.264 clip, for a browser without H.264 so the video transcodes.
 async fn clip_with(root: &Path, tools: thelxinoe_tools::Runtime) -> (Pipelines, Source, Options) {
     let media = root.join("clip.mkv");
     run(
@@ -399,7 +399,7 @@ async fn clip_with(root: &Path, tools: thelxinoe_tools::Runtime) -> (Pipelines, 
 }
 
 #[tokio::test]
-async fn a_failing_gpu_leaves_conversions_to_software() {
+async fn a_failing_gpu_leaves_transcodes_to_software() {
     let temp = tempfile::tempdir().unwrap();
     let (pipelines, source, options) = clip(temp.path()).await;
     // A node the probe once verified, now gone.
@@ -424,7 +424,7 @@ async fn a_failing_gpu_leaves_conversions_to_software() {
             "{segment}"
         );
     }
-    // The session's later conversions skip the GPU, until it ends.
+    // The playback session's later transcodes skip the GPU, until it ends.
     assert!(pipelines.hardware.accelerator("vod").is_none());
     pipelines.stop("vod").await;
     assert!(pipelines.hardware.accelerator("vod").is_some());
@@ -489,7 +489,7 @@ async fn a_gpu_failing_mid_playback_leaves_the_session_to_software() {
     // Only the session the GPU failed loses it.
     assert!(pipelines.hardware.accelerator("gpu").is_none());
     assert!(pipelines.hardware.accelerator("input").is_some());
-    // Its next start, a seek, converts in software.
+    // Its next start, a seek, transcodes in software.
     let (revision, _) = pipelines
         .start("gpu", &source, &options, "transcode", 6.0)
         .await
@@ -691,7 +691,7 @@ async fn a_public_video_window_the_gpu_fails_resumes_in_software() {
         .start_remote_vod("stream", &remote, &source, &options, &planned)
         .await
         .unwrap();
-    // The GPU window fails; software converts from the requested segment, with its own
+    // The GPU window fails; software transcodes from the requested segment, with its own
     // initialization.
     let init = pipelines
         .file("stream", &revision, "init-000002.mp4")

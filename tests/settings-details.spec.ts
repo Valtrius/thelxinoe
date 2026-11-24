@@ -131,7 +131,7 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
       policies[0].exclude_from_lists,
     ])
     .toEqual([true, false]);
-  const shows = page.getByRole('group', { name: 'TV seasons', exact: true });
+  const shows = page.getByRole('group', { name: 'Show seasons', exact: true });
   await shows.getByRole('checkbox', { name: 'Alice', exact: true }).check();
   await shows
     .getByRole('switch', { name: 'Auto-delete watched seasons' })
@@ -369,7 +369,7 @@ test('auto-delete usage and server tools refresh from server events instead of p
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('administration overview shows loading until health and devices arrive and on refresh', async ({
+test('administration overview shows loading until health and sessions arrive and on refresh', async ({
   page,
 }, testInfo) => {
   const fixture = await installUiFixture(page, {
@@ -1201,7 +1201,7 @@ test('audit filters preserve real actions and older-page queries', async ({
   const activity = page.getByRole('table', {
     name: 'Administrative activity',
   });
-  // Entries are grouped under one header row per day in the viewer timezone.
+  // Entries are grouped under one header row per day in the user timezone.
   await expect(
     activity.getByRole('columnheader', { name: /^\w+day, September \d+/ }),
   ).toHaveCount(2);
@@ -1343,7 +1343,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
       'Episode analysis',
       'Auto-delete',
       'Backups',
-      'People',
+      'Users',
       'Jobs',
       'Audit',
     ]) {
@@ -1523,7 +1523,7 @@ for (const admin of [false, true]) {
     });
     await page.goto('/');
     const text =
-      'Connections unavailable until an admin sets up the provider applications.';
+      'Connections unavailable until an administrator sets up the provider applications.';
     const notice = page.getByText(text, { exact: true });
     await expect(notice).toBeVisible();
     const rail = notice.locator('xpath=ancestor-or-self::*[@data-tone][1]');

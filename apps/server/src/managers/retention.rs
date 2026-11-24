@@ -1,4 +1,4 @@
-//! Watched-state retention uses the same captured file generations as manual deletion.
+//! Watched-state auto-delete uses the same captured file versions as manual deletion.
 
 #[path = "../storage/managers/retention.rs"]
 mod storage;
@@ -43,7 +43,7 @@ pub(super) async fn revalidate_operation(
     let valid = storage::revalidate_operation(operation, &state.db, automatic).await?;
     if !valid {
         return Err(ApiError::conflict(
-            "Retention eligibility, watched state, protection or file generation changed",
+            "Auto-delete eligibility, watched state, Keep or file version changed",
         ));
     }
     Ok(())
@@ -117,7 +117,7 @@ async fn policy(
     input.remove_from_manager &= domain == "movies";
     if domain != "videos" && input.enabled && input.trigger_users.is_empty() {
         return Err(ApiError::bad(
-            "Choose at least one person whose watched status is required",
+            "Choose at least one user whose watched status is required",
         ));
     }
     let _lease = state.media_operations.write().await;
@@ -186,7 +186,7 @@ async fn action(
             ));
         }
     } else {
-        return Err(ApiError::bad("Unsupported retention action"));
+        return Err(ApiError::bad("Unsupported auto-delete action"));
     }
     state.emit(None, "retention.changed", json!({})).await?;
     Ok(Json(json!({"saved":true})))
@@ -226,7 +226,7 @@ async fn delete_locked(
     }
     Ok(())
 }
-/// Finding new candidates reads whole manager libraries, and every candidate waits at
+/// Finding new scheduled deletions reads whole manager libraries, and each one waits at
 /// least a day, so this runs less often than due deletions are checked.
 const EVALUATE_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
 

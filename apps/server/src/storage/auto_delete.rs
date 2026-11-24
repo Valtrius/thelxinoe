@@ -166,7 +166,7 @@ fn delete_file(root: &Path, d: &Download) -> anyhow::Result<()> {
     );
     ensure!(
         uuid::Uuid::parse_str(&d.generation).is_ok(),
-        "Invalid download generation"
+        "Invalid download file version"
     );
     let root = root
         .canonicalize()
@@ -205,7 +205,7 @@ fn delete_file(root: &Path, d: &Download) -> anyhow::Result<()> {
                         .as_nanos()
                         .to_string()
                 ),
-        "Downloaded file generation changed"
+        "Downloaded file version changed"
     );
     std::fs::remove_file(&path).context("Could not delete downloaded file")?;
     // Only recorded media is ours. Unexpected sidecars keep the directory alive.
@@ -225,7 +225,10 @@ fn execute(
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     ensure!(c.state == "pending", "This deletion is no longer scheduled");
     let d = download(&tx, &c.video)?.context("Download changed before deletion")?;
-    ensure!(d.generation == c.generation, "Download generation changed");
+    ensure!(
+        d.generation == c.generation,
+        "Download file version changed"
+    );
     ensure!(
         !pinned(&tx, &c.video)? && !playing(&tx, &c.video)?,
         "The download is kept or playing"
@@ -356,7 +359,7 @@ pub(super) async fn action(
         ensure!(c.state=="pending","This deletion is no longer scheduled");
         if action=="keep" {
             let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            ensure!(download(&tx,&c.video)?.is_some_and(|d|d.generation==c.generation),"Download generation changed");
+            ensure!(download(&tx,&c.video)?.is_some_and(|d|d.generation==c.generation),"Download file version changed");
             tx.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) SELECT ?1,video_id,title,'public' FROM youtube_videos WHERE video_id=?2 LIMIT 1 ON CONFLICT(user_id,video_id) DO NOTHING",params![actor,c.video])?;
             tx.execute("INSERT INTO youtube_state(user_id,video_id,pinned,updated_at) VALUES (?1,?2,1,?3) ON CONFLICT(user_id,video_id) DO UPDATE SET pinned=1,updated_at=excluded.updated_at",params![actor,c.video,now()])?;
             tx.execute("UPDATE video_retention_candidates SET state='kept',error=NULL WHERE video_id=?1 AND state='pending'",[&c.video])?;

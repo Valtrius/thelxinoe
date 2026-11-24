@@ -100,7 +100,7 @@
   aria-label="Administration overview"
   aria-busy={busy}
   title="Administration overview"
-  description="Storage, integrations and what the server is doing right now. Refreshes every 30 seconds."
+  description="Storage, media services and what the server is doing right now. Refreshes every 30 seconds."
 >
   {#snippet actions()}
     {#if busy && data}
@@ -140,7 +140,7 @@
       </div>
     </section>
     <section>
-      <h3 class={groupHeadingClass}>Integrations</h3>
+      <h3 class={groupHeadingClass}>Media services</h3>
       <div class="divide-y divide-line">
         {#each data.services as service (service.kind)}
           <SettingRow
@@ -152,7 +152,7 @@
             >
           </SettingRow>
         {:else}<p class="m-0 {cardBlockClass} pt-2 text-xs text-muted">
-            No integrations configured.
+            No media services configured.
           </p>{/each}
       </div>
     </section>
@@ -237,7 +237,7 @@
 </SettingsCard>
 <SettingsCard
   id="server-devices"
-  title="All devices"
+  title="All sessions"
   description="Sessions across every user on this server."
 >
   {#each devices ?? [] as device (device.id)}
@@ -260,7 +260,7 @@
     </SettingRow>
   {:else}
     <p class="m-0 {cardBlockClass} text-xs text-muted">
-      {devices ? 'No connected devices.' : 'Loading devices…'}
+      {devices ? 'No sessions.' : 'Loading sessions…'}
     </p>
   {/each}
 </SettingsCard>

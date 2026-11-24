@@ -83,7 +83,7 @@ async fn preflight(
 }
 async fn enqueue(state: &AppState, service: &str, actor: Option<String>) -> Result<String> {
     if uuid::Uuid::parse_str(service).is_err() {
-        return Err(ApiError::bad("Invalid managed service"));
+        return Err(ApiError::bad("Invalid service"));
     }
     let service = service.to_owned();
     let key = id();
@@ -175,7 +175,7 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
     let automatic = storage::run_job_read_service_updates(lookup, &state.db).await?;
     let kind = stack::service_kind(state, automatic.1.clone())
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Managed service no longer exists"))?;
+        .ok_or_else(|| anyhow::anyhow!("Owned service no longer exists"))?;
     let _lease = state.managers.maintenance(state).await;
     let kinds = if kind == "recyclarr" {
         vec!["recyclarr", "radarr", "sonarr"]

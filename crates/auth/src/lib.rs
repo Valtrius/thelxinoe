@@ -29,9 +29,9 @@ pub mod lifetime {
     /// The longest a session or a remembered device lasts, however much it's used. Browsers
     /// keep no cookie longer than this either.
     pub const MAX: i64 = 400 * DAY;
-    /// A remembered device asks for two-step sign-in again after going this long unused.
+    /// A remembered device asks for the authenticator app code again after going this long unused.
     pub const REMEMBERED_IDLE: i64 = 90 * DAY;
-    /// A browser or client stays known to an account this long after it last signed in.
+    /// A browser or client stays known to a user this long after it last signed in.
     pub const KNOWN: i64 = MAX;
 }
 

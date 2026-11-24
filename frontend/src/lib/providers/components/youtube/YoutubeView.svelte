@@ -25,7 +25,7 @@
   import type {
     AppError,
     AuthState,
-    PlatformAccount,
+    ConnectedAccount,
     SyncStatus,
     YoutubeCardShortcut,
     YoutubeDownload,
@@ -81,7 +81,7 @@
     showWatchlist = false,
   }: {
     admin: boolean;
-    account?: PlatformAccount | null;
+    account?: ConnectedAccount | null;
     watchlistController: YoutubeWatchlistController;
     onWatchlistSelected?: (id: number) => void;
     showWatchlist?: boolean;
@@ -138,7 +138,7 @@
 
   let error = $state<AppError | null>(null);
   let connecting = $state(false);
-  let refreshing = $state(false);
+  let syncing = $state(false);
   let desktopWatchlistSidebarOpen = $state(
     preferences.getItem(watchlistSidebarKey) === 'true',
   );
@@ -524,7 +524,7 @@
         key: 'youtube-playback-missing',
         tone: 'warning',
         title: 'Playback dependencies missing',
-        message: 'Configure the Windows player in Settings to play videos.',
+        message: 'Configure the MPV player in Settings to play videos.',
         actionLabel: 'Player settings',
         onAction: () => onNavigateSettings('tools'),
         durationMs: null,
@@ -584,11 +584,11 @@
       tone: syncStatus.quotaPausedUntil ? 'warning' : 'error',
       title: syncStatus.quotaPausedUntil
         ? 'YouTube quota paused'
-        : 'YouTube refresh failed',
+        : 'YouTube sync failed',
       message: `${syncError.message}${syncStatus.quotaPausedUntil ? ` Requests resume ${quotaReset}.` : ''}${cachedVideosMessage}${feed.videos.length > 0 ? ` Last good sync ${relativeTime(syncStatus.lastSuccessAt)}.` : ''}`,
       detail: syncError.technical,
       actionLabel: syncStatus.quotaPausedUntil ? null : 'Retry',
-      onAction: syncStatus.quotaPausedUntil ? null : () => refresh('normal'),
+      onAction: syncStatus.quotaPausedUntil ? null : () => sync('normal'),
       durationMs: syncStatus.quotaPausedUntil ? null : 10_000,
     });
   });
@@ -671,19 +671,19 @@
     }
   }
 
-  async function refresh(mode: 'normal' | 'full') {
-    if (refreshing) return;
-    refreshing = true;
+  async function sync(mode: 'normal' | 'full') {
+    if (syncing) return;
+    syncing = true;
     error = null;
     try {
       await feed.refreshLoadedVideos();
       await watchlistController.loadWatchlists();
-      if (!syncStatus.isRefreshing) await api.syncYoutube(mode);
+      if (!syncStatus.isSyncing) await api.syncYoutube(mode);
     } catch (caught) {
       error = normalizeError(caught);
       if (error.category === 'authentication') onAccountChanged();
     } finally {
-      refreshing = false;
+      syncing = false;
     }
   }
 
@@ -739,7 +739,7 @@
         key: `direct-watchlist-${videoId}`,
         tone: 'success',
         title: `Added to ${watchlist.name}`,
-        message: 'The video is saved in your watchlist.',
+        message: 'The video is in your watchlist.',
       });
     }
   }
@@ -902,7 +902,7 @@
     <YoutubeFeedToolbar
       bind:filters
       bind:watchlistSidebarOpen={() => watchlistSidebarOpen, setWatchlistOpen}
-      {refreshing}
+      {syncing}
       channels={feed.channels}
       counts={feed.counts}
       {syncStatus}
@@ -916,7 +916,7 @@
       {submitSearch}
       {clearFilters}
       {setGrouping}
-      {refresh}
+      {sync}
     />
   {/if}
 
@@ -982,7 +982,7 @@
             </p>
           {/if}
           <ProviderConnection
-            platform="youtube"
+            provider="youtube"
             {admin}
             configured={clientConfigured}
             onConfigured={onAccountChanged}
@@ -1005,7 +1005,7 @@
               : 'YouTube API unavailable'}
             message={`${syncStatus.error.message}${syncStatus.quotaPausedUntil ? ` Requests resume ${quotaReset}.` : ''}`}
             actionLabel="Retry"
-            onAction={() => refresh('normal')}
+            onAction={() => sync('normal')}
           />
         {:else if !filters.showShorts && feed.counts.shorts > 0 && feed.counts.all === 0}
           <EmptyState
@@ -1025,10 +1025,10 @@
           />
         {:else if !filters.showLiveReplays && feed.counts.liveReplays > 0 && feed.counts.all === 0}
           <EmptyState
-            eyebrow="FILTER / REPLAYS HIDDEN"
+            eyebrow="FILTER / LIVE REPLAYS HIDDEN"
             title="Only live replays are available"
-            message="Live stream replays stay out of the feed unless you turn on the Replays toggle."
-            actionLabel="Show replays"
+            message="Live replays stay out of the feed unless you turn on the Live replays toggle."
+            actionLabel="Show live replays"
             onAction={() => (filters.showLiveReplays = true)}
           />
         {:else if !filters.showUpcoming && feed.counts.upcoming > 0 && feed.counts.all === 0}
@@ -1052,16 +1052,16 @@
             eyebrow="SUBSCRIPTIONS / EMPTY"
             title="No subscriptions available"
             message="The connected YouTube account did not return any subscribed channels."
-            actionLabel="Refresh subscriptions"
-            onAction={() => refresh('full')}
+            actionLabel="Sync subscriptions"
+            onAction={() => sync('full')}
           />
         {:else}
           <EmptyState
             eyebrow="FEED / EMPTY"
             title="No videos fetched yet"
-            message="Subscribed channels are known, but no upload metadata has been cached yet."
-            actionLabel="Refresh now"
-            onAction={() => refresh('normal')}
+            message="Subscribed channels are known, but no video metadata has been cached yet."
+            actionLabel="Sync now"
+            onAction={() => sync('normal')}
           />
         {/if}
       {:else}

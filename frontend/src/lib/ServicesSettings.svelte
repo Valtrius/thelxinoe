@@ -274,7 +274,7 @@
           queued: 'Waiting to install',
           installing: 'Installing',
           connecting: 'Connecting API',
-          retiring: 'Retiring installation',
+          retiring: 'Retiring',
         } as Record<string, string>
       )[state!];
     const update = activeUpdate(kind);
@@ -1025,7 +1025,7 @@
               {selectedStage?.stage === 'owned'
                 ? `Owned${selectedStage.ownership?.origin === 'transferred' ? ' · transferred' : ''}${selectedStage.hold ? ' · held' : ''}`
                 : selectedStage?.stage === 'connected'
-                  ? 'Connected · external'
+                  ? 'Connected'
                   : 'Not configured'}
             </dd>
           </div>
@@ -1093,8 +1093,8 @@
         >
           <h3 class="mb-3.25 text-[12px] font-[650]">Connected</h3>
           <p class="mb-3 text-[11px] leading-[1.6] text-muted">
-            Thelxinoe only checks this externally managed {definition.label}'s
-            health and identity. Requests, downloads, library sync, links and
+            Thelxinoe only checks this Connected {definition.label}'s health and
+            identity. Requests, downloads, library sync, service links and
             container management become available after you take ownership.
           </p>
           <dl
@@ -1157,7 +1157,7 @@
               />{:else}
               <form
                 class="grid gap-3 [&_label]:m-0"
-                aria-label={`Install managed ${definition.label}`}
+                aria-label={`Install ${definition.label}`}
                 onsubmit={(event) => {
                   event.preventDefault();
                   void operate(definition.kind, () =>
@@ -1695,17 +1695,17 @@
             >
               {connected
                 ? 'Take ownership to manage updates here.'
-                : 'Updates become available after managed setup.'}
+                : 'Updates become available after setup.'}
             </p>{/if}
         </section>
       {/if}
       {#if selectedKind === 'seerr' && operational('seerr')}
-        <!-- Per-person approval lives with the people it concerns. -->
+        <!-- Per-user approval lives with the users it concerns. -->
         <p
           class="col-span-full m-0 text-xs text-muted"
           data-service-note="approval"
         >
-          Automatic request approval is set per person under
+          Automatic request approval is set per user under
           <a
             class="text-foreground underline decoration-accent underline-offset-4"
             href={routeHref(sectionRoute('Settings', 'people'))}
@@ -1713,7 +1713,7 @@
               if (!openSettings || !followLink(event)) return;
               event.preventDefault();
               openSettings('people');
-            }}>People</a
+            }}>Users</a
           >.
         </p>
       {/if}

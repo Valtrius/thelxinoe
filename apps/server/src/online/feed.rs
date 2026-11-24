@@ -111,7 +111,7 @@ pub async fn add(
     let added = storage::add(&state.db, video, user).await?;
     if !added {
         return Err(ApiError::conflict(
-            "Your YouTube watchlist and pins can retain at most 1,000 videos",
+            "Your YouTube watchlists and pins can retain at most 1,000 videos",
         ));
     }
     state
@@ -147,7 +147,7 @@ pub(crate) async fn edit_for(
     let updated = storage::edit_for(user, &state.db, video, input).await?;
     if updated == 2 {
         return Err(ApiError::conflict(
-            "Your YouTube watchlist and pins can retain at most 1,000 videos",
+            "Your YouTube watchlists and pins can retain at most 1,000 videos",
         ));
     }
     if updated == 0 {

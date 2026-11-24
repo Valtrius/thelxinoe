@@ -142,8 +142,8 @@ enum Kind {
 }
 
 /// The rendition a client plays: the largest picture, up to the selected one, that it takes
-/// without converting video, preferring the selected rendition at that picture. A client
-/// that takes none converts the selected or best rendition.
+/// without transcoding video, preferring the selected rendition at that picture. A client
+/// that takes none transcodes the selected or best rendition.
 pub(crate) async fn negotiate_source(
     state: &AppState,
     video: &str,
@@ -189,7 +189,7 @@ pub(crate) async fn negotiate_source(
     let candidates = selected.into_iter().chain(others);
     let mut partial: Option<(Source, thelxinoe_playback::Capabilities, &formats::Format)> = None;
     for format in candidates.filter(|format| codecs.iter().any(|codec| codec == &format.video)) {
-        // Converting only audio keeps the picture, which a smaller rendition would not.
+        // Transcoding only audio keeps the picture, which a smaller rendition would not.
         if partial
             .as_ref()
             .is_some_and(|(.., found)| picture(found) != picture(format))
@@ -357,7 +357,7 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
     }
     result
 }
-/// A video as one viewer receives it, in the orientation they watch. Viewers share a
+/// A video as one user receives it, in the orientation they watch. Users share a
 /// prepared stream, so this narrows each one's copy and makes its best rendition the source.
 async fn prepare_for(state: &AppState, video: &str, orientation: Orientation) -> Result<Prepared> {
     let mut prepared = prepare(state, video).await?;
@@ -388,7 +388,7 @@ fn denied() -> ApiError {
     ApiError(
         axum::http::StatusCode::CONFLICT,
         "network_blocked",
-        "The media provider denied access from this server's network; try again later".into(),
+        "The provider denied access from this server's network; try again later".into(),
     )
 }
 /// A rendition's codecs, probed once while its address lasts: choosing a live rendition
@@ -415,7 +415,7 @@ async fn inspect_codecs(state: &AppState, format: &formats::Format) -> Result<Va
             }
         })?;
     // FFprobe cannot measure a live playlist's bitrate; without the provider's declared
-    // bandwidth, every client bitrate limit would convert the stream.
+    // bandwidth, every client bitrate limit would transcode the live stream.
     if probe["format"]["bit_rate"].is_null()
         && let Some(rate) = format.bitrate
     {
@@ -581,11 +581,11 @@ pub(crate) async fn create_with_delivery(
     };
     if options.subtitle.as_deref().is_some_and(|s| s != "off") || options.audio.is_some() {
         return Err(ApiError::bad(
-            "Track selection is not available for this public stream",
+            "Track selection is not available for online media",
         ));
     }
     if position.is_some_and(|v| !v.is_finite() || v < 0.0) {
-        return Err(ApiError::bad("Invalid stream position"));
+        return Err(ApiError::bad("Invalid playback position"));
     }
     let prepared = prepare_for(state, video, orientation.unwrap_or_default()).await?;
     if prepared.source.live {
@@ -729,7 +729,7 @@ async fn create_recorded(
     }
     let mut input = options.clone();
     // Provider resolution choices select an existing rendition; only a bitrate
-    // ceiling that the selected rendition exceeds needs local conversion.
+    // ceiling that the selected rendition exceeds needs a local transcode.
     if formats::named_resolution(&input.quality).is_some() || format.quality() == input.quality {
         input.quality = "auto".into();
     }
@@ -750,7 +750,7 @@ async fn create_recorded(
     let mode = decision.as_ref().map_or("direct", |d| d.mode);
     let sid = thelxinoe_core::id();
     let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
-    let start = storage::create_with_delivery_write_twitch_streams(
+    let start = storage::create_with_delivery_insert_playback_session(
         &state.db,
         storage::StreamSession {
             live_title: None,
@@ -817,12 +817,12 @@ async fn create_recorded(
                     .insert(sid.clone(), session.clone());
             }
             Err(error) => {
-                tracing::warn!(reason = %error, "Public stream preparation failed");
+                tracing::warn!(reason = %error, "Online playback preparation failed");
                 state.online.streams.sessions.lock().await.remove(&sid);
                 storage::create_with_delivery_write_playback_sessions(sid.clone(), &state.db)
                     .await?;
                 return Err(ApiError::conflict(
-                    "The server could not start the public stream; try again later",
+                    "The server could not start online playback; try again later",
                 ));
             }
         }
@@ -870,7 +870,7 @@ async fn create_live(
     crate::tools::require(state, &["ffmpeg"]).await?;
     let sid = thelxinoe_core::id();
     let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
-    storage::create_with_delivery_write_twitch_streams(
+    storage::create_with_delivery_insert_playback_session(
         &state.db,
         storage::StreamSession {
             live_title,
@@ -906,11 +906,11 @@ async fn create_live(
     {
         Ok((revision, _)) => revision,
         Err(error) => {
-            tracing::warn!(reason = %error, "Public stream preparation failed");
+            tracing::warn!(reason = %error, "Online playback preparation failed");
             state.online.streams.sessions.lock().await.remove(&sid);
             storage::create_with_delivery_write_playback_sessions(sid.clone(), &state.db).await?;
             return Err(ApiError::conflict(
-                "The server could not start the public stream; try again later",
+                "The server could not start online playback; try again later",
             ));
         }
     };
@@ -936,7 +936,9 @@ async fn create_live(
 }
 pub(crate) async fn validate(state: &AppState, id: &str) -> Result<()> {
     if !state.online.streams.sessions.lock().await.contains_key(id) {
-        return Err(ApiError::conflict("Stream expired; start playback again"));
+        return Err(ApiError::conflict(
+            "Playback session expired; start playback again",
+        ));
     }
     Ok(())
 }
@@ -1010,7 +1012,7 @@ pub(crate) async fn seek(state: &AppState, id: &str) -> Result<(String, f64)> {
         .await
         .get(id)
         .cloned()
-        .ok_or_else(|| ApiError::conflict("Stream expired; start playback again"))?;
+        .ok_or_else(|| ApiError::conflict("Playback session expired; start playback again"))?;
     if session.source.live {
         return Err(ApiError::bad("Seeking is not available for live streams"));
     }
@@ -1183,10 +1185,10 @@ mod tests {
         );
         assert_eq!(vertical.probe["shape"], "vertical");
         assert_eq!(vertical.rendition().height, 1920);
-        // Viewers keep sharing the stream's full extraction.
+        // Users keep sharing the live stream's full extraction.
         assert_eq!(cached(&state, video).await.unwrap().formats.len(), 4);
 
-        // A client that remembers no orientation sends null. This viewer may not watch the
+        // A client that remembers no orientation sends null. This user may not watch the
         // stream, so a request that reads as valid ends there.
         for (orientation, status) in [
             (json!("sideways"), StatusCode::UNPROCESSABLE_ENTITY),

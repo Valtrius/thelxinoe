@@ -158,7 +158,7 @@
   {#if desktop && section === 'mpv'}
     <SettingsCard
       title="Player and tools"
-      description="Install, update and configure the desktop player and its helper tools."
+      description="Install, update and configure the MPV player and its desktop tools."
       padded
     >
       {#await settingsPages.MpvSettings()}{@render loading(
@@ -170,7 +170,7 @@
   {#if desktop && section === 'connection'}
     <SettingsCard
       title="Desktop"
-      description="The installed desktop build, how it updates and which server it talks to."
+      description="The installed desktop app, how it updates and which server it talks to."
     >
       <SettingRow
         label="Desktop version"

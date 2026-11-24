@@ -1,5 +1,5 @@
-//! Copy-based ownership transfer. The original keeps its container and appdata; a managed
-//! replacement is built from an untouched snapshot after disposable isolated validation.
+//! Copy-based ownership transfer. The original keeps its container and appdata; the
+//! replacement is built from an untouched transfer snapshot after disposable isolated validation.
 //! Each irreversible transition is journaled before it happens. After the production
 //! boundary, recovery runs one operation-bound command at a time, journaled phase by phase,
 //! so a lost reply or a restart continues that exact command instead of choosing again.
@@ -807,7 +807,7 @@ fn settings(
         }
         "recyclarr" => {
             changes.push(json!({"setting":"Schedule","before":"Image cron (CRON_SCHEDULE)","after":"Thelxinoe schedule, paused until you enable it",
-                "reason":"Synchronization never runs during takeover"}));
+                "reason":"Synchronization never runs during the transfer"}));
             changes.push(json!({"setting":"Targets","before":"URLs and API keys in recyclarr.yml","after":"Owned Radarr and Sonarr bindings",
                 "reason":"Thelxinoe supplies each target's managed address and credential at synchronization time"}));
         }
@@ -1851,8 +1851,8 @@ async fn validate(d: &Deployment, t: &mut Transfer) -> Result<()> {
     Ok(())
 }
 
-/// A candidate starts twice over the prepared copy with synthetic media, and the contract
-/// checks it from inside its namespace after each start.
+/// A disposable validation container starts twice over the prepared copy with synthetic
+/// media, and the contract checks it from inside its namespace after each start.
 async fn qualify_service(
     d: &Deployment,
     t: &mut Transfer,
@@ -2603,11 +2603,11 @@ pub(super) async fn recovery_plan(
     let options = json!([
         {"action":"repair","label":"Repair and continue","available":repair,"unavailable":repair_reason,
             "description":"Keep the replacement's latest appdata, repeat the required checks and finish the transfer when healthy"},
-        {"action":"restore_snapshot","label":"Restore the transfer snapshot into a new candidate","available":snapshot,"unavailable":snapshot_reason,
-            "description":"Preserve the current appdata as a generation and activate an independent replacement built from the snapshot taken when the original stopped. Reviewed setup runs again for the new appdata",
+        {"action":"restore_snapshot","label":"Restore the transfer snapshot into a new replacement","available":snapshot,"unavailable":snapshot_reason,
+            "description":"Keep the current appdata and activate an independent replacement built from the transfer snapshot taken when the original stopped. Reviewed setup runs again for the new appdata",
             "requires":["state_loss","reconciliation"]},
         {"action":"return_original","label":"Return to the original","available":back.is_none(),"unavailable":back,
-            "description":"Stop and remove the replacement, keeping its appdata as a generation, then restart the original. The service ends Connected with this failed transfer recorded",
+            "description":"Stop and remove the replacement, keeping its appdata, then restart the original. The service ends Connected with this failed transfer recorded",
             "requires":["state_loss","reconciliation","automation"]},
         {"action":"suspend","label":"Suspend for manual resolution","available":true,
             "description":"Keep normal operations blocked and preserve all data and evidence"}
@@ -3211,7 +3211,7 @@ mod tests {
         cross_boundary(&mut t);
         assert_eq!(t.boundary_at, Some(100));
         assert_eq!(t.activations.len(), 1);
-        // A restored candidate is a new activation with its own appdata generation.
+        // A restored replacement is a new activation with its own appdata generation.
         t.replacement = Some("second".into());
         t.production = Some(json!({"digest":"second","generation":"two"}));
         cross_boundary(&mut t);

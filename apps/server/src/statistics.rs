@@ -1,4 +1,5 @@
-//! User-owned minute activity, shared by web, native, music and compatibility playback.
+//! User-owned minute activity, shared by web app, MPV player, music and Jellyfin client
+//! playback.
 
 #[path = "storage/statistics.rs"]
 mod storage;

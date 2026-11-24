@@ -6,23 +6,23 @@
     type Provider,
   } from './availability';
   import Switch from '../ui/Switch.svelte';
-  let { platform }: { platform: Provider } = $props();
+  let { provider }: { provider: Provider } = $props();
   let enabled = $state(true);
   let busy = $state(false);
   let error = $state('');
   $effect(() => {
-    if (!busy) enabled = $providers[platform];
+    if (!busy) enabled = $providers[provider];
   });
   async function save(checked: boolean) {
     enabled = checked;
     busy = true;
     error = '';
     try {
-      await saveProvider(platform, checked);
+      await saveProvider(provider, checked);
     } catch (caught) {
       error = String(caught);
     } finally {
-      enabled = $providers[platform];
+      enabled = $providers[provider];
       busy = false;
     }
   }
@@ -39,7 +39,6 @@
     checked={enabled}
     disabled={busy}
     onCheckedChange={(checked) => void save(checked)}
-    ><span class="sr-only">Enable {providerNames[platform]} integration</span
-    ></Switch
+    ><span class="sr-only">Enable {providerNames[provider]}</span></Switch
   >
 </div>

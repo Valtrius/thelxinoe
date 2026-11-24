@@ -796,7 +796,7 @@ export class GaplessQueue {
       if (current.playback.mode === 'direct')
         current.stream.element.currentTime = to;
       else {
-        // A conversion starts again where the track is sought.
+        // A transcode starts again where the track is sought.
         const next = await api<{
           url: string;
           timeline_start: number;

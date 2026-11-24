@@ -73,7 +73,7 @@ fn request_headers(
 ) -> Result<HeaderMap> {
     let mut output = filter_headers(headers);
     // The UI can use its own HTTP Basic login. Device bearer tokens belong only
-    // to Thelxinoe's API and must never reach a native service.
+    // to Thelxinoe's API and must never reach a media service.
     if s.kind == "nzbget"
         || !output
             .get(header::AUTHORIZATION)
@@ -346,7 +346,7 @@ pub(super) async fn forward(
         .headers(headers)
         .body(reqwest::Body::wrap_stream(stream));
     if let Some(credentials) = credentials {
-        // Always replace browser credentials with the registered connection.
+        // Always replace browser credentials with those of the saved connection.
         sending = sending.basic_auth(credentials.username, Some(credentials.secret));
     }
     let sending = sending.send();

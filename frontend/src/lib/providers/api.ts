@@ -34,8 +34,8 @@ export function connectPresentation(
   };
 }
 export function activeMediaId(choice: { id: string }): string {
-  const [platform, id] = choice.id.split(':');
-  if (platform === 'twitch')
+  const [provider, id] = choice.id.split(':');
+  if (provider === 'twitch')
     return [...streams].find(([, stream]) => stream.id === id)?.[0] ?? id;
   return id;
 }
@@ -431,7 +431,7 @@ export const api = {
   async launchTwitch(login: string) {
     const stream = streams.get(login);
     if (!stream || !launch)
-      throw new Error('Refresh this channel before playing.');
+      throw new Error('Sync Twitch before playing this channel.');
     await launch({ id: `twitch:${stream.id}`, title: stream.title });
   },
   /** Plays a live channel named by its login or URL, followed or not. */

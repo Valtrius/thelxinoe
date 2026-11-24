@@ -8,8 +8,8 @@ const BATCH: i64 = 2000;
 /// Missing files a pass deletes. Each one's references are checked across several tables
 /// that aren't indexed by file, so these batches stay small.
 const FILE_BATCH: i64 = 100;
-/// How long a missing file keeps its row, links and segments, so a library that is offline
-/// for a while, such as an unmounted share, finds them again when it returns.
+/// How long a missing file keeps its row, links and skip segments, so a library folder that
+/// is offline for a while, such as an unmounted share, finds them again when it returns.
 const MISSING_FILE_GRACE: i64 = 30 * 86400;
 
 /// Deletes one batch of rows that outlived their use and returns how many it removed.
@@ -37,12 +37,12 @@ pub(super) async fn prune(db: &Database, now: i64) -> anyhow::Result<usize> {
             "DELETE FROM tool_jobs WHERE rowid IN (SELECT rowid FROM tool_jobs WHERE stage IN ('complete','failed','canceled') AND updated_at<?1 AND rowid NOT IN (SELECT max(rowid) FROM tool_jobs GROUP BY tool) LIMIT ?2)",
             params![week, BATCH],
         )?;
-        // A changed file gets a new generation and never matches its old fingerprints again.
+        // A changed file is a new file version and never matches its old fingerprints again.
         removed += c.execute(
             "DELETE FROM segment_fingerprints WHERE rowid IN (SELECT p.rowid FROM segment_fingerprints p JOIN media_files f ON f.id=p.file_id WHERE p.generation<>f.generation LIMIT ?1)",
             [BATCH],
         )?;
-        // A file missing for the grace period goes with its links, segments and fingerprints.
+        // A file missing for the grace period goes with its links, skip segments and fingerprints.
         // Its media stays, and with it watch state and history, for a file that returns later.
         // A playback session still naming the file keeps it until the session is pruned.
         let missing: String = c.query_row(

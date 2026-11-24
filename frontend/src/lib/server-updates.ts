@@ -381,7 +381,7 @@ export type ServerUpdateCard = {
   /** The failed attempt an administrator may dismiss. */
   dismissible: string | null;
 };
-/** What the Product version card shows for the current update state. */
+/** What the Server version card shows for the current update state. */
 export function serverUpdateCard(
   model: ServerUpdateModel,
   installed = '—',

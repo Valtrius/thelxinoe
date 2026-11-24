@@ -148,7 +148,7 @@ pub(crate) async fn add_for(
         .await?
         .ok_or_else(|| {
             ApiError::conflict(
-                "The list no longer exists or your 1,000 saved video limit was reached",
+                "The watchlist no longer exists or your watchlists and pins already retain 1,000 videos",
             )
         })?;
     let auto_download = storage::add_for_read_youtube_watchlists(&state.db, id).await?;

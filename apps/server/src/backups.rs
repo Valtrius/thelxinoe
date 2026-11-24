@@ -120,7 +120,7 @@ struct BackupInput {
     passphrase: String,
     #[serde(default)]
     confirm: bool,
-    /// Restore only: components to restore. Omitted leaves imported services unchanged.
+    /// Restore only: components to restore. Omitted: the server and every unheld Owned service.
     #[serde(default)]
     components: Option<Vec<String>>,
 }

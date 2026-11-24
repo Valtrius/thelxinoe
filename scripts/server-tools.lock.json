@@ -222,17 +222,17 @@
     "platform": "linux-x86_64",
     "artifacts": [
       {
-        "url": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-11-10-12-39/ffmpeg-n9.0.2-48-gd4070a14ce-linux64-gpl-9.0.tar.xz",
-        "sha256": "8206a48ce342b5075d0e0293e468a61198a55b3ef479bec3f7e83b04a18667d4",
-        "size": 152713096,
-        "name": "ffmpeg-n9.0.2-48-gd4070a14ce-linux64-gpl-9.0.tar.xz"
+        "url": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-11-24-12-41/ffmpeg-n9.0.2-963-g4d831360c9-linux64-gpl-9.0.tar.xz",
+        "sha256": "0ee323218bc2111e6a1ddf0d73091d38cda48cc58f66d26e267b8c96982aab96",
+        "size": 154077816,
+        "name": "ffmpeg-n9.0.2-963-g4d831360c9-linux64-gpl-9.0.tar.xz"
       }
     ],
     "python_abi": null,
     "version": "9.0",
-    "notes_url": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/tag/autobuild-2026-11-10-12-39",
+    "notes_url": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/tag/autobuild-2026-11-24-12-41",
     "source": "https://github.com/FFmpeg-Builds/FFmpeg-Builds",
     "license": "GPL-3.0-or-later",
-    "id": "4d44bc4424306f2854edde4f5175a2c19da76f2af2b9e78709310a11237cf95c"
+    "id": "91daa843ce61c5536cd8ebde47377a418e4c19eac51e1e261d03bad158cfc91f"
   }
 ]

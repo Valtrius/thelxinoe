@@ -1,4 +1,4 @@
-//! Browser-bound authorization. Viewer credentials never reach an extractor.
+//! Browser-bound authorization. User credentials never reach an extractor.
 
 #[path = "../storage/online/oauth.rs"]
 mod storage;
@@ -50,7 +50,7 @@ pub async fn start(State(state): State<AppState>, headers: HeaderMap) -> Result<
     let user = p.user.id.clone();
     if p.transport != "web" {
         return Err(ApiError::bad(
-            "Open Thelxinoe in your browser to link your YouTube account",
+            "Open Thelxinoe in your browser to connect your YouTube account",
         ));
     }
     let redirect = redirect_uri(&state)?;
@@ -122,7 +122,7 @@ async fn consume(state: &AppState, headers: &HeaderMap, csrf: &str) -> Result<At
     let browser = cookies::get(headers, &Cookie::YoutubeLink)
         .filter(|v| v.len() == 64)
         .ok_or_else(|| {
-            ApiError::bad("Continue account linking in the browser where you started")
+            ApiError::bad("Continue connecting your account in the browser where you started")
         })?;
     let browser_hash = thelxinoe_auth::digest(&browser);
     let hash = thelxinoe_auth::digest(csrf);
@@ -148,7 +148,7 @@ pub async fn callback(
             // Never log provider bodies, codes, URLs or cookies.
             tracing::info!(
                 status = error.0.as_u16(),
-                "YouTube account linking did not complete"
+                "Connecting your YouTube account did not complete"
             );
             "failed"
         }
@@ -210,7 +210,7 @@ async fn finish(state: &AppState, attempt: Attempt, input: Callback, csrf: &str)
         .online
         .slots
         .try_acquire()
-        .map_err(|_| ApiError::conflict("Account linking is busy; try again"))?;
+        .map_err(|_| ApiError::conflict("Connecting accounts is busy; try again"))?;
     let config = google(state).await?;
     if config.hash() != attempt.client_hash {
         return Err(ApiError::conflict(
@@ -225,14 +225,14 @@ async fn finish(state: &AppState, attempt: Attempt, input: Callback, csrf: &str)
         .map_err(|_| ApiError::bad("Invalid stored authorization attempt"))?;
     let client = client(state, config, attempt.redirect.clone())?;
     let transport = |request| crate::bounded::oauth(state.online.http.clone(), request);
-    let token=client.exchange_code(AuthorizationCode::new(code)).set_pkce_verifier(PkceCodeVerifier::new(verifier)).request_async(&transport).await.map_err(|_|ApiError::bad("Google could not complete account linking; verify the Web application client and callback URL"))?;
+    let token=client.exchange_code(AuthorizationCode::new(code)).set_pkce_verifier(PkceCodeVerifier::new(verifier)).request_async(&transport).await.map_err(|_|ApiError::bad("Google could not connect the account; verify the Web application client and callback URL"))?;
     let scope = token
         .scopes()
         .map(|s| s.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(" "))
         .unwrap_or_else(|| SCOPE.into());
     if !scope.split_whitespace().any(|v| v == SCOPE) {
         return Err(ApiError::bad(
-            "Grant read access to YouTube to complete account linking",
+            "Grant read access to YouTube to connect your account",
         ));
     }
     let credential = Credential {
@@ -300,7 +300,7 @@ async fn finish(state: &AppState, attempt: Attempt, input: Callback, csrf: &str)
     .await?;
     if !saved {
         return Err(ApiError::conflict(
-            "The account or session changed; start account linking again",
+            "The account or session changed; connect your account again",
         ));
     }
     Ok(())

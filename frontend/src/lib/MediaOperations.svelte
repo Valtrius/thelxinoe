@@ -15,7 +15,7 @@
   } = $props();
   const deletionLabel = $derived(
     kind === 'show'
-      ? 'Delete series files'
+      ? 'Delete show files'
       : kind === 'season'
         ? 'Delete season files'
         : 'Prepare file deletion',

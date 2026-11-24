@@ -460,7 +460,7 @@ function seriesApi(s, c, id, action) {
     : s.library.find((entry) => entry.id === id && entry.kind === 'show')
       ? id
       : null;
-  if (!show) return fail(404, 'Series not found');
+  if (!show) return fail(404, 'Show not found');
   const episodes = seasonsOf(s, show).flatMap((season) => season.episodes);
   const known = (ids) =>
     ids.length > 0 &&
@@ -468,7 +468,7 @@ function seriesApi(s, c, id, action) {
   if (action === 'search' && method === 'POST') {
     if (body.episodes?.length) {
       if (!known(body.episodes))
-        return fail(409, 'Sonarr no longer lists an episode of this series');
+        return fail(409, 'Sonarr no longer lists an episode of this show');
       return json({ episodes: body.episodes.length });
     }
     if (!body.missing) return json({ episodes: null });
@@ -484,12 +484,12 @@ function seriesApi(s, c, id, action) {
   if (action === 'monitor' && method === 'PUT')
     return known(body.episodes ?? [])
       ? json({ saved: true })
-      : fail(409, 'Sonarr no longer lists an episode of this series');
+      : fail(409, 'Sonarr no longer lists an episode of this show');
   const episode = action.match(/^episodes\/(\d+)$/);
   if (episode && method === 'GET')
     return known([Number(episode[1])])
       ? json({ monitored: true, last_search: now() - 2 * 3600 })
-      : fail(409, 'Sonarr no longer lists an episode of this series');
+      : fail(409, 'Sonarr no longer lists an episode of this show');
   if (action === 'releases' && method === 'GET') {
     const target = episodes.find(
       (e) => e.manager_id === Number(query.get('episode')),
@@ -575,7 +575,7 @@ export async function titlesApi(s, c) {
       : s.library.find((entry) => entry.id === id && entry.kind === 'show')
         ? id
         : null;
-    if (!show) return fail(404, 'Series not found');
+    if (!show) return fail(404, 'Show not found');
     const admin = viewer(s).role === 'admin';
     return json({
       seasons: seasonsOf(s, show).map(({ episodes, ...season }) => ({

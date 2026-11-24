@@ -1,4 +1,4 @@
-//! Numeric file identities shared by the server, managed services and their workers.
+//! Numeric file identities shared by the server, Owned services and their workers.
 use crate::docker::{Result, engine};
 use serde_json::Value;
 

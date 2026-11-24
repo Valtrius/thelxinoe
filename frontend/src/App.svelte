@@ -849,7 +849,7 @@
       });
     }
   }
-  // `allowedRoute` leaves a disabled platform's pages; its media stops too.
+  // `allowedRoute` leaves a disabled provider's pages; its media stops too.
   $effect(() => {
     void $providers;
     if (playing && !providerEnabled(playing.id)) playing = null;

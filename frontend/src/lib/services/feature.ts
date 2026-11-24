@@ -187,7 +187,7 @@ export const definitions: Definition[] = [
     role: 'manager',
     internalPort: 8989,
     hostPort: 18989,
-    description: 'Series manager',
+    description: 'Show manager',
   },
   {
     kind: 'lidarr',
@@ -244,12 +244,12 @@ export const stages: Record<string, string> = {
 };
 export const loaderSubsystems = [
   { key: 'services', label: 'Media services' },
-  { key: 'managers', label: 'Acquisition managers' },
+  { key: 'managers', label: 'Managers' },
   { key: 'support', label: 'Support services' },
   { key: 'updates', label: 'Service updates' },
   { key: 'containers', label: 'Docker container discovery' },
-  { key: 'stack', label: 'Managed service runtime' },
-  { key: 'connections', label: 'Optional service connections' },
+  { key: 'stack', label: 'Controller' },
+  { key: 'connections', label: 'Service links' },
   { key: 'stages', label: 'Service stages' },
 ] as const;
 export type LoaderKey = (typeof loaderSubsystems)[number]['key'];

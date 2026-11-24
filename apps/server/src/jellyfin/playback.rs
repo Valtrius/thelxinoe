@@ -185,7 +185,7 @@ pub(super) async fn info_source(
         super::profile::quality_within(max)
             .or((!video && max >= 192_000).then_some("2mbps"))
             .ok_or_else(|| {
-                ApiError::bad("This client bitrate limit is below the supported conversion quality")
+                ApiError::bad("This client bitrate limit is below the supported transcode quality")
             })?
     } else {
         "auto"
@@ -211,11 +211,11 @@ pub(super) async fn info_source(
         && options.capabilities.conversion.is_none()
     {
         return Err(ApiError::bad(
-            "The client does not support the available H.264/AAC conversion",
+            "The client does not support the available H.264/AAC transcode",
         ));
     }
     if planned.mode == "transcode" && field("EnableTranscoding").as_ref() == Some(&json!(false)) {
-        return Err(ApiError::bad("The client disabled the required conversion"));
+        return Err(ApiError::bad("The client disabled the required transcode"));
     }
     let playback = core::create_with_delivery(
         state,
@@ -315,7 +315,7 @@ pub async fn report(state: &AppState, p: &Principal, input: Value, stopped: bool
     } else {
         super::audio::session(state, p, &media)
             .await?
-            .ok_or_else(|| ApiError::bad("Missing play session"))?
+            .ok_or_else(|| ApiError::bad("Missing playback session"))?
     };
     let key = id.clone();
     let user = p.user.id.clone();
@@ -351,7 +351,7 @@ pub async fn stop_encoding(state: &AppState, p: &Principal, query: &Query) -> Re
     let id = canonical(
         query
             .get("playsessionid")
-            .ok_or_else(|| ApiError::bad("Missing play session"))?,
+            .ok_or_else(|| ApiError::bad("Missing playback session"))?,
     );
     let key = id.clone();
     let user = p.user.id.clone();
@@ -389,7 +389,7 @@ pub async fn stream(
 ) -> Result<Response> {
     let id = canonical(
         q.get("playsessionid")
-            .ok_or_else(|| ApiError::bad("Missing play session"))?,
+            .ok_or_else(|| ApiError::bad("Missing playback session"))?,
     );
     let key = id.clone();
     let uid = p.user.id.clone();
@@ -400,7 +400,7 @@ pub async fn stream(
     if !valid {
         return Err(ApiError::not_found());
     }
-    // The client's token and the play session check above authorize it; a grant per range
+    // The client's token and the playback session check above authorize it; a grant per range
     // request would only add a write.
     core::serve_file(&state, p, &id, request).await
 }

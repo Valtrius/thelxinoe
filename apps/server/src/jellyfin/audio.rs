@@ -75,7 +75,7 @@ pub async fn stream(
             .is_some_and(|max| channels > max)
     {
         return Err(ApiError::bad(
-            "This audio format requires conversion through PlaybackInfo",
+            "This audio format requires a transcode through PlaybackInfo",
         ));
     }
     let mut id = session(&state, p, media).await?;

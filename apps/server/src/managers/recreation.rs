@@ -1,11 +1,11 @@
-//! Follow a connected service across Docker recreation without taking ownership of it.
+//! Follow a Connected service across Docker recreation without taking ownership of it.
 //!
 //! Compose, Watchtower and similar updaters replace a container while keeping its
-//! name and mounts. Thelxinoe accepts the replacement only when it keeps the recorded
+//! name and mounts. Thelxinoe accepts the recreated container only when it keeps the recorded
 //! name, the exact mount evidence and the same service API identity and credentials.
 use super::*;
 
-pub(super) struct Attached {
+pub(super) struct Recorded {
     pub(super) kind: String,
     pub(super) container: String,
     pub(super) container_name: String,
@@ -19,12 +19,12 @@ pub(super) struct Attached {
 
 /// Return the container that now serves `id`, after `missing` disappeared from Docker.
 pub(super) async fn follow(state: &AppState, id: &str, missing: &str) -> Result<String> {
-    let record = storage::attached(id.to_owned(), &state.db)
+    let record = storage::recorded(id.to_owned(), &state.db)
         .await?
         .ok_or_else(ApiError::not_found)?;
     let service = failures::label(&record.kind);
     if record.container != missing {
-        // Another request already followed the replacement.
+        // Another request already followed the recreated container.
         return Ok(record.container);
     }
     let lost = |detail: &str| {
@@ -42,7 +42,7 @@ pub(super) async fn follow(state: &AppState, id: &str, missing: &str) -> Result<
         return Err(lost("Choose its current container in Edit connection."));
     }
     let containers = docker(state, "containers").await?;
-    let Some(replacement) = containers["items"]
+    let Some(recreated) = containers["items"]
         .as_array()
         .into_iter()
         .flatten()
@@ -62,23 +62,23 @@ pub(super) async fn follow(state: &AppState, id: &str, missing: &str) -> Result<
     };
     let manager = matches!(record.kind.as_str(), "radarr" | "sonarr" | "lidarr");
     let (base, evidence) = if manager {
-        evidence(state, &replacement, record.port).await?
+        evidence(state, &recreated, record.port).await?
     } else {
-        support::api_evidence(state, &replacement, record.port, &record.kind).await?
+        support::api_evidence(state, &recreated, record.port, &record.kind).await?
     };
     if evidence != record.media_source {
         return Err(ApiError::conflict(format!(
             "{service}'s container was recreated as {name} with different storage mounts. Review the new layout in Edit connection before Thelxinoe uses it."
         )));
     }
-    if docker(state, &format!("containers/{replacement}")).await?["running"] != true {
+    if docker(state, &format!("containers/{recreated}")).await?["running"] != true {
         return Err(ApiError(
             axum::http::StatusCode::CONFLICT,
             "dependency_unavailable",
             format!("{service}'s container was recreated as {name} and hasn't started yet"),
         ));
     }
-    // The stored credential proves the replacement serves the same application state.
+    // The stored credential proves the recreated container serves the same application state.
     let scope = format!("{}:{id}", if manager { "manager" } else { "support" });
     let plaintext = state.secrets.decrypt(&scope, &record.credential)?;
     let credentials = if manager {
@@ -101,14 +101,14 @@ pub(super) async fn follow(state: &AppState, id: &str, missing: &str) -> Result<
         &state.db,
         id.to_owned(),
         missing.to_owned(),
-        replacement.clone(),
+        recreated.clone(),
     )
     .await?
     {
-        return match storage::attached(id.to_owned(), &state.db).await? {
+        return match storage::recorded(id.to_owned(), &state.db).await? {
             Some(current) if current.container != missing => Ok(current.container),
             _ => Err(lost(
-                "Its replacement is already registered for another service; choose its container in Edit connection.",
+                "Its recreated container already belongs to another service's connection; choose its container in Edit connection.",
             )),
         };
     }
@@ -117,5 +117,5 @@ pub(super) async fn follow(state: &AppState, id: &str, missing: &str) -> Result<
     state
         .emit(None, "stack.changed", json!({"service_id":id}))
         .await?;
-    Ok(replacement)
+    Ok(recreated)
 }

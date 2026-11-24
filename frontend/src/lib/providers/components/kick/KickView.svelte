@@ -93,7 +93,7 @@
   const liveMetadataIsFresh = $derived(
     metadataConfigured &&
       Boolean(syncStatus.lastSuccessAt) &&
-      !syncStatus.isRefreshing &&
+      !syncStatus.isSyncing &&
       !syncStatus.stale,
   );
 
@@ -103,7 +103,7 @@
         key: 'kick-playback-missing',
         tone: 'warning',
         title: 'Playback dependencies missing',
-        message: 'Configure the Windows player in Settings to watch channels.',
+        message: 'Configure the MPV player in Settings to watch channels.',
         actionLabel: 'Player settings',
         onAction: () => onNavigateSettings('tools'),
         durationMs: null,
@@ -129,13 +129,13 @@
       tone: syncStatus.rateLimitedUntil ? 'warning' : 'error',
       title: syncStatus.rateLimitedUntil
         ? 'Kick rate limit reached'
-        : 'Kick refresh failed',
-      message: `${syncError.message}${hasLiveMetadata ? ` Cached streams remain available. Last good sync ${relativeTime(syncStatus.lastSuccessAt)}.` : ''}`,
+        : 'Kick sync failed',
+      message: `${syncError.message}${hasLiveMetadata ? ` Cached live streams remain available. Last good sync ${relativeTime(syncStatus.lastSuccessAt)}.` : ''}`,
       detail: syncError.technical,
       actionLabel:
         syncStatus.rateLimitedUntil || !metadataConfigured ? null : 'Retry',
       onAction:
-        syncStatus.rateLimitedUntil || !metadataConfigured ? null : refresh,
+        syncStatus.rateLimitedUntil || !metadataConfigured ? null : sync,
       durationMs: syncStatus.rateLimitedUntil ? null : 10_000,
     });
   });
@@ -155,7 +155,7 @@
     });
   });
 
-  async function refresh() {
+  async function sync() {
     error = null;
     try {
       await api.syncKick();
@@ -179,7 +179,7 @@
         tone: 'success',
         title: `${added.displayName} is now tracked`,
         message: metadataConfigured
-          ? 'Live metadata refresh started.'
+          ? 'Live metadata sync started.'
           : 'The channel is ready for direct playback.',
       });
     } catch (caught) {
@@ -301,7 +301,7 @@
         data-sidebar-resize="xy-pos"
         class="ml-auto text-[0.65rem] text-muted"
       >
-        {#if syncStatus.isRefreshing}{syncStatus.phase} · {syncStatus.completed}/{syncStatus.total ??
+        {#if syncStatus.isSyncing}{syncStatus.phase} · {syncStatus.completed}/{syncStatus.total ??
             '—'}{:else}Metadata updated {relativeTime(
             syncStatus.lastSuccessAt,
           )}{/if}
@@ -311,13 +311,13 @@
         size="sm"
         variant="secondary"
         class="ml-auto shrink-0 sm:ml-0"
-        disabled={syncStatus.isRefreshing || channels.length === 0}
-        onclick={refresh}
-        title="Refresh Kick live metadata"
+        disabled={syncStatus.isSyncing || channels.length === 0}
+        onclick={sync}
+        title="Sync Kick live metadata"
       >
         <RefreshCw
-          class={`size-3.5 ${syncStatus.isRefreshing ? 'animate-spin' : ''}`}
-        />Refresh metadata
+          class={`size-3.5 ${syncStatus.isSyncing ? 'animate-spin' : ''}`}
+        />Sync metadata
       </Button>
     {/if}
   </div>
@@ -351,8 +351,7 @@
         <div
           class="mb-3 flex flex-wrap items-center justify-between gap-2 border border-line bg-surface-soft px-3 py-2 text-xs text-muted"
         >
-          <span>Tracking is paused. Resume to refresh your saved channels.</span
-          >
+          <span>Tracking is paused. Resume to sync your tracked channels.</span>
           <Button size="sm" disabled={connecting} onclick={resumeTracking}
             >Resume tracking</Button
           >

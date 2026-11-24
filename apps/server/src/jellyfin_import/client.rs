@@ -7,7 +7,7 @@ use std::collections::HashMap;
 /// Items per page; a page of played episodes stays well under the response limit.
 const PAGE: usize = 500;
 const RESPONSE_LIMIT: usize = 32 * 1024 * 1024;
-/// A library larger than this is not one person's watch history.
+/// A library larger than this is not one Jellyfin account's watch history.
 const ITEM_LIMIT: usize = 200_000;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -87,7 +87,7 @@ impl Item {
             .filter(|value| !value.is_empty())
             .map(str::to_ascii_lowercase)
     }
-    /// When this person last played the item, as Unix seconds.
+    /// When this Jellyfin account last played the item, as Unix seconds.
     pub fn last_played(&self) -> Option<i64> {
         chrono::DateTime::parse_from_rfc3339(self.user_data.last_played_date.as_deref()?)
             .ok()
@@ -104,7 +104,7 @@ struct Page {
     total_record_count: usize,
 }
 
-/// Which of a person's items a query returns.
+/// Which of a Jellyfin account's items a query returns.
 #[derive(Clone, Copy)]
 pub(super) enum Filter {
     Played,
@@ -236,7 +236,7 @@ impl Jellyfin {
     /// Checks the key reaches an administrator view of the server, and names it.
     pub async fn identify(&self) -> Result<(String, String)> {
         let system: System = self.get("System/Info", &[]).await?;
-        // Only an API key or an administrator can list every account.
+        // Only an API key or a Jellyfin administrator can list every Jellyfin account.
         self.accounts().await?;
         Ok((
             system.server_name.unwrap_or_else(|| "Jellyfin".into()),

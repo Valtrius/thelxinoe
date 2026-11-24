@@ -90,7 +90,7 @@ pub(super) async fn reconcile_write_media_files(
     }).await
 }
 
-/// Decide the ownership of files in the libraries of the manager `kinds` just reconciled;
+/// Decide which files are managed in the libraries of the manager `kinds` just reconciled;
 /// other files keep what their own last reconciliation decided.
 pub(super) async fn refresh_ownership(db: &Database, kinds: &[&str]) -> anyhow::Result<()> {
     let kinds = serde_json::to_string(kinds)?;

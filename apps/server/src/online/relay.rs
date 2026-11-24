@@ -160,7 +160,7 @@ pub(crate) async fn stream(
     let client = relay.client(source.proxy.as_ref())?;
     super::streams::wait_until(available_at).await;
     let head = request.method() == Method::HEAD;
-    // Never forward viewer credentials, cookies or arbitrary headers. Redirects
+    // Never forward user credentials, cookies or arbitrary headers. Redirects
     // stay within the CDN allowlist and never expose signed addresses to a client.
     let (first, last) = match requested {
         Some(Range::Suffix(_)) => (None, None),

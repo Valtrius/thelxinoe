@@ -17,7 +17,7 @@ struct Edit {
     url_base: String,
     secret: Option<String>,
     username: Option<String>,
-    /// Point the connection at another container, such as a renamed replacement.
+    /// Point the connection at another container, such as one recreated under a new name.
     #[serde(default)]
     container_id: Option<String>,
     #[serde(default)]
@@ -124,12 +124,12 @@ async fn edit(
         .filter(|container| !container.is_empty())
         .unwrap_or_else(|| record.container.clone());
     if container != record.container {
-        let attached = super::storage::attached(key.clone(), &state.db)
+        let recorded = super::storage::recorded(key.clone(), &state.db)
             .await?
             .ok_or_else(ApiError::not_found)?;
-        if attached.owned {
+        if recorded.owned {
             return Err(ApiError::conflict(format!(
-                "Thelxinoe manages this {service} container; review it in Media services instead of choosing another one"
+                "Thelxinoe owns this {service} container; review it in Media services instead of choosing another one"
             )));
         }
     }

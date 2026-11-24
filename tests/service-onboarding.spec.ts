@@ -319,7 +319,7 @@ test('Seerr shows its media manager connections and retries a blocked one', asyn
     .getByRole('link', { name: 'Seerr', exact: true })
     .click();
   const row = page
-    .getByRole('region', { name: 'Media managers' })
+    .getByRole('region', { name: 'Managers' })
     .getByLabel('Sonarr connection', { exact: true });
   await expect(
     row.getByText('Connection needs attention', { exact: true }),

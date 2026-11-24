@@ -39,7 +39,7 @@
     }) => void;
   } = $props();
   let scope = $state('mine');
-  let people = $state<User[]>([]);
+  let users = $state<User[]>([]);
 
   const ranges: { value: StatisticsRange; label: string }[] = [
     { value: '7d', label: '7D' },
@@ -172,7 +172,7 @@
       });
       const administrative = user.role === 'admin' && scope !== 'mine';
       if (administrative && scope !== 'all') query.set('user', scope);
-      const [loaded, users] = await Promise.all([
+      const [loaded, listed] = await Promise.all([
         api<StatisticsOverview>(
           `${administrative ? '/admin' : '/me'}/statistics?${query}`,
         ),
@@ -182,7 +182,7 @@
       ]);
       if (current()) {
         overview = loaded;
-        people = users?.items ?? [];
+        users = listed?.items ?? [];
       }
     } catch (caught) {
       if (current())
@@ -239,8 +239,8 @@
       >
         <option value="mine">My statistics</option>
         <option value="all">All users</option>
-        {#each people as person (person.id)}<option value={person.id}
-            >{person.username}</option
+        {#each users as listed (listed.id)}<option value={listed.id}
+            >{listed.username}</option
           >{/each}
       </select>
     </div>
@@ -592,15 +592,15 @@
       >
         <h2 class={[eyebrowTextClass, 'm-0']}>USERS / WATCH TIME</h2>
         <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {#each overview.users as person (person.id)}
+          {#each overview.users as watcher (watcher.id)}
             <button
               type="button"
               class="flex items-center justify-between gap-3 border border-line bg-surface-soft px-3 py-2 text-xs hover:border-line-strong hover:text-accent"
-              onclick={() => (scope = person.id)}
+              onclick={() => (scope = watcher.id)}
             >
-              <span class="truncate">{person.username}</span><strong
+              <span class="truncate">{watcher.username}</span><strong
                 class="shrink-0"
-                >{formatWatchDuration(person.activeSeconds)}</strong
+                >{formatWatchDuration(watcher.activeSeconds)}</strong
               >
             </button>
           {/each}

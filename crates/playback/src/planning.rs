@@ -16,7 +16,7 @@ impl Encoding {
         if mode == "remux" {
             return Ok(Self::default());
         }
-        // Low-level callers may explicitly request conversion without a client
+        // Low-level callers may explicitly request a transcode without a client
         // profile. API callers have already validated their playback decision.
         if !options.capabilities.hls {
             return Ok(Self {
@@ -84,7 +84,7 @@ impl Encoding {
         Ok(args)
     }
 }
-/// FFmpeg options of a conversion.
+/// FFmpeg options of a remux or transcode.
 #[derive(Debug, Default)]
 pub(crate) struct Args {
     /// Before the video input.
@@ -291,17 +291,17 @@ pub fn decision(source: &Source, options: &Options) -> Result<Decision> {
             })
     }) && supported(options, audio, "mp4", true)
         && !(video.is_none() && reduce_rate);
-    let convert_video = video.is_some() && !copy_video;
+    let transcode_video = video.is_some() && !copy_video;
     let encoding = Encoding {
-        video: convert_video || burn.is_some(),
+        video: transcode_video || burn.is_some(),
         audio: audio.is_some() && !copy_audio,
         subtitle: burn,
     };
     if (encoding.video || encoding.audio) && caps.allow_conversion == Some(false) {
-        bail!("The client disabled the required conversion");
+        bail!("The client disabled the required transcode");
     }
     if options.quality == "original" && burn.is_some() {
-        bail!("Picture subtitles are burned into a converted video; select Auto");
+        bail!("Picture subtitles are burned into a transcoded video; select Auto");
     }
     if let Some(video) = video.filter(|_| encoding.video) {
         crate::needs_tone_mapping(video)?;
@@ -316,7 +316,7 @@ pub fn decision(source: &Source, options: &Options) -> Result<Decision> {
     if reduce_rate {
         reasons.push("Requested bitrate limit");
     }
-    if convert_video && !resize && !reduce_rate {
+    if transcode_video && !resize && !reduce_rate {
         reasons.push(if !timestamps {
             "Source timestamps cannot be copied reliably"
         } else {

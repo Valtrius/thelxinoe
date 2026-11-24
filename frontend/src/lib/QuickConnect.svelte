@@ -60,10 +60,10 @@
 
 <SettingsCard
   aria-label="Quick Connect"
-  title="Connect a TV"
-  description={`Enter the Quick Connect code displayed by your media client to sign it in as ${username}.`}
+  title="Connect a Jellyfin client"
+  description={`Enter the Quick Connect code displayed by your Jellyfin client to sign it in as ${username}.`}
 >
-  <SettingRow label="TV code" for={`${ids}-code`}>
+  <SettingRow label="Quick Connect code" for={`${ids}-code`}>
     <form
       class="flex flex-wrap items-center gap-2"
       onsubmit={(event) => {
@@ -87,7 +87,7 @@
         required
       />
       <Button type="submit" variant="secondary" size="form" disabled={busy}
-        >Find device</Button
+        >Find client</Button
       >
     </form>
   </SettingRow>
@@ -99,14 +99,14 @@
         </p>
         <div>
           <Button size="form" disabled={busy} onclick={() => void approve()}
-            >Connect this device</Button
+            >Sign in this client</Button
           >
         </div>{/if}
       {#if error}<Notice role="alert" variant="error" class="mb-0"
           >{error}</Notice
         >{/if}
       {#if approved}<p role="status" class="m-0 text-xs text-muted">
-          Device approved. Continue on your TV.
+          Signed in. Continue in your Jellyfin client.
         </p>{/if}
     </div>
   {/if}

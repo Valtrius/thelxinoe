@@ -16,7 +16,7 @@ export const member = {
   role: 'user',
   timezone: 'Europe/Paris',
 };
-// Keep on an item, its season or series, or anything inside it protects its files.
+// Keep on an item, its season or show, or anything inside it protects its files.
 export function protection(library, item) {
   const byId = new Map(library.map((entry) => [entry.id, entry]));
   let by = null;

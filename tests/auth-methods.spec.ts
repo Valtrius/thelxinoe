@@ -92,7 +92,9 @@ test('the sole administrator cannot recover their own account while events are c
     await page.request.get('/api/v1/auth/sessions')
   ).json();
   await page.goto('/#settings/people');
-  await page.getByRole('button', { name: /^admin\s+admin\s+You$/ }).click();
+  await page
+    .getByRole('button', { name: /^admin\s+Administrator\s+You$/ })
+    .click();
   await expect(
     page.getByRole('button', { name: 'Create recovery link', exact: true }),
   ).not.toBeVisible();
@@ -120,7 +122,7 @@ test('the sole administrator cannot recover their own account while events are c
   await expect(page.locator('.page-header h1')).toHaveText('Home');
 });
 
-test('real password, TOTP, passkey, remembered device, client access and administrator recovery', async ({
+test('real password, authenticator app, passkey, remembered device, client password and administrator recovery', async ({
   browser,
 }, info) => {
   test.setTimeout(180000);
@@ -270,14 +272,14 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   // Cancelling the proof for revoking this device leaves it signed in.
   await page.goto('/#settings/devices');
   await page
-    .getByText('This device', { exact: true })
+    .getByText('This session', { exact: true })
     .locator('xpath=ancestor::*[.//button[normalize-space()="Revoke"]][1]')
     .getByRole('button', { name: 'Revoke', exact: true })
     .click();
   await expect(proofDialog).toBeVisible();
   await proofDialog.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(proofDialog).not.toBeVisible();
-  await expect(page.getByText('This device', { exact: true })).toBeVisible();
+  await expect(page.getByText('This session', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Username', { exact: true })).not.toBeVisible();
   await page.goto('/#settings/account');
   await expect(page.locator('[data-page-content]')).toHaveAttribute(
@@ -412,7 +414,7 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   await adminContext.close();
 });
 
-test('generic OIDC explicitly links accounts, verifies identities and binds native browser exchanges', async ({
+test('a generic identity provider explicitly links users, verifies identities and binds desktop browser exchanges', async ({
   browser,
 }, info) => {
   const context = await browser.newContext({
@@ -438,7 +440,7 @@ test('generic OIDC explicitly links accounts, verifies identities and binds nati
   await page.getByLabel('Provider account').fill('admin-subject');
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(
-    page.getByText('OIDC account linked', { exact: true }),
+    page.getByText('Identity provider linked', { exact: true }),
   ).toBeVisible();
   await post(page, '/auth/logout');
   await page.goto('/#home');
@@ -611,7 +613,7 @@ test('generic OIDC explicitly links accounts, verifies identities and binds nati
   await context.close();
 });
 
-test('OIDC completion cannot commit after its provider is disabled or replaced', async ({
+test('identity provider completion cannot commit after it is disabled or replaced', async ({
   browser,
 }, info) => {
   test.setTimeout(180000);
@@ -770,7 +772,7 @@ test('OIDC completion cannot commit after its provider is disabled or replaced',
   await adminContext.close();
 });
 
-test('OIDC return redirects stay on the application origin after URL normalization', async ({
+test('identity provider return redirects stay on the application origin after URL normalization', async ({
   browser,
 }, info) => {
   const context = await browser.newContext({

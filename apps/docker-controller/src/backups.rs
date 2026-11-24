@@ -1,4 +1,4 @@
-//! Quiesced component snapshots and encrypted portable archives, independent of server SQLite.
+//! Backups: quiesced component copies in encrypted portable archives, independent of server SQLite.
 use super::*;
 use crate::recovery::{RollbackAction, RollbackPhase};
 #[cfg(test)]
@@ -78,7 +78,7 @@ const MAX_RETAINED: usize = 365;
 #[derive(Deserialize)]
 pub(super) struct RestoreInput {
     passphrase: String,
-    /// Component keys to restore. Omitted: the server and Thelxinoe-installed services.
+    /// Component keys to restore. Omitted: the server and every unheld Owned service.
     #[serde(default)]
     components: Option<Vec<String>>,
 }
@@ -764,7 +764,7 @@ pub(super) async fn restore(
             Err(e) => {
                 if change_release && product::recovery_stage(&restore_id).is_some() {
                     r.stage = "release-handoff".into();
-                    r.error = Some("State restored; resume deployment recovery in Product updates or through the private controller API".into());
+                    r.error = Some("State restored; resume deployment recovery in Server updates or through the private controller API".into());
                     let _ = record(&r);
                     return;
                 }

@@ -251,7 +251,7 @@ async fn a_failed_command_returns_to_its_state_and_an_interrupted_one_resumes() 
 }
 
 #[tokio::test]
-async fn a_restored_candidate_repeats_setup_for_its_new_appdata() {
+async fn a_restored_replacement_repeats_setup_for_its_new_appdata() {
     let t = seeded("seerr", "failed", true).await;
     t.script(
         "",
@@ -259,14 +259,14 @@ async fn a_restored_candidate_repeats_setup_for_its_new_appdata() {
     );
     t.script(
         "/recovery",
-        json!({"stage":"activated","boundary_at":1,"replacement":"candidate","production":{"generation":"second"},
+        json!({"stage":"activated","boundary_at":1,"replacement":"restored","production":{"generation":"second"},
             "command":{"state":"applied","phase":"activating"}}),
     );
     let (status, view) = t.recover("restore_snapshot").await;
     assert_eq!(status, StatusCode::OK, "{view}");
     let row = t.row().await;
     assert_eq!(row.state, "committed");
-    assert_eq!(row.replacement_id.as_deref(), Some("candidate"));
+    assert_eq!(row.replacement_id.as_deref(), Some("restored"));
     // Setup and checks of the discarded appdata no longer count, but are kept as evidence.
     assert_eq!(row.setup, json!([]));
     assert_eq!(row.checks, json!([]));
@@ -277,7 +277,7 @@ async fn a_restored_candidate_repeats_setup_for_its_new_appdata() {
     assert_eq!(
         t.query::<String>("SELECT container_id FROM stack_provisions")
             .await,
-        "candidate"
+        "restored"
     );
     assert!(
         !t.query::<bool>("SELECT operational FROM support_services")

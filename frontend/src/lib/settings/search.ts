@@ -4,7 +4,7 @@ import type { SettingsPageInfo } from './sections';
 
 // Every settings card a search can show, in page order. `title` is the card
 // title as rendered; list each title a card switches between. `terms` are its
-// row labels and the other words people search for.
+// row labels and the other words users search for.
 type IndexedCard = { title: string | string[]; terms: string };
 
 const autoDeleteTerms =
@@ -59,12 +59,12 @@ export const settingsSearchIndex: Record<
   ],
   devices: [
     {
-      title: 'Your devices',
-      terms: 'sessions browsers desktops sign out revoke this device',
+      title: 'Your sessions',
+      terms: 'devices browsers desktops sign out revoke this device',
     },
     {
-      title: 'Connect a TV',
-      terms: 'quick connect tv code media client jellyfin',
+      title: 'Connect a Jellyfin client',
+      terms: 'quick connect tv code media client device',
     },
     {
       title: 'Remembered devices',
@@ -113,22 +113,22 @@ export const settingsSearchIndex: Record<
         'bundled binaries ffmpeg yt-dlp ytdlp streamlink versions pinned check updates',
     },
     {
-      title: 'OpenID Connect',
+      title: 'Identity provider',
       terms:
-        'oidc sso single sign-on identity provider discovery url client id secret issuer redirect uri sign-in button',
+        'oidc openid connect sso single sign-on discovery url client id secret issuer redirect uri sign-in button',
     },
     {
       title: 'Administration overview',
       terms:
-        'health storage disk space integrations downloads indexers active playback transcodes recent failures',
+        'health storage disk space media services integrations downloads indexers active playback transcodes recent failures',
     },
     {
       title: 'Diagnostics',
       terms: 'export redacted diagnostics support logs',
     },
     {
-      title: 'All devices',
-      terms: 'sessions every user revoke access',
+      title: 'All sessions',
+      terms: 'devices every user revoke access',
     },
   ],
   analysis: [
@@ -172,8 +172,8 @@ export const settingsSearchIndex: Record<
       terms: 'library tmdb imdb tvdb ids files titles',
     },
     {
-      title: 'People',
-      terms: 'jellyfin accounts users map import into skip',
+      title: 'Users',
+      terms: 'jellyfin accounts people map import into skip',
     },
     {
       title: 'What to import',
@@ -188,16 +188,17 @@ export const settingsSearchIndex: Record<
   retention: [
     { title: 'Movies', terms: autoDeleteTerms },
     {
-      title: 'TV seasons',
-      terms: `${autoDeleteTerms} shows series episodes exclude specials season 0`,
+      title: 'Show seasons',
+      terms: `${autoDeleteTerms} tv series episodes exclude specials season 0`,
     },
     {
       title: 'Video downloads',
       terms: `${autoDeleteTerms} youtube twitch kick videos delete downloads`,
     },
     {
-      title: 'Library files',
-      terms: 'file ownership reconcile permissions recent operations',
+      title: 'Managed files',
+      terms:
+        'library files file ownership reconcile permissions recent operations',
     },
   ],
   backups: [
@@ -300,7 +301,7 @@ const serviceEntries: (Entry & { link: ServiceLink })[] = [
   {
     link: {
       label: 'All services',
-      description: 'Install, connect and update managed containers.',
+      description: 'Install, connect and update media services.',
     },
     heading: words('All services'),
     terms: words('docker containers managed install connect updates'),
@@ -316,7 +317,7 @@ const serviceEntries: (Entry & { link: ServiceLink })[] = [
   })),
 ];
 
-// Words people can see outrank words they cannot; the page name counts as a
+// Words users can see outrank words they cannot; the page name counts as a
 // heading for every card on it. Every token has to match somewhere.
 function score(tokens: string[], entry: Entry, page: string[]) {
   const heading = [...entry.heading, ...page];

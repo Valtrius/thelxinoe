@@ -1,4 +1,5 @@
-//! Local Docker manager adapters. Docker evidence stays behind the private controller socket.
+//! Media service adapters: managers, support services and their lifecycle. Docker evidence
+//! stays behind the private controller socket.
 
 #[path = "../storage/managers.rs"]
 mod storage;

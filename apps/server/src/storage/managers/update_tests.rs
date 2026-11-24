@@ -7,7 +7,7 @@ async fn interrupted_activation(
     state: &AppState,
     cookie: &str,
 ) -> (String, thelxinoe_jobs::Queue, thelxinoe_jobs::Job) {
-    let service = managed(state, "notify").await;
+    let service = owned(state, "notify").await;
     let key = id();
     let insert = key.clone();
     state.db.write("test.interrupted_activation",move |db| {
@@ -215,7 +215,7 @@ async fn resumed_activation_protects_playback_while_rollback_ownership_is_live_o
 #[tokio::test]
 async fn discovery_keeps_release_metadata_bound_to_its_candidate() {
     let (_temp, state, cookie) = fixture().await;
-    managed(&state, "notify").await;
+    owned(&state, "notify").await;
     for (image, labels, expected_version) in [
         (
             Some("repository@new"),
@@ -256,7 +256,7 @@ async fn discovery_keeps_release_metadata_bound_to_its_candidate() {
     }
 }
 
-async fn managed(state: &AppState, mode: &str) -> String {
+async fn owned(state: &AppState, mode: &str) -> String {
     let key = id();
     let insert = key.clone();
     let mode = mode.to_owned();
@@ -312,7 +312,7 @@ async fn allow_maintenance_now(state: &AppState) {
 async fn notify_and_inherited_notify_discover_without_installing_and_observe_check_interval() {
     for mode in ["notify", "inherit"] {
         let (_temp, state, _cookie) = fixture().await;
-        managed(&state, mode).await;
+        owned(&state, mode).await;
         allow_maintenance_now(&state).await;
         check_releases(&state, false).await.unwrap();
         schedule_updates(&state).await.unwrap();
@@ -351,7 +351,7 @@ async fn notify_and_inherited_notify_discover_without_installing_and_observe_che
 #[tokio::test]
 async fn automatic_updates_wait_for_the_server_window_backup_attempt() {
     let (_temp, state, _cookie) = fixture().await;
-    managed(&state, "automatic").await;
+    owned(&state, "automatic").await;
     allow_maintenance_now(&state).await;
     check_releases(&state, false).await.unwrap();
     let queue = thelxinoe_jobs::Queue(state.db.clone());
@@ -391,7 +391,7 @@ async fn automatic_updates_wait_for_the_server_window_backup_attempt() {
 #[tokio::test]
 async fn automatic_scheduling_uses_cached_discovery_at_window_open_and_worker_rechecks_policy() {
     let (_temp, state, _cookie) = fixture().await;
-    let service = managed(&state, "automatic").await;
+    let service = owned(&state, "automatic").await;
     check_releases(&state, false).await.unwrap();
     schedule_updates(&state).await.unwrap();
     let queue = thelxinoe_jobs::Queue(state.db.clone());
@@ -503,7 +503,7 @@ async fn preflight_sends_the_discovered_image_and_the_persisted_trigger() {
     for automatic in [false, true] {
         for installed in ["repository@old", "repository@new"] {
             let (_temp, state, _cookie) = fixture().await;
-            let service = managed(&state, "notify").await;
+            let service = owned(&state, "notify").await;
             check_releases(&state, false).await.unwrap();
             let actor = if automatic {
                 None
@@ -532,7 +532,7 @@ async fn preflight_sends_the_discovered_image_and_the_persisted_trigger() {
 #[tokio::test]
 async fn an_automatic_attempt_says_why_its_service_is_not_idle() {
     let (_temp, state, _cookie) = fixture().await;
-    managed(&state, "automatic").await;
+    owned(&state, "automatic").await;
     allow_maintenance_now(&state).await;
     check_releases(&state, false).await.unwrap();
     schedule_updates(&state).await.unwrap();
@@ -554,7 +554,7 @@ async fn an_automatic_attempt_says_why_its_service_is_not_idle() {
 #[tokio::test]
 async fn automatic_attempts_retry_unverified_candidates_in_a_later_window_only() {
     let (_temp, state, _cookie) = fixture().await;
-    managed(&state, "automatic").await;
+    owned(&state, "automatic").await;
     allow_maintenance_now(&state).await;
     check_releases(&state, false).await.unwrap();
     let queue = thelxinoe_jobs::Queue(state.db.clone());
@@ -605,7 +605,7 @@ async fn automatic_attempts_retry_unverified_candidates_in_a_later_window_only()
 #[tokio::test]
 async fn recovering_an_attempt_the_controller_never_journaled_settles_it() {
     let (_temp, state, cookie) = fixture().await;
-    let service = managed(&state, "notify").await;
+    let service = owned(&state, "notify").await;
     let key = id();
     let insert = key.clone();
     state.db.write("test.refused_preflight", move |db| {
@@ -638,7 +638,7 @@ async fn recovering_an_attempt_the_controller_never_journaled_settles_it() {
 #[tokio::test]
 async fn matching_images_do_not_queue_updates_and_missing_releases_surface_errors() {
     let (_temp, state, _cookie) = fixture().await;
-    managed(&state, "automatic").await;
+    owned(&state, "automatic").await;
     allow_maintenance_now(&state).await;
     state.managers.docker.lock().unwrap().insert(
         "stack/releases".into(),
@@ -665,7 +665,7 @@ async fn matching_images_do_not_queue_updates_and_missing_releases_surface_error
 #[tokio::test]
 async fn server_and_service_update_policies_reject_manual_and_accept_notify() {
     let (_temp, state, cookie) = fixture().await;
-    let key = managed(&state, "notify").await;
+    let key = owned(&state, "notify").await;
     for path in [
         "/api/v1/admin/product-update/policy".to_owned(),
         format!("/api/v1/admin/service-updates/policy/{key}"),
@@ -693,7 +693,7 @@ async fn server_and_service_update_policies_reject_manual_and_accept_notify() {
 #[tokio::test]
 async fn an_update_in_any_unfinished_stage_blocks_another() {
     let (_temp, state, _cookie) = fixture().await;
-    let service = managed(&state, "notify").await;
+    let service = owned(&state, "notify").await;
     for (stage, blocks) in [
         ("replacement-created", true),
         ("creating-replacement", true),

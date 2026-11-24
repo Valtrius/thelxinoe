@@ -233,7 +233,7 @@ try {
       assert.deepEqual(
         delivered,
         original.slice(0, delivered.length),
-        'Audio conversion must leave every delivered video frame unchanged',
+        'An audio transcode must leave every delivered video frame unchanged',
       );
       writeFileSync(
         '.local/playback-preserved-video.json',
@@ -291,7 +291,7 @@ try {
     if (title === 'Audio Only') {
       assert.match(
         await page.locator('.playback-mode').textContent(),
-        /Audio converted/,
+        /Audio transcoded/,
       );
       await page.screenshot({
         path: '.local/playback-audio-only.png',

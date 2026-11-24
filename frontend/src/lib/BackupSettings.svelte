@@ -359,8 +359,8 @@
 <SettingsCard aria-label="Backups" title="Create a backup">
   {#snippet description()}
     <p class="mt-1 mb-0 text-xs leading-relaxed text-muted">
-      Backups include server state, credentials, deployment information and
-      managed-service appdata. Media and cache are excluded. Services briefly
+      Backups include server state, credentials, deployment information and the
+      appdata of Owned services. Media and cache are excluded. Services briefly
       stop so their databases can be copied consistently. Services held by an
       ownership transfer or recovery are left running and out of the archive, as
       are the stopped originals a transfer retains.

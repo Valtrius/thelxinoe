@@ -108,7 +108,7 @@ pub(super) async fn update_metadata_write_media(
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("UPDATE media SET metadata=?1 WHERE id=?2",params![stored,media])?;
         tx.execute("INSERT INTO metadata_bindings(media_id,service_id,service_generation,external_id,manager_entity_id,refreshed_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(media_id) DO UPDATE SET service_id=excluded.service_id,service_generation=excluded.service_generation,external_id=excluded.external_id,manager_entity_id=excluded.manager_entity_id,refreshed_at=excluded.refreshed_at",params![media,service_id,generation,external,manager_entity_id,refreshed_at])?;
-        // Only people's refreshes are audited; the automatic ones repeat every six hours.
+        // Only users' refreshes are audited; the automatic ones repeat every six hours.
         if actor.is_some() { tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'metadata.refresh',?2,?3)",params![actor,media,now()])?; }
         tx.commit()?;
         Ok(())

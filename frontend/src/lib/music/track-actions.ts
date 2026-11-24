@@ -8,7 +8,7 @@ export function queueTrack(track: MusicItem, next: boolean) {
   musicPlayer.controls?.insert([trackChoice(track)], next);
 }
 
-/** The playlists this viewer may add to, marking those holding `track`. */
+/** The playlists this user may add to, marking those holding `track`. */
 export async function addablePlaylists(track?: string) {
   try {
     const { items } = await api<{ items: Playlist[] }>(

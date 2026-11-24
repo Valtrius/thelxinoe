@@ -31,7 +31,7 @@ pub async fn reserve(state: &AppState, user: &str) -> Result<()> {
     let allowed = storage::reserve(today, user, &state.db).await?;
     if !allowed {
         return Err(ApiError::conflict(
-            "YouTube's shared daily API budget is exhausted; synchronization resumes after midnight Pacific time",
+            "YouTube's shared daily API quota is exhausted; synchronization resumes after midnight Pacific time",
         ));
     }
     Ok(())

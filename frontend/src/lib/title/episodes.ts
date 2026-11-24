@@ -120,7 +120,7 @@ export function episodeToPlay(seasons: Season[]) {
   );
 }
 
-/** Where a series opens: where watching goes on, even when that file isn't here yet. */
+/** Where a show opens: where watching goes on, even when that file isn't here yet. */
 export function seasonToOpen(seasons: Season[]) {
   const episodes = inOrder(seasons);
   const later = afterLastWatched(episodes);

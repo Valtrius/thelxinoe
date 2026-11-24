@@ -120,7 +120,7 @@ export function youtubeVideoPresentation(
     }
   const readyDownloadTitle =
     downloadReady && activeDownload
-      ? `${activeDownload.pinned ? 'Pinned · ' : ''}${formatBytes(activeDownload.fileSizeBytes)} local${downloadFormatLabel ? ` · ${downloadFormatLabel}` : ''}`
+      ? `${activeDownload.pinned ? 'Pinned · ' : ''}${formatBytes(activeDownload.fileSizeBytes)} downloaded${downloadFormatLabel ? ` · ${downloadFormatLabel}` : ''}`
       : null;
   return {
     activeDownload,

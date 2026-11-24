@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use thelxinoe_core::{Capability, Principal, now};
 
 pub(crate) use storage::validate_tracks;
-/// Released desktops (API 1) save the music queue before they play a track. They get
+/// Released desktop apps (API 1) save the music queue before they play a track. They get
 /// an empty queue that is never stored, until API_MIN_VERSION drops them.
 pub async fn legacy_queue(
     State(state): State<AppState>,
@@ -76,7 +76,7 @@ pub(crate) async fn set_for(
         404 => return Err(ApiError::not_found()),
         400 => {
             return Err(ApiError::bad(
-                "This state is not supported for this media type",
+                "This state is not supported for this kind of media item",
             ));
         }
         _ => {}
@@ -93,7 +93,7 @@ pub(crate) async fn set_for(
 #[derive(Deserialize)]
 pub struct Watched {
     watched: bool,
-    /// With an episode: every episode before it in its series too.
+    /// With an episode: every episode before it in its show too.
     #[serde(default)]
     through: bool,
 }
@@ -175,7 +175,7 @@ pub(crate) async fn home_for(state: &AppState, principal: &Principal) -> Result<
 }
 
 pub(crate) struct NextUp {
-    /// This series alone, whether or not it was played.
+    /// This show alone, whether or not it was played.
     pub show: Option<String>,
     pub root: Option<String>,
     pub since: Option<i64>,

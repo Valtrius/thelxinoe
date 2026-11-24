@@ -19,7 +19,7 @@
     showToast({
       key: 'youtube-share',
       tone: 'error',
-      title: 'Could not save the shared video',
+      title: 'Could not add the shared video',
       message: normalizeError(caught).message,
       actionLabel: 'Retry',
       onAction: () => void offer(),
@@ -27,7 +27,7 @@
     });
   }
 
-  async function save(watchlist: YoutubeWatchlist) {
+  async function add(watchlist: YoutubeWatchlist) {
     busy = true;
     try {
       const result = await api.addYoutubeVideoToWatchlist(
@@ -39,10 +39,10 @@
         key: 'youtube-share',
         tone: result.autoDownloadError ? 'warning' : 'success',
         title: result.autoDownloadError
-          ? 'Saved, download not started'
+          ? 'Added, download not started'
           : result.added
-            ? 'Video saved'
-            : 'Already saved',
+            ? 'Video added'
+            : 'Already added',
         message:
           result.autoDownloadError?.message ??
           `${result.added ? 'Added to' : 'Already in'} ${watchlist.name}.`,
@@ -62,7 +62,7 @@
     try {
       const watchlists = await api.youtubeWatchlists();
       if (watchlists.length > 1) choices = watchlists;
-      else await save(watchlists[0]);
+      else await add(watchlists[0]);
     } catch (caught) {
       failed(caught);
     }
@@ -75,7 +75,7 @@
       showToast({
         key: 'youtube-share',
         tone: 'error',
-        title: 'Nothing to save',
+        title: 'Nothing to add',
         message: 'Share a link to a YouTube video.',
       });
     else if (!available)
@@ -93,22 +93,22 @@
 </script>
 
 {#if choices.length}
-  <Modal title="Save to watchlist" {busy} onClose={() => (choices = [])}>
+  <Modal title="Add to watchlist" {busy} onClose={() => (choices = [])}>
     <div class="grid gap-1">
       {#each choices as watchlist (watchlist.id)}
-        {@const saved = watchlist.items.some(
+        {@const added = watchlist.items.some(
           (item) => item.video.videoId === videoId,
         )}
         <button
           type="button"
           class="flex h-11 min-w-0 items-center gap-2 border border-line px-3 text-left text-sm enabled:hover:border-line-strong enabled:hover:bg-surface disabled:text-muted"
-          disabled={busy || saved}
-          onclick={() => void save(watchlist)}
+          disabled={busy || added}
+          onclick={() => void add(watchlist)}
         >
           <span class="min-w-0 flex-1 truncate">{watchlist.name}</span>
-          {#if saved}
+          {#if added}
             <Check class="size-4 text-success" /><span class="sr-only"
-              >Already saved</span
+              >Already added</span
             >
           {:else}
             <span class="font-mono text-[0.6rem] text-muted"

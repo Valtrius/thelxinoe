@@ -25,7 +25,7 @@
     navigate: (section: string) => void;
     configureProviders?: () => void;
   } = $props();
-  const linked = [
+  const connectable = [
     ['youtube', 'YouTube'],
     ['twitch', 'Twitch'],
   ] as const;
@@ -98,10 +98,10 @@
             event.preventDefault();
             configureProviders();
           }}
-          >Connections unavailable until an admin sets up the provider
+          >Connections unavailable until an administrator sets up the provider
           applications.</a
-        >{:else}Connections unavailable until an admin sets up the provider
-        applications.{/if}
+        >{:else}Connections unavailable until an administrator sets up the
+        provider applications.{/if}
     </Notice>
   {/if}
   {#if error}<Notice variant="error" role="alert" class="mb-0">{error}</Notice
@@ -111,7 +111,7 @@
   title="Connected accounts"
   description="Each account syncs its own feed into Thelxinoe."
 >
-  {#each linked as [provider, label] (provider)}
+  {#each connectable as [provider, label] (provider)}
     {#if $providers[provider]}
       {@const account = accounts[provider]}
       <SettingRow
@@ -214,7 +214,7 @@
   title="Imported data"
   description="Deleting removes what a provider imported into this server. Your library and other accounts stay."
 >
-  {#each linked as [provider, label] (provider)}
+  {#each connectable as [provider, label] (provider)}
     {#if $providers[provider]}
       <SettingRow
         label={`${label} data`}

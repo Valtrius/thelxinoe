@@ -52,7 +52,7 @@ export function statusLabel(service, unavailable) {
   if (runtime?.running === false) return ['Stopped', 'muted'];
   if (integration?.error) return ['API unavailable', 'warn'];
   if (runtime?.running === true) return ['Running', 'ok'];
-  if (integration) return ['Connected', 'ok'];
+  if (integration) return ['API reachable', 'ok'];
   if (unavailable) return ['Status unavailable', 'warn'];
   return ['Not connected', 'muted'];
 }

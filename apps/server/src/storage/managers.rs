@@ -114,17 +114,17 @@ pub(super) async fn test(
     .await
 }
 
-pub(super) async fn attached(
+pub(super) async fn recorded(
     key: String,
     db: &Database,
-) -> anyhow::Result<Option<recreation::Attached>> {
-    db.read("managers.attached", move |db| {
-        Ok(db.query_row("SELECT s.kind,s.container_id,s.container_name,s.port,s.url_base,s.media_source,s.credential,EXISTS(SELECT 1 FROM stack_provisions p WHERE p.service_id=s.id OR p.kind=s.kind) FROM (SELECT id,kind,container_id,container_name,port,url_base,media_source,credential FROM manager_services WHERE enabled=1 UNION ALL SELECT id,kind,container_id,container_name,port,url_base,media_source,credential FROM support_services) s WHERE s.id=?1",[key],|r|Ok(recreation::Attached{kind:r.get(0)?,container:r.get(1)?,container_name:r.get(2)?,port:r.get(3)?,url_base:r.get(4)?,media_source:r.get(5)?,credential:r.get(6)?,owned:r.get(7)?})).optional()?)
+) -> anyhow::Result<Option<recreation::Recorded>> {
+    db.read("managers.recorded", move |db| {
+        Ok(db.query_row("SELECT s.kind,s.container_id,s.container_name,s.port,s.url_base,s.media_source,s.credential,EXISTS(SELECT 1 FROM stack_provisions p WHERE p.service_id=s.id OR p.kind=s.kind) FROM (SELECT id,kind,container_id,container_name,port,url_base,media_source,credential FROM manager_services WHERE enabled=1 UNION ALL SELECT id,kind,container_id,container_name,port,url_base,media_source,credential FROM support_services) s WHERE s.id=?1",[key],|r|Ok(recreation::Recorded{kind:r.get(0)?,container:r.get(1)?,container_name:r.get(2)?,port:r.get(3)?,url_base:r.get(4)?,media_source:r.get(5)?,credential:r.get(6)?,owned:r.get(7)?})).optional()?)
     })
     .await
 }
 
-/// Point an unowned attached service at its verified replacement container.
+/// Point a Connected service at its verified recreated container.
 pub(super) async fn follow(
     db: &Database,
     key: String,
@@ -135,9 +135,9 @@ pub(super) async fn follow(
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut changed = 0;
         for table in ["manager_services", "support_services"] {
-            // Generations stay unchanged: the replacement keeps the same configuration
+            // Generations stay unchanged: the recreated container keeps the same configuration
             // and storage, so in-flight work against this service remains valid.
-            // The caller revalidated the replacement's API identity with the saved credential.
+            // The caller revalidated the recreated container's API identity with the saved credential.
             changed += tx.execute(&format!("UPDATE {table} SET container_id=?1,verified=1,checked_at=?4,error=NULL,evidence=json_set(evidence,'$.container.id',?1) WHERE id=?2 AND container_id=?3 AND NOT EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?2 OR kind={table}.kind) AND NOT EXISTS(SELECT 1 FROM service_transfers WHERE service_id=?2 AND state NOT IN ('review','complete','cancelled','returned')) AND NOT EXISTS(SELECT 1 FROM manager_services WHERE container_id=?1 UNION ALL SELECT 1 FROM support_services WHERE container_id=?1)"), params![container, key, previous, now()])?;
         }
         if changed == 1 {

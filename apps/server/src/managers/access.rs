@@ -1,4 +1,4 @@
-//! Same-origin native UI access to registered media-service containers.
+//! Same-origin access to the web interfaces of Owned media services.
 #[path = "access_proxy.rs"]
 mod proxy;
 #[path = "../storage/managers/access.rs"]
@@ -88,9 +88,9 @@ pub(super) fn router() -> Router<AppState> {
         )
         .route("/service-access/bootstrap.js", get(bootstrap_script))
         .route("/service-access/{id}", get(bootstrap).post(exchange))
-        .route("/services/{kind}", any(native))
-        .route("/services/{kind}/", any(native))
-        .route("/services/{kind}/{*path}", any(native))
+        .route("/services/{kind}", any(proxied))
+        .route("/services/{kind}/", any(proxied))
+        .route("/services/{kind}/{*path}", any(proxied))
 }
 
 pub(super) fn launch_urls(
@@ -135,8 +135,8 @@ fn can_mount(kind: &str, base: &str) -> bool {
     if base == thelxinoe_core::service_url_base(kind) {
         return true;
     }
-    // Attached services may use application paths privately, but must not
-    // publish a native UI over an application route or another service's mount.
+    // A service with its own URL Base may use application paths privately, but must not
+    // publish its interface over an application route or another service's mount.
     ![
         "api",
         "assets",
@@ -391,7 +391,7 @@ pub(crate) async fn fallback(State(state): State<AppState>, request: Request) ->
                 .iter()
                 .any(|(_, _, base)| within(request.uri().path(), base)) =>
         {
-            return native(State(state), request).await;
+            return proxied(State(state), request).await;
         }
         Err(error) => return ApiError::from(error).into_response(),
         _ => {}
@@ -448,7 +448,7 @@ async fn web_files(root: &std::path::Path, mut request: Request) -> Response {
     response
 }
 
-async fn native(State(state): State<AppState>, request: Request) -> Response {
+async fn proxied(State(state): State<AppState>, request: Request) -> Response {
     let document = request.method() == Method::GET
         && request
             .headers()

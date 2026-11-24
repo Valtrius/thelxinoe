@@ -35,7 +35,7 @@
 </script>
 
 {#if typeof Icon === 'string'}
-  <PlatformIcon platform={Icon} class={className} />
+  <PlatformIcon provider={Icon} class={className} />
 {:else}
   <Icon class={className} aria-hidden="true" />
 {/if}

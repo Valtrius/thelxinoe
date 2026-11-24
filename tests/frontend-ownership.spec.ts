@@ -480,7 +480,7 @@ test('a provider screen reads only its account and does not depend on sibling pr
   });
   await page.goto('/');
   await expect(
-    page.getByRole('button', { name: 'Refresh', exact: true }),
+    page.getByRole('button', { name: 'Sync', exact: true }),
   ).toBeVisible();
   expect(reads.filter((path) => /\/(youtube|kick)(\/|$)/.test(path))).toEqual(
     [],
@@ -527,7 +527,7 @@ test('switching providers can load the new account while the previous account re
   await expect.poll(() => started).toBe(true);
   await page.getByRole('link', { name: 'Twitch', exact: true }).click();
   await expect(
-    page.getByRole('button', { name: 'Refresh', exact: true }),
+    page.getByRole('button', { name: 'Sync', exact: true }),
   ).toBeVisible();
   held.release();
   expect(fixture.errors).toEqual([]);

@@ -10,7 +10,7 @@ const steps = [
   ['stop', 'Stop the original', 'backend'],
   ['copy', 'Copy appdata', 'backend'],
   ['validate', 'Validate a disposable copy', 'backend'],
-  ['activate', 'Start the managed replacement', 'backend'],
+  ['activate', 'Start the replacement', 'backend'],
   ['commit', 'Commit ownership', 'backend'],
   ['setup', 'Run reviewed setup', 'backend'],
   ['checks', 'Verify required checks', 'backend'],
@@ -438,7 +438,7 @@ function recoveryPlan(s, t) {
           ? 'The original container is missing; recovery evidence is incomplete'
           : null,
         description:
-          'Create a new candidate from the preserved transfer snapshot',
+          'Create a new replacement from the preserved transfer snapshot',
         requires: ['state_loss', 'reconciliation'],
       },
       {

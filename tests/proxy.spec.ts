@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test('HTTPS setup, secure login, event replay, CSRF rejection and device revocation', async ({
+test('HTTPS setup, secure login, event replay, CSRF rejection and session revocation', async ({
   page,
   context,
   request,

@@ -1,5 +1,5 @@
-//! Server-owned provisioning jobs keep credentials out of job payloads and controller responses.
-//! Fresh installations enter the Owned stage directly and stay held until setup checks pass.
+//! Install jobs keep credentials out of job payloads and controller responses.
+//! Fresh installs enter the Owned stage directly and stay held until setup checks pass.
 
 #[path = "../storage/managers/stack.rs"]
 mod storage;
@@ -123,7 +123,7 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
     {
         let _ = (state, path, body);
         Err(ApiError::conflict(
-            "Managed Docker services require the Linux controller",
+            "Owned media services require the Linux controller",
         ))
     }
 }
@@ -238,7 +238,7 @@ async fn install(
     let inserted = storage::install(&state.db, input, p, key, credential).await?;
     if !inserted {
         return Err(ApiError::conflict(
-            "This service is already connected, being transferred or managed. Forget the connection or take ownership instead",
+            "This service is already connected, being transferred or owned. Forget the connection or take ownership instead",
         ));
     }
     Ok(Json(json!({"id":returned,"state":"queued"})))
@@ -275,12 +275,12 @@ async fn action(
             "start" | "stop" | "restart" | "reconcile" | "recreate" | "retire" | "remove"
         )
     {
-        return Err(ApiError::bad("Invalid managed service action"));
+        return Err(ApiError::bad("Invalid service action"));
     }
     let owned = storage::owned(&state.db, key.clone())
         .await?
         .ok_or_else(|| ApiError::conflict("This saved installation has no matching server record. Restore the matching server profile before managing it."))?;
-    // Transfers and their recovery use the guided ownership workflow; failed setup can be
+    // Transfers and their recovery use the guided ownership transfer; failed setup can be
     // retired or removed, but normal lifecycle actions wait for the hold to be released.
     match owned.hold.as_deref() {
         Some("transfer" | "recovery") => {

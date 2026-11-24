@@ -36,7 +36,7 @@ pub async fn cancel(
         .await?;
     Ok(Json(json!({"cancelled":true})))
 }
-pub async fn refresh(
+pub async fn sync(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(provider): Path<String>,
@@ -45,10 +45,10 @@ pub async fn refresh(
         return Err(ApiError::not_found());
     }
     let p = security::principal(&state, &headers).await?;
-    let changed = storage::refresh(&state.db, provider, p).await?;
+    let changed = storage::sync(&state.db, provider, p).await?;
     if changed == 0 {
         return Err(ApiError::conflict(
-            "Connect or track a channel first, or wait for the current retry delay and 30-second refresh cooldown",
+            "Connect or track a channel first, or wait for the current retry delay and 30-second sync cooldown",
         ));
     }
     Ok(Json(json!({"queued":true})))

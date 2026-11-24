@@ -20,7 +20,7 @@ describe('audit event presentation', () => {
     expect(auditCategory('service.update.apply')).toBe('Services');
     expect(auditCategory('transfer.commit')).toBe('Services');
     expect(auditCategory('connection.forget')).toBe('Services');
-    expect(auditCategory('auto_delete.watched')).toBe('Retention');
+    expect(auditCategory('auto_delete.watched')).toBe('Auto-delete');
     expect(auditCategory('unknown.thing')).toBe('Other');
   });
 
@@ -40,19 +40,19 @@ describe('audit event presentation', () => {
         ],
       },
       {
-        category: 'Online',
+        category: 'Providers',
         options: [
           {
-            label: 'Deleted online data',
+            label: 'Deleted provider data',
             value: 'online.delete-data,online.delete_data',
           },
         ],
       },
     ]);
-    expect(auditActionGroups(actions, 'Online')).toHaveLength(1);
+    expect(auditActionGroups(actions, 'Providers')).toHaveLength(1);
   });
 
-  it('groups rows by day in the viewer timezone', () => {
+  it('groups rows by day in the user timezone', () => {
     // 2026-10-11 12:00 UTC is a Sunday afternoon in Paris.
     const now = Date.UTC(2026, 9, 11, 12);
     const at = (iso: string) => ({ created_at: Date.parse(iso) / 1000 });

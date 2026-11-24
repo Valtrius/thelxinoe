@@ -13,21 +13,21 @@ export async function existingStorageAccess(
   const f = await fixture({ separateMovies: true });
   const result = { passed: false, project: f.project };
   try {
-    const attached = await f.attach(
+    const connected = await f.connect(
       'radarr',
       '/existing-radarr',
       imageManifest.services.radarr,
       { existingLayout: true },
     );
-    await attached.direct('rootfolder', 'POST', { path: '/movies' });
-    const original = JSON.parse(docker('inspect', attached.container))[0];
+    await connected.direct('rootfolder', 'POST', { path: '/movies' });
+    const original = JSON.parse(docker('inspect', connected.container))[0];
     // Existing /movies storage is kept in place by the Owned replacement.
-    const { view, review } = await f.transfer(attached.id);
+    const { view, review } = await f.transfer(connected.id);
     expect(view.state, view.error ?? '').toBe('complete');
     expect(
       review.review.plan.target.mounts.map((mount) => mount.destination),
     ).toContain('/movies');
-    const retained = JSON.parse(docker('inspect', attached.container))[0];
+    const retained = JSON.parse(docker('inspect', connected.container))[0];
     expect(retained.State.Running).toBe(false);
     const runtime = (await f.stack()).items.find(
       (item) => item.kind === 'radarr',
@@ -46,7 +46,7 @@ export async function existingStorageAccess(
         'curl',
         '-fsS',
         '-H',
-        `X-Api-Key: ${attached.key}`,
+        `X-Api-Key: ${connected.key}`,
         'http://localhost:7878/services/radarr/api/v3/rootfolder',
       ),
     );

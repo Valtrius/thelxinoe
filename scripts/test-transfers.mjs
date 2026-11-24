@@ -552,7 +552,7 @@ try {
         // Every original is connected and cross-linked before any transfer starts.
         const sources = {};
         for (const kind of kinds)
-          sources[kind] = await f.attach(
+          sources[kind] = await f.connect(
             kind,
             '',
             imageManifest.services[kind],
@@ -568,7 +568,7 @@ try {
           if (!transferred(kind, storage)) continue;
           await matrix(sources[kind], records[kind], storage);
           console.log(`PASS transfer ${kind} (${storage})`);
-          // A manual disconnect between Owned services survives later takeovers.
+          // A manual disconnect between Owned services survives later ownership transfers.
           if (kind === 'bazarr' && sources.radarr) {
             disconnected = {
               source_id: sources.bazarr.id,
@@ -588,7 +588,7 @@ try {
           );
           expect(link?.enabled).toBe(false);
           result.scenarios.push({
-            name: `a manual disconnect survives later takeovers (${storage})`,
+            name: `a manual disconnect survives later ownership transfers (${storage})`,
             passed: true,
           });
         }
@@ -622,7 +622,7 @@ try {
       await scenario(
         'media reachable only through an ACL passes the access review',
         async () => {
-          const source = await f.attach(
+          const source = await f.connect(
             'radarr',
             '',
             imageManifest.services.radarr,
@@ -691,7 +691,7 @@ os.chmod('/media', 0o777)`,
         await scenario(
           `a ${component} restart during ${step} resumes the ${kind} transfer from its journal`,
           async () => {
-            const source = await f.attach(
+            const source = await f.connect(
               kind,
               '',
               imageManifest.services[kind],
@@ -764,7 +764,7 @@ os.chmod('/media', 0o777)`,
       );
     if (scenarios.includes('recovery')) {
       await scenario('a stale review never stops the original', async () => {
-        const source = await f.attach(
+        const source = await f.connect(
           'prowlarr',
           '',
           imageManifest.services.prowlarr,
@@ -801,7 +801,7 @@ os.chmod('/media', 0o777)`,
       await scenario(
         'a failure before activation restores the original automatically',
         async () => {
-          const source = await f.attach(
+          const source = await f.connect(
             'prowlarr',
             '',
             imageManifest.services.prowlarr,
@@ -853,7 +853,7 @@ os.chmod('/media', 0o777)`,
       await scenario(
         'a failure after activation stays held until an approved return to the original',
         async () => {
-          const source = await f.attach(
+          const source = await f.connect(
             'radarr',
             '',
             imageManifest.services.radarr,
@@ -953,21 +953,21 @@ os.chmod('/media', 0o777)`,
               { timeout: 180000 },
             )
             .toBe(true);
-          // Nothing of the returned attempt reserves the kind: the next takeover succeeds.
+          // Nothing of the returned attempt reserves the kind: the next ownership transfer succeeds.
           const again = await f.transfer(source.id);
           expect(again.view.state, again.view.error ?? '').toBe('complete');
-          const managed = (await f.stack()).items.filter(
+          const owned = (await f.stack()).items.filter(
             (item) => item.kind === 'radarr',
           );
-          expect(managed).toHaveLength(1);
-          expect(managed[0].running).toBe(true);
+          expect(owned).toHaveLength(1);
+          expect(owned[0].running).toBe(true);
           expect(inspect(source.container).State.Running).toBe(false);
           result.recovery = {
             ...result.recovery,
             post_activation: {
               plan,
               outcome: returned.state,
-              next_takeover: again.view.state,
+              next_transfer: again.view.state,
             },
           };
         },
@@ -975,7 +975,7 @@ os.chmod('/media', 0o777)`,
       await scenario(
         'a restored snapshot resumes across a controller restart and repeats setup for its new appdata',
         async () => {
-          const source = await f.attach(
+          const source = await f.connect(
             'seerr',
             '',
             imageManifest.services.seerr,
@@ -1028,7 +1028,7 @@ os.chmod('/media', 0o777)`,
           if (interrupted) f.compose('restart', 'controller');
           const finished = await f.waitTransfer(reached.id);
           expect(finished.state, finished.error ?? '').toBe('complete');
-          // The first boundary stays; the restored candidate is a second activation.
+          // The first boundary stays; the restored replacement is a second activation.
           expect(finished.controller.boundary_at).toBe(
             failed.controller.boundary_at,
           );
@@ -1066,7 +1066,7 @@ os.chmod('/media', 0o777)`,
             mode: 0o755,
           });
           writeFileSync(`${certificates}/ca.pem`, 'fixture certificate\n');
-          const source = await f.attach(
+          const source = await f.connect(
             'prowlarr',
             '',
             imageManifest.services.prowlarr,

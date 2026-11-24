@@ -1,11 +1,11 @@
 # Updates
 
-Server and Windows desktop share one product version. GitHub Releases supplies
+The server and the desktop app share one release version. GitHub Releases supplies
 the signed publisher envelope and Windows installer; GHCR supplies Linux amd64
 server/controller images pinned by digest. Web assets travel with the server.
 
-Server **Notify** discovers releases and adds an administrator notification that
-opens Settings → Server. **Automatic** also prepares and installs during the
+Server **Notify** discovers releases and adds an attention item for administrators
+that opens Settings → Server. **Automatic** also prepares and installs during the
 configured idle maintenance window; equal start and end hours keep it open all
 day. The server checks hourly, after each start and when the window opens.
 Preparation tests copied state and recovery; installation replaces both
@@ -13,10 +13,10 @@ containers. Failed activation restores the snapshot. Automatic retries a release
 blocked by Docker, disk or downloads after a growing pause, five times at most,
 and never retries one that failed validation or cannot migrate this server. A
 restart during preparation or activation is retried soon, three times at most.
-Click the icon beside **Product version** once to queue the full server update.
+Click the icon beside **Server version** once to queue the full server update.
 It downloads both images while the server keeps working, waits for playback and
 background work, prepares, installs and reconnects. The server is unavailable
-while its state is copied and while it is replaced; jobs that need the Docker
+while its state is copied and while it is replaced; jobs that need the
 controller wait while the copy is validated. Closing Settings, restarting the
 server or an unavailable Docker does not cancel it, and a newer release does not
 replace it; **Cancel** does until installation starts. Hover or focus the icon
@@ -33,11 +33,11 @@ preparation alike: Automatic retries a release that failed validation up to five
 times, each stopping the server for its copy, and stops trying a release whose
 preparation a restart interrupted.
 
-Desktop checks the publisher directly, including before login or while the server
+The desktop app checks the publisher directly, including before login or while the server
 is unavailable. In Settings → Desktop, and on the sign-in and update-required
 screens, the quiet version icon checks for updates; the available-update arrow
 downloads and installs. **Automatic** does this after login, or as soon as the
-server reports this desktop as too old. Restart waits for playback to stop. A
+server reports this desktop app as too old. Restart waits for playback to stop. A
 release the reachable server cannot accept waits, saying to update the server
 first, and installs once the server accepts it; an unreachable server never holds
 an update. Downloads are held for the current desktop session, also when starting
@@ -62,20 +62,20 @@ pnpm run updates:lab start --desktop-only
 ```
 
 The command prints the publisher URL, server URL and `lab.json` path. The Windows
-lab opens a separately named desktop with its own executable, installation,
+lab opens a separately named desktop app with its own executable, installation,
 keyring identity and WebView profile. Concurrent lab builds wait for each other's
 Windows packaging step. It starts at the repository version and offers the next patch
 version. Test keys, source copies and artifacts stay under `.local/<lab-id>`.
-Production sources, trust keys and product version are not changed by the lab.
+Production sources, trust keys and the release version are not changed by the lab.
 
 1. Open the printed server URL and create `admin` with password
-   `update lab passphrase`. Connect the lab desktop to the same URL and sign in.
+   `update lab passphrase`. Connect the lab desktop app to the same URL and sign in.
 2. Open the printed HTTPS publisher URL. Accept the browser's warning for this
    disposable local certificate; the lab apps trust its generated CA explicitly.
    Select **candidate** and apply. Alternatively:
    `pnpm run updates:lab candidate "<lab.json>"`.
-3. In either web or desktop, open Settings → Server. The quiet icon beside
-   **Product version** checks for a release; once available it becomes an animated
+3. In either the web app or the desktop app, open Settings → Server. The quiet icon beside
+   **Server version** checks for a release; once available it becomes an animated
    arrow. The notification's **View server version** action opens this screen.
    Click the arrow once and keep both clients open to review progress and reconnect.
    Repeat after a lab reset from the other client. Start playback before clicking
@@ -101,7 +101,7 @@ pnpm run updates:lab stop "<lab.json>"
 
 Reset recreates the Docker baseline and reinstalls the base desktop. Complete
 server setup again after a Docker reset. In desktop-only mode it keeps the native
-server data. Stop uninstalls that lab's Windows app, terminates lab processes and
+server data. Stop uninstalls that lab's desktop app, terminates lab processes and
 removes its Docker containers and volumes; bind-mounted state, build artifacts
 and the isolated Windows profile are kept. Each Docker reset uses a new state directory.
 The lab publisher listens on the host so Docker can reach it; its control endpoint
@@ -259,7 +259,7 @@ Do not delete images or release assets needed for installed versions and recover
 Published versions cannot be overwritten by the assembly script. Desktop and
 server API compatibility ranges are recorded in the signed manifest. A server
 accepts clients speaking `API_MIN_VERSION` to `API_VERSION` (`crates/core`): raise
-`API_VERSION` for a new protocol and keep `API_MIN_VERSION` until older desktops
+`API_VERSION` for a new protocol and keep `API_MIN_VERSION` until older desktop apps
 have updated, since raising it turns them away. A desktop update waits until the
 server accepts its protocol.
 
