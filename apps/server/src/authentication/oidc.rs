@@ -342,7 +342,7 @@ async fn complete(
     let verifier = client.id_token_verifier();
     let claims = id_token
         .claims(&verifier, &Nonce::new(pending.nonce))
-        .map_err(|_| ApiError::bad("Identity verification with the identity provider failed"))?;
+        .map_err(|_| ApiError::bad("Identity verification failed with the identity provider"))?;
     if let Some(expected) = claims.access_token_hash() {
         let actual = AccessTokenHash::from_token(
             response.access_token(),
