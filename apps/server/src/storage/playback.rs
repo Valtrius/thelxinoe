@@ -69,8 +69,8 @@ pub(super) async fn media_info_read_media_sources(
 ) -> anyhow::Result<(Vec<String>, Vec<Value>, bool)> {
     db.read("playback.media_info_read_media_sources", move|db| {
         let files=db.prepare("SELECT f.id FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=?1 AND f.present=1 ORDER BY f.edition,f.id")?.query_map([&mid],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let progress=db.prepare("SELECT edition,position,duration FROM edition_progress WHERE user_id=?1 AND media_id=?2")?.query_map(params![user,mid],|r|Ok(json!({"edition":r.get::<_,String>(0)?,"position":r.get::<_,f64>(1)?,"duration":r.get::<_,f64>(2)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let watched=db.query_row("SELECT watched FROM media_state WHERE user_id=?1 AND media_id=?2",params![user,mid],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
+        let (watched,points)=crate::watching::item(db,&user,&mid)?;
+        let progress=points.into_iter().map(|p|json!({"edition":p.edition,"position":p.position,"duration":p.duration})).collect();
         Ok((files,progress,watched))
     }).await
 }
@@ -103,7 +103,7 @@ pub(super) async fn create_session(db: &Database, input: PlaybackSession) -> any
     db.write("playback.create_session", move|db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let saved=if let Some(video)=&online_video {tx.query_row("SELECT position FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![user,video],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0)} else {tx.query_row("SELECT position FROM edition_progress WHERE user_id=?1 AND media_id=?2 AND edition=?3",params![user,src.media_id,src.edition],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0)};
-        let position=position.unwrap_or(if saved>=duration*0.9 {0.0} else {saved}).clamp(0.0,duration);
+        let position=position.unwrap_or(if crate::watching::finished(saved,duration) {0.0} else {saved}).clamp(0.0,duration);
         if !position.is_finite() {anyhow::bail!("Invalid playback position");}
         if let Some(video)=&online_video {
             let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_downloads d JOIN youtube_videos v ON v.video_id=d.video_id WHERE d.video_id=?1 AND d.generation=?2 AND d.state='ready' AND v.user_id=?3)",params![video,src.generation,user],|r|r.get::<_,bool>(0))?;
@@ -152,8 +152,8 @@ pub(super) async fn report(
 ) -> anyhow::Result<Option<bool>> {
     db.write("playback.report", move|db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT COALESCE(media_id,'youtube:'||youtube_video_id,live_media_id),edition,duration,sequence,state FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3",params![key,user,auth],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))).optional()?;
-        let Some((media,edition,duration,sequence,status))=row else {return Ok(None);};
+        let row=tx.query_row("SELECT COALESCE(media_id,'youtube:'||youtube_video_id,live_media_id),edition,duration,sequence,state,file_id FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3",params![key,user,auth],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?,r.get::<_,Option<String>>(5)?))).optional()?;
+        let Some((media,edition,duration,sequence,status,file))=row else {return Ok(None);};
         if input.sequence<=sequence || ["stopped","failed"].contains(&status.as_str()) {return Ok(Some(false));}
         let position=if duration==0.0 {input.position}else{input.position.min(duration)};
         let seconds=crate::statistics::record(&tx,&key,&input)?;
@@ -164,14 +164,7 @@ pub(super) async fn report(
             crate::online::downloads::record_state(&tx,&user,video,position,duration,stopped)?;
             change["watched"]=json!(tx.query_row("SELECT watched FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![user,video],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false));
         } else if !crate::online::live::domain(&media) {
-            tx.execute("INSERT INTO edition_progress VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id,media_id,edition) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at",params![user,media,edition,position,duration,now()])?;
-            tx.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=MAX(watched,excluded.watched),updated_at=excluded.updated_at",params![user,media,position>=duration*0.9,now()])?;
-            // Finishing a file that holds several episodes finishes each of them.
-            if position>=duration*0.9 {
-                let others="SELECT o.media_id FROM playback_sessions p JOIN media_sources o ON o.file_id=p.file_id JOIN media m ON m.id=o.media_id WHERE p.id=?3 AND o.media_id!=p.media_id AND m.kind='episode'";
-                tx.execute(&format!("INSERT INTO media_state(user_id,media_id,watched,updated_at) SELECT ?1,media_id,1,?2 FROM ({others}) WHERE true ON CONFLICT(user_id,media_id) DO UPDATE SET watched=1,updated_at=excluded.updated_at"),params![user,now(),key])?;
-                tx.execute(&format!("UPDATE edition_progress SET position=duration,updated_at=?2 WHERE user_id=?1 AND media_id IN ({others})"),params![user,now(),key])?;
-            }
+            crate::watching::record_playback(&tx,&user,crate::watching::Played{media:&media,edition:&edition,file:file.as_deref(),position,duration},now())?;
         }
         crate::history::record(&tx,&key,position,&input.state,seconds)?;
         let resource=format!("playback:{key}");

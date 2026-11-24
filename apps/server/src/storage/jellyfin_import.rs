@@ -247,8 +247,7 @@ pub(super) async fn apply(
                     if watched {
                         delta.already_watched += 1;
                     } else {
-                        tx.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at,favorite,watch_later) VALUES (?1,?2,1,?3,0,0) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=1,updated_at=?3", params![user, media, at])?;
-                        tx.execute("UPDATE edition_progress SET position=duration,updated_at=?3 WHERE user_id=?1 AND media_id=?2", params![user, media, at])?;
+                        crate::watching::mark(&tx, user, media, true, crate::watching::Scope::Item, at)?;
                         delta.watched += 1;
                     }
                 }
@@ -268,35 +267,23 @@ pub(super) async fn apply(
             {
                 let media = &entry.target.resume;
                 // Progress made here after Jellyfin last played the item stays.
-                let latest: Option<i64> = tx.query_row(
-                    "SELECT MAX(updated_at) FROM edition_progress WHERE user_id=?1 AND media_id=?2 AND position>0",
-                    params![user, media],
-                    |r| r.get(0),
-                )?;
-                let newer = match (latest, played_at) {
+                let newer = match (crate::watching::last_resumed_at(&tx, user, media)?, played_at) {
                     (None, _) => true,
                     (Some(here), Some(there)) => there > here,
                     (Some(_), None) => false,
                 };
-                let source: Option<(String, String)> = if newer {
-                    tx.query_row(
-                        "SELECT f.edition,f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=?1 AND f.present=1 ORDER BY f.edition=?2 DESC,f.edition,f.id LIMIT 1",
-                        params![media, entry.target.edition.as_deref().unwrap_or("")],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .optional()?
-                } else {
-                    None
-                };
-                let duration = source.as_ref().and_then(|(_, probe)| {
-                    serde_json::from_str::<Value>(probe).ok()?["format"]["duration"]
-                        .as_str()?
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|d| d.is_finite() && *d > 0.0)
-                });
-                if let (Some((edition, _)), Some(duration)) = (source, duration) {
-                    tx.execute("INSERT INTO edition_progress(user_id,media_id,edition,position,duration,updated_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id,media_id,edition) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at", params![user, media, edition, position.min(duration), duration, played_at.unwrap_or(at).min(at)])?;
+                let edition =
+                    crate::watching::Edition::Named(entry.target.edition.as_deref().unwrap_or(""));
+                if newer
+                    && crate::watching::set_resume_point(
+                        &tx,
+                        user,
+                        media,
+                        position,
+                        edition,
+                        played_at.unwrap_or(at).min(at),
+                    )?
+                {
                     delta.resume += 1;
                 }
             }

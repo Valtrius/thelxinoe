@@ -147,13 +147,14 @@ pub(super) async fn show(
     user: String,
 ) -> anyhow::Result<Vec<LibrarySeason>> {
     db.read("managers.status.show", move |db| {
+        let latest = crate::watching::latest_resume_point("e.id", "?2");
         let mut query = db.prepare(&format!("SELECT s.id,s.sort_number,sc.title,e.id,e.sort_number,ec.title,
                 json_extract(e.metadata,'$.overview'),json_extract(e.metadata,'$.air_date_utc'),CAST(json_extract(e.metadata,'$.runtime') AS INTEGER),
                 {PRESENT},COALESCE(u.watched,0),p.position,p.duration,{MAPPED}
             FROM media s JOIN media_cards sc ON sc.id=s.id
             LEFT JOIN media e ON e.parent_id=s.id AND e.kind='episode' LEFT JOIN media_cards ec ON ec.id=e.id
             LEFT JOIN media_state u ON u.media_id=e.id AND u.user_id=?2
-            LEFT JOIN edition_progress p ON p.rowid=(SELECT rowid FROM edition_progress WHERE user_id=?2 AND media_id=e.id ORDER BY updated_at DESC,edition LIMIT 1)
+            LEFT JOIN edition_progress p ON p.rowid={latest}
             WHERE s.parent_id=?1 AND s.kind='season' ORDER BY s.sort_number,s.id,e.sort_number,e.id"))?;
         let rows = query.query_map(params![show, user], |r| {
             let season = LibrarySeason { id: r.get(0)?, number: r.get(1)?, title: r.get(2)?, episodes: Vec::new() };

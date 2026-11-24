@@ -125,7 +125,7 @@ pub(super) fn record_at(
     let timestamp = at / 1000;
     tx.execute("INSERT INTO playback_statistics VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11)
         ON CONFLICT(user_id,platform,media_id) DO UPDATE SET last_played_at=excluded.last_played_at,media_title=excluded.media_title,channel_id=excluded.channel_id,channel_name=excluded.channel_name,category_name=excluded.category_name,content_type=excluded.content_type,duration=excluded.duration,completed=MAX(completed,excluded.completed)",
-        params![user,s.platform,media,s.title,s.channel,s.name,s.category,s.content_type,timestamp,duration,duration>0.0 && input.position>=duration*0.9])?;
+        params![user,s.platform,media,s.title,s.channel,s.name,s.category,s.content_type,timestamp,duration,duration>0.0 && crate::watching::finished(input.position,duration)])?;
     // Split intervals crossing minutes, hours and local dates instead of
     // attributing an entire long session to the day on which it started.
     let mut cursor = since;

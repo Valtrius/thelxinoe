@@ -56,7 +56,7 @@ pub(super) async fn create_with_delivery_insert_playback_session(
         }
         anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2)",params![owner,video],|r|r.get::<_,bool>(0))?,"Video was removed before playback");
         let saved=tx.query_row("SELECT position FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![owner,video],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0);
-        let start=if live {0.0}else {position.unwrap_or(if saved>=duration*0.9 {0.0}else{saved}).clamp(0.0,(duration-0.1).max(0.0))};
+        let start=if live {0.0}else {position.unwrap_or(if crate::watching::finished(saved,duration) {0.0}else{saved}).clamp(0.0,(duration-0.1).max(0.0))};
         tx.execute("INSERT INTO youtube_media(video_id) VALUES (?1) ON CONFLICT DO NOTHING",[&video])?;
         tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,youtube_video_id,streaming) VALUES (?1,?2,?3,?1,'public','ready',?9,?4,?5,?6,?7,?7,?8,1)",params![key,owner,auth,serde_json::to_string(&input)?,duration,start,now(),video,mode])?;
         tx.commit()?;Ok(start)

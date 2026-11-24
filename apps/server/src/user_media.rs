@@ -71,15 +71,14 @@ pub(crate) async fn set_for(
     let _lease = state.media_operations.read().await;
     let user = p.user.id.clone();
     let mid = media.to_owned();
-    let result = storage::set_for(user, mid, &state.db, input).await?;
-    match result {
-        404 => return Err(ApiError::not_found()),
-        400 => {
+    match storage::set_for(user, mid, &state.db, input).await? {
+        crate::watching::Changed::Done => {}
+        crate::watching::Changed::Missing => return Err(ApiError::not_found()),
+        crate::watching::Changed::Unsupported | crate::watching::Changed::NoEdition => {
             return Err(ApiError::bad(
                 "This state is not supported for this kind of media item",
             ));
         }
-        _ => {}
     }
     state
         .emit(
@@ -120,13 +119,13 @@ pub async fn set_watched(
     )
     .await?;
     let changed = match changed {
-        storage::Marked::Missing => return Err(ApiError::not_found()),
-        storage::Marked::Unsupported => {
+        crate::watching::Marked::Missing => return Err(ApiError::not_found()),
+        crate::watching::Marked::Unsupported => {
             return Err(ApiError::bad(
                 "Mark a season, an episode, or an episode and those before it",
             ));
         }
-        storage::Marked::Episodes(count) => count,
+        crate::watching::Marked::Items(count) => count,
     };
     state
         .emit(
@@ -149,7 +148,9 @@ pub async fn next_episode(
     Query(played): Query<Played>,
 ) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::Browse).await?;
-    let next = storage::next_episode(media, played.file_id, &state.db).await?;
+    let next = crate::watching::up_next(&state.db, media, played.file_id)
+        .await?
+        .map(|e| json!({"id":e.id,"title":e.title,"show":e.show,"season":e.season,"number":e.number}));
     Ok(Json(json!({ "next": next })))
 }
 pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -174,17 +175,13 @@ pub(crate) async fn home_for(state: &AppState, principal: &Principal) -> Result<
     Ok(result)
 }
 
-pub(crate) struct NextUp {
-    /// This show alone, whether or not it was played.
-    pub show: Option<String>,
-    pub root: Option<String>,
-    pub since: Option<i64>,
-    pub resumable: bool,
-    pub rewatching: bool,
-}
 /// Episode IDs of Jellyfin's Next up.
-pub(crate) async fn next_up(state: &AppState, p: &Principal, query: NextUp) -> Result<Vec<String>> {
-    Ok(storage::next_up(p.user.id.clone(), query, &state.db).await?)
+pub(crate) async fn next_up(
+    state: &AppState,
+    p: &Principal,
+    query: crate::watching::NextUp,
+) -> Result<Vec<String>> {
+    Ok(crate::watching::next_up(&state.db, p.user.id.clone(), query).await?)
 }
 
 #[cfg(test)]

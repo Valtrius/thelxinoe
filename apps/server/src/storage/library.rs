@@ -467,27 +467,22 @@ pub(super) async fn decorate_cards(
     db: &Database,
 ) -> anyhow::Result<std::collections::HashMap<String, CardPresentation>> {
     db.read("library.decorate_cards", move |db| {
+        let mut facts = crate::watching::cards(db, &user, &ids)?;
         let mut query = db.prepare(
-            "WITH RECURSIVE descendants(card_id,id,kind) AS (
-                SELECT id,id,kind FROM media WHERE id IN (SELECT value FROM json_each(?1))
-                UNION ALL
-                SELECT d.card_id,m.id,m.kind FROM descendants d JOIN media m ON m.parent_id=d.id WHERE d.kind IN ('show','season')
-            ), watched AS (
-                SELECT d.card_id,MIN(COALESCE(s.watched,0)) AS completed,
-                    MAX(COALESCE(s.watched,0) OR EXISTS(SELECT 1 FROM edition_progress e WHERE e.user_id=?2 AND e.media_id=d.id AND e.position>0)) AS started
-                FROM descendants d
-                LEFT JOIN media_state s ON s.media_id=d.id AND s.user_id=?2
-                WHERE d.kind IN ('movie','episode') GROUP BY d.card_id
-            )
-            SELECT m.id,m.year,
-                CASE WHEN json_extract(m.metadata,'$.artwork_cached')=1 THEN m.id WHEN json_extract(p.metadata,'$.artwork_cached')=1 THEN p.id WHEN json_extract(g.metadata,'$.artwork_cached')=1 THEN g.id END,
-                COALESCE(w.completed,0),COALESCE(w.started,0)
+            "SELECT m.id,m.year,
+                CASE WHEN json_extract(m.metadata,'$.artwork_cached')=1 THEN m.id WHEN json_extract(p.metadata,'$.artwork_cached')=1 THEN p.id WHEN json_extract(g.metadata,'$.artwork_cached')=1 THEN g.id END
             FROM media m LEFT JOIN media p ON p.id=m.parent_id LEFT JOIN media g ON g.id=p.parent_id
-            LEFT JOIN watched w ON w.card_id=m.id WHERE m.id IN (SELECT value FROM json_each(?1))"
+            WHERE m.id IN (SELECT value FROM json_each(?1))"
         )?;
-        Ok(query.query_map(params![ids,user], |r| Ok((r.get::<_,String>(0)?, CardPresentation {
-            year: r.get(1)?, artwork_id: r.get(2)?, watched: r.get(3)?, started: r.get(4)?,
-        })))?.collect::<rusqlite::Result<std::collections::HashMap<_,_>>>()?)
+        Ok(query.query_map([&ids], |r| {
+            let id = r.get::<_, String>(0)?;
+            let watching = facts.remove(&id);
+            Ok((id, CardPresentation {
+                year: r.get(1)?, artwork_id: r.get(2)?,
+                watched: watching.as_ref().is_some_and(|w| w.watched),
+                started: watching.is_some_and(|w| w.started),
+            }))
+        })?.collect::<rusqlite::Result<std::collections::HashMap<_,_>>>()?)
     }).await
 }
 
