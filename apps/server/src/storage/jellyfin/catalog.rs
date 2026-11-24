@@ -236,7 +236,7 @@ fn media_filter(
             bind(json!(ids.split(',').map(canonical).collect::<Vec<_>>()).to_string())
         ));
     }
-    let watched = String::from("COALESCE(u.watched,0)");
+    let watched = crate::watching::watched_sql("m", "u", "?1");
     for (key, column) in [
         ("isfavorite", "COALESCE(u.favorite,0)"),
         ("isplayed", &watched),
@@ -461,7 +461,7 @@ const COLUMNS: &str = concat!(
 fn select() -> String {
     format!(
         "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.created_at,m.root_id,COALESCE(u.favorite,0),{},{COLUMNS},{}",
-        "COALESCE(u.watched,0)",
+        crate::watching::watched_sql("m", "u", "?1"),
         crate::watching::unwatched_count_sql("m", "?1"),
     )
 }
