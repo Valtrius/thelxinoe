@@ -1,3 +1,4 @@
+pub(crate) mod session;
 #[path = "storage/playback.rs"]
 mod storage;
 
@@ -17,8 +18,8 @@ use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Stdio, time::Duration};
-use thelxinoe_core::{Principal, id, now};
-use thelxinoe_playback::{CleanupReason, Options, Orientation, Preferences, Source, Track};
+use thelxinoe_core::{Principal, now};
+use thelxinoe_playback::{CleanupReason, Options, Orientation, Preferences, Source};
 use tower::ServiceExt;
 
 pub async fn source(state: &AppState, media: &str, file: Option<&str>) -> Result<Source> {
@@ -125,167 +126,8 @@ pub async fn create(
     create_for(&state, &p, input).await.map(Json)
 }
 pub async fn create_for(state: &AppState, p: &Principal, input: Create) -> Result<Value> {
-    create_with_delivery(state, p, input, false).await
-}
-pub(crate) async fn create_with_delivery(
-    state: &AppState,
-    p: &Principal,
-    mut input: Create,
-    vod: bool,
-) -> Result<Value> {
-    if crate::online::live::domain(&input.media_id) {
-        let _lease = state.media_operations.read().await;
-        return crate::online::streams::create_with_delivery(
-            state,
-            p,
-            &input.media_id,
-            input.options,
-            input.position,
-            vod,
-            input.orientation,
-        )
-        .await;
-    }
-    let online_video = input.media_id.strip_prefix("youtube:").map(str::to_owned);
-    let source = if let Some(video) = &online_video {
-        crate::online::downloads::authorize(state, p, video).await?;
-        match crate::online::downloads::source(state, video).await {
-            Ok(value) => value,
-            Err(error) if error.0 == axum::http::StatusCode::CONFLICT => {
-                let _lease = state.media_operations.read().await;
-                return crate::online::streams::create_with_delivery(
-                    state,
-                    p,
-                    video,
-                    input.options,
-                    input.position,
-                    vod,
-                    input.orientation,
-                )
-                .await;
-            }
-            Err(error) => return Err(error),
-        }
-    } else {
-        source(state, &input.media_id, input.file_id.as_deref()).await?
-    };
-    let file_key = format!("file:{}", source.id);
-    let _file = state.media_resources.read(&[&file_key]).await;
-    let _lease = state.media_operations.read().await;
-    source
-        .validate()
-        .await
-        .map_err(|e| ApiError::conflict(e.to_string()))?;
-    let prefs = user_preferences(state, p).await?;
-    let tracks = source.tracks().await?;
-    let burn = input.options.capabilities.burn_subtitles;
-    let shown = |t: &Track| t.kind == "subtitle" && (t.supported || burn && t.picture());
-    if input.options.audio.is_none() {
-        input.options.audio = tracks
-            .iter()
-            .find(|t| {
-                t.kind == "audio"
-                    && !prefs.audio_language.is_empty()
-                    && t.language == prefs.audio_language
-            })
-            .and_then(|t| t.index);
-    }
-    // Only text subtitles show by default: a picture one needs a transcode, which the viewer
-    // asks for by choosing it.
-    if input.options.subtitle.is_none() {
-        let preferred = tracks.iter().find(|t| {
-            prefs.subtitles
-                && t.kind == "subtitle"
-                && t.supported
-                && t.language == prefs.subtitle_language
-        });
-        // A client that selects embedded tracks itself also selects their forced subtitles.
-        let forced = || {
-            (!input.options.capabilities.native_tracks)
-                .then(|| thelxinoe_playback::forced_subtitle(&tracks, input.options.audio))
-                .flatten()
-        };
-        input.options.subtitle = preferred.or_else(forced).map(|t| t.id.clone());
-    }
-    if let Some(track) = &input.options.subtitle
-        && track != "off"
-        && !tracks.iter().any(|t| shown(t) && &t.id == track)
-    {
-        return Err(ApiError::bad("Unsupported subtitle track"));
-    }
-    let decision = thelxinoe_playback::decision(&source, &input.options)
-        .map_err(|e| ApiError::bad(e.to_string()))?;
-    let policy = state.transcoding.read().await;
-    policy.check(decision.encoding)?;
-    let mode = decision.mode;
-    let duration = source.duration();
-    if duration <= 0.0 || !duration.is_finite() {
-        return Err(ApiError::conflict(
-            "Media duration is unavailable; rescan the library",
-        ));
-    }
-    if mode != "direct" {
-        crate::tools::require(state, &["ffmpeg"]).await?;
-    }
-    let sid = id();
-    let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
-    let key = sid.clone();
-    let user = p.user.id.clone();
-    let auth = p.session_id.clone();
-    let src = source.clone();
-    let options = input.options.clone();
-    let position = storage::create_session(
-        &state.db,
-        storage::PlaybackSession {
-            online_video,
-            mode,
-            duration,
-            key,
-            user,
-            auth,
-            src,
-            options,
-            position: input.position,
-        },
-    )
-    .await?;
-    let grant = grants::issue(state, p, &format!("playback:{sid}"), 120).await?;
-    let mut timeline_start = 0.0;
-    let url = if mode == "direct" {
-        format!("/api/v1/playback/{sid}/stream?grant={grant}")
-    } else {
-        let prepared = if vod {
-            state
-                .playback
-                .start_vod(&sid, &source, &input.options, mode)
-                .await
-        } else {
-            state
-                .playback
-                .start(&sid, &source, &input.options, mode, position)
-                .await
-        };
-        match prepared {
-            Ok((revision, offset)) => {
-                timeline_start = offset;
-                format!("/api/v1/playback/{sid}/hls/{revision}/index.m3u8?grant={grant}")
-            }
-            Err(error) => {
-                fail(state, &sid).await?;
-                return Err(ApiError::conflict(error.to_string()));
-            }
-        }
-    };
-    // A picture subtitle has no file: a transcode burns it in.
-    let subtitles:Vec<_>=tracks.iter().filter(|t|shown(t)).map(|t|json!({"id":t.id,"language":t.language,"title":t.title,"codec":t.codec,"forced":t.forced,"url":t.supported.then(||format!("/api/v1/playback/{sid}/subtitles/{}?grant={grant}",t.id))})).collect();
-    let fonts: Vec<_> = thelxinoe_playback::font_attachments(&source.probe)
-        .into_iter()
-        .map(|index| format!("/api/v1/playback/{sid}/fonts/{index}?grant={grant}"))
-        .collect();
-    let trickplay = crate::trickplay::web(state, p, &source).await?;
-    Ok(
-        json!({"id":sid,"file_id":source.id,"generation":source.generation,"url":url,"grant":grant,"mode":mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":position,"duration":duration,"timeline_start":timeline_start,"video":source.video_codec().is_some(),"tracks":tracks,"subtitles":subtitles,"fonts":fonts,"selected_subtitle":input.options.subtitle,"options":input.options,"chapters":thelxinoe_playback::chapters(&source.probe),"trickplay":trickplay,"probe":source.probe,"replay_gain":prefs.replay_gain}),
-    )
+    let started = session::start(state, p, input, false).await?;
+    Ok(serde_json::to_value(started).expect("playback session serialization"))
 }
 #[derive(Clone)]
 struct Session {
@@ -478,39 +320,10 @@ pub async fn seek(
     Path(id): Path<String>,
     Json(input): Json<Position>,
 ) -> Result<Json<Value>> {
-    let policy = state.transcoding.read().await;
-    let _lifecycle = state.playback_lifecycle.write(&[&id]).await;
     let p = security::principal(&state, &headers).await?;
-    let session = session(&state, &p, &id).await?;
-    if !input.position.is_finite() || input.position < 0.0 || input.position >= session.duration {
-        return Err(ApiError::bad("Seek outside media duration"));
-    }
-    let grant = grants::issue(&state, &p, &format!("playback:{id}"), 120).await?;
-    let mut timeline_start = 0.0;
-    let url = if session.streaming {
-        let (path, offset) = crate::online::streams::seek(&state, &id).await?;
-        timeline_start = offset;
-        format!("{path}?grant={grant}")
-    } else if session.mode == "direct" {
-        current_source(&state, &session).await?;
-        format!("/api/v1/playback/{id}/stream?grant={grant}")
-    } else {
-        let src = current_source(&state, &session).await?;
-        policy.check(
-            thelxinoe_playback::decision(&src, &session.options)
-                .map_err(|e| ApiError::bad(e.to_string()))?
-                .encoding,
-        )?;
-        let (revision, offset) = state
-            .playback
-            .start(&id, &src, &session.options, &session.mode, input.position)
-            .await
-            .map_err(|e| ApiError::conflict(e.to_string()))?;
-        timeline_start = offset;
-        format!("/api/v1/playback/{id}/hls/{revision}/index.m3u8?grant={grant}")
-    };
+    let restarted = session::restart(&state, &p, &id, input.position).await?;
     Ok(Json(
-        json!({"url":url,"position":input.position,"timeline_start":timeline_start}),
+        serde_json::to_value(restarted).expect("playback session serialization"),
     ))
 }
 #[derive(Deserialize)]

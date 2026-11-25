@@ -278,17 +278,16 @@ pub fn quality_within(max: i64) -> Option<&'static str> {
 }
 /// The quality that keeps a planned video transcode and its audio within the client's limit,
 /// if the requested one doesn't. Auto transcodes at the rate of its picture, which a source
-/// within the limit can still exceed.
+/// within the limit can still exceed. `converts` says whether `options` transcode the video.
 pub fn bounded_quality(
     source: &Source,
     options: &Options,
+    converts: bool,
     max: Option<i64>,
 ) -> crate::error::Result<Option<&'static str>> {
     let Some(max) = max else {
         return Ok(None);
     };
-    let converts =
-        thelxinoe_playback::decision(source, options).is_ok_and(|planned| planned.encoding.video);
     let rate = conversion_rate(options, &source.probe).map_err(|e| ApiError::bad(e.to_string()))?;
     if !converts || i64::from(rate) + 192_000 <= max {
         return Ok(None);
@@ -770,25 +769,25 @@ mod tests {
         };
         let auto = options(&source, "auto");
         assert_eq!(conversion_rate(&auto, &source.probe).unwrap(), 25_000_000);
-        assert_eq!(bounded_quality(&source, &auto, None).unwrap(), None);
+        assert_eq!(bounded_quality(&source, &auto, true, None).unwrap(), None);
         assert_eq!(
-            bounded_quality(&source, &auto, Some(30_000_000)).unwrap(),
+            bounded_quality(&source, &auto, true, Some(30_000_000)).unwrap(),
             None
         );
         assert_eq!(
-            bounded_quality(&source, &auto, Some(10_000_000)).unwrap(),
+            bounded_quality(&source, &auto, true, Some(10_000_000)).unwrap(),
             Some("8mbps")
         );
         let bounded = options(&source, "8mbps");
         assert_eq!(plan(&source, &bounded).unwrap(), "transcode");
         assert_eq!(conversion_rate(&bounded, &source.probe).unwrap(), 8_000_000);
-        assert!(bounded_quality(&source, &auto, Some(1_000_000)).is_err());
+        assert!(bounded_quality(&source, &auto, true, Some(1_000_000)).is_err());
         // An original the client plays directly needs no bound.
         source.probe["streams"][0]["codec_name"] = json!("h264");
         let direct = options(&source, "auto");
         assert_eq!(plan(&source, &direct).unwrap(), "direct");
         assert_eq!(
-            bounded_quality(&source, &direct, Some(1_000_000)).unwrap(),
+            bounded_quality(&source, &direct, false, Some(1_000_000)).unwrap(),
             None
         );
     }

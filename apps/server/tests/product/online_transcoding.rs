@@ -535,16 +535,19 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
     let options = |video: Value| -> thelxinoe_playback::Options {
         serde_json::from_value(json!({"quality":"180p","capabilities":{"containers":[],"video":video,"audio":["aac"],"hls":true,"hls_container":"ts","allow_conversion":true}})).unwrap()
     };
-    let session = create_with_delivery(
-        &state,
-        &principal,
-        "abcdefghijk",
-        options(json!(["h264"])),
-        Some(0.0),
-        true,
-        None,
+    let session = serde_json::to_value(
+        start(
+            &state,
+            &principal,
+            "abcdefghijk",
+            options(json!(["h264"])),
+            Some(0.0),
+            true,
+            None,
+        )
+        .await
+        .unwrap(),
     )
-    .await
     .unwrap();
     assert_eq!(session["mode"], "remux");
     online_shape(&session, false);
@@ -572,7 +575,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
     evidence.push(json!({"delivery":"remux","hls_container":"ts","copied_frames":copied.len()}));
     delete(&session).await;
     // Disabled conversion is refused rather than replaced.
-    let refused = create_with_delivery(
+    let refused = start(
         &state,
         &principal,
         "abcdefghijk",
@@ -607,13 +610,16 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
     );
     insert(&state, &recorded, proxy);
     let input = json!({"media_id":"youtube:abcdefghijk","position":0,"options":{"quality":"180p","capabilities":{"containers":[],"video":[],"audio":["aac"],"hls":true,"hls_container":"mp4","allow_conversion":true,"conversion":{"width":160,"height":90,"frame_rate":24.0,"profile":"high","level":41}}}});
-    let session = crate::playback::create_with_delivery(
-        &state,
-        &principal,
-        serde_json::from_value(input).unwrap(),
-        true,
+    let session = serde_json::to_value(
+        crate::playback::session::start(
+            &state,
+            &principal,
+            serde_json::from_value(input).unwrap(),
+            true,
+        )
+        .await
+        .unwrap(),
     )
-    .await
     .unwrap();
     assert_eq!(session["encoding"], json!({"video":true,"audio":false}));
     online_shape(&session, false);

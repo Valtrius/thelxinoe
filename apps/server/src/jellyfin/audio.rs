@@ -93,7 +93,7 @@ pub async fn stream(
     let id = if let Some(id) = id {
         id
     } else {
-        let created = core::create_with_delivery(
+        let created = core::session::start(
             &state,
             p,
             core::Create {
@@ -116,7 +116,7 @@ pub async fn stream(
             true,
         )
         .await?;
-        let id = created["id"].as_str().unwrap().to_owned();
+        let id = created.id;
         let key = id.clone();
         let auth = p.session_id.clone();
         let media = media.to_owned();

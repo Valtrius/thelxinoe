@@ -735,7 +735,10 @@ pub async fn playback_info(
             capabilities,
         })
     };
-    if let Some(bounded) = super::profile::bounded_quality(&source, &options_for(quality)?, max)? {
+    let requested = options_for(quality)?;
+    let converts = thelxinoe_playback::decision(&source, &requested)
+        .is_ok_and(|planned| planned.encoding.video);
+    if let Some(bounded) = super::profile::bounded_quality(&source, &requested, converts, max)? {
         quality = bounded;
     }
     let mut options = options_for(quality)?;
@@ -752,7 +755,7 @@ pub async fn playback_info(
         .await?
         .ok_or_else(ApiError::not_found)?;
     let mut dto = variant_dto(&item_dto, item, delivered);
-    let playback = crate::playback::create_with_delivery(
+    let started = crate::playback::session::start(
         state,
         p,
         crate::playback::Create {
@@ -765,19 +768,18 @@ pub async fn playback_info(
         true,
     )
     .await?;
-    let sid = playback["id"].as_str().unwrap().to_owned();
+    let sid = started.id.clone();
     let key = sid.clone();
     storage::playback_info(key, &state.db).await?;
-    dto["TranscodingUrl"] = playback["url"].clone();
-    dto["TranscodingContainer"] = playback["options"]["capabilities"]["hls_container"]
-        .as_str()
-        .map(|c| json!(c))
-        .unwrap_or(json!("ts"));
-    dto["ETag"] = playback["grant"].clone();
-    dto["RunTimeTicks"] = json!(catalog::ticks(playback["duration"].as_f64().unwrap_or(0.0)));
-    dto["IsInfiniteStream"] = playback["live"].clone();
+    let capabilities = &started.options.capabilities;
+    dto["TranscodingUrl"] = json!(started.url);
+    dto["TranscodingContainer"] = json!(capabilities.hls_container.as_deref().unwrap_or("ts"));
+    dto["ETag"] = json!(started.grant);
+    dto["RunTimeTicks"] = json!(catalog::ticks(started.duration));
+    dto["IsInfiniteStream"] = json!(started.live());
+    let conversion = capabilities.conversion.as_ref();
     dto["MediaStreams"] = json!(
-        playback["probe"]["streams"]
+        started.probe["streams"]
             .as_array()
             .into_iter()
             .flatten()
@@ -786,8 +788,7 @@ pub async fn playback_info(
             })
             .map(|stream| {
                 let video = stream["codec_type"] == "video";
-                let encoded = playback["encoding"][if video { "video" } else { "audio" }] == true;
-                let conversion = &playback["options"]["capabilities"]["conversion"];
+                let encoded = if video { started.encoding.video } else { started.encoding.audio };
                 let rate = stream["avg_frame_rate"]
                     .as_str()
                     .and_then(|s| s.split_once('/'))
@@ -798,7 +799,7 @@ pub async fn playback_info(
                 } else {
                     stream["sample_rate"].as_str().and_then(|r| r.parse::<u32>().ok())
                 };
-                let mut dto = json!({"Type": if video { "Video" } else { "Audio" }, "Index": stream["index"], "Codec": if encoded { json!(if video { "h264" } else { "aac" }) } else { stream["codec_name"].clone() }, "IsDefault": true, "Width": if encoded && video {conversion["width"].clone()}else{stream["width"].clone()}, "Height": if encoded && video {conversion["height"].clone()}else{stream["height"].clone()},"AverageFrameRate":if encoded && video {conversion["frame_rate"].clone()}else{json!(rate)},"RealFrameRate":if encoded && video {conversion["frame_rate"].clone()}else{json!(rate)}, "Channels": if encoded && !video { json!(2) } else { stream["channels"].clone() }, "SampleRate": sample_rate});
+                let mut dto = json!({"Type": if video { "Video" } else { "Audio" }, "Index": stream["index"], "Codec": if encoded { json!(if video { "h264" } else { "aac" }) } else { stream["codec_name"].clone() }, "IsDefault": true, "Width": if encoded && video {json!(conversion.map(|c| c.width))}else{stream["width"].clone()}, "Height": if encoded && video {json!(conversion.map(|c| c.height))}else{stream["height"].clone()},"AverageFrameRate":if encoded && video {json!(conversion.map(|c| c.frame_rate))}else{json!(rate)},"RealFrameRate":if encoded && video {json!(conversion.map(|c| c.frame_rate))}else{json!(rate)}, "Channels": if encoded && !video { json!(2) } else { stream["channels"].clone() }, "SampleRate": sample_rate});
                 stream_flags(&mut dto);
                 dto["IsInterlaced"] = json!(video && !encoded && !["progressive", "unknown", ""].contains(&stream["field_order"].as_str().unwrap_or("")));
                 dto
