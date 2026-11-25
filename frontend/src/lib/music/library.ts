@@ -107,15 +107,6 @@ export function restOf(all: MusicItem[], queue: MediaChoice[]) {
     .filter((track) => playable(track) && !known.has(track.id))
     .map(trackChoice);
 }
-export function shuffled<T>(items: T[]): T[] {
-  const result = [...items];
-  for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result;
-}
-
 /** Library artwork is served by Thelxinoe; other artwork is absolute. */
 export const artwork = (url?: string | null) =>
   url ? (/^https?:\/\//.test(url) ? url : `${serverUrl()}${url}`) : '';

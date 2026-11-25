@@ -280,7 +280,8 @@
       return;
     }
     const state = untrack(() => musicPlayer.state);
-    if (state) saveMusic(musicUser, state, musicPlayer.following);
+    const queue = musicPlayer.queue;
+    if (state && queue) saveMusic(musicUser, state, queue);
   });
   const attentionUserId = $derived(user?.id);
   $effect(() => {

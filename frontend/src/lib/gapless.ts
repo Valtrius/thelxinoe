@@ -1,13 +1,6 @@
 import { api } from './api';
 import { captureSession } from './session';
-import {
-  appendedQueue,
-  followedQueue,
-  insertedQueue,
-  playsAfter,
-  removedQueue,
-  wraps,
-} from './music/queue-follow';
+import type { Queue, QueueChange, Repeat } from './music/queue';
 import {
   capabilities,
   mediaUrl,
@@ -33,7 +26,7 @@ type Stream = {
 };
 type Entry = {
   choice: MediaChoice;
-  /** The choice's place in the queue. */
+  /** The choice's place in the Queue. */
   at: number;
   session: PlaybackSession;
   buffer?: AudioBuffer;
@@ -43,7 +36,6 @@ type Entry = {
   end: number;
   node?: ReturnType<typeof scheduleBuffer>;
 };
-export type Repeat = 'off' | 'all' | 'one';
 export type MusicState = {
   /** The current track, or '' once the queue has finished. */
   id: string;
@@ -128,25 +120,15 @@ function silentElement() {
   return element;
 }
 /**
- * A music queue. Tracks that fit in memory and arrive in time are decoded and
+ * Plays a Queue. Tracks that fit in memory and arrive in time are decoded and
  * scheduled back to back on one audio clock, so albums play without gaps. Other
  * tracks stream through an audio element, which starts on a few seconds of file.
  */
-export class GaplessQueue {
+export class GaplessAudio {
   private context = new AudioContext();
   private volume = this.context.createGain();
+  /** The playing track and the one loaded after it. */
   private entries: Entry[] = [];
-  private choices: MediaChoice[];
-  /** The queue before it was shuffled. */
-  private order: MediaChoice[];
-  private shuffled = false;
-  private repeat: Repeat = 'off';
-  /** The playing choice, when its playlist lost it: it goes as it stops. */
-  private leaving?: MediaChoice;
-  /** The playing choice's place in `choices`. */
-  private index: number;
-  /** The next choice to load. */
-  private next: number;
   /** Bumped when the entries ahead are dropped, so a load in flight is discarded. */
   private generation = 0;
   private closed = false;
@@ -183,33 +165,24 @@ export class GaplessQueue {
   };
   /** Opened as it was left: nothing is read until it plays. */
   private parked = false;
-  /** Reading the rest of the list this queue started from; clearing ends it. */
-  private extension = new AbortController();
-  /** Tracks added by hand, which the rest of the list doesn't add again. */
-  private inserted = new Set<string>();
   constructor(
-    choices: MediaChoice[],
+    private queue: Queue,
     private changed: (s: MusicState) => void,
     private failed: (e: unknown) => void,
     private waiting?: (value: boolean) => void,
-    start = 0,
-    parked?: MediaChoice['parked'],
   ) {
-    this.choices = [...choices];
-    this.order = [...choices];
-    this.index = Math.min(Math.max(0, start), Math.max(0, choices.length - 1));
-    this.next = this.index;
     this.volume.connect(this.context.destination);
     this.timer = setInterval(() => this.update(), 100);
     this.heartbeat = new Heartbeat(() => void this.keepalive());
     if (this.presence) this.followSystem(this.presence);
-    if (parked) {
+    queue.attach({
+      holding: () => ({ held: this.entries.length, reading: this.loading }),
+      changed: (change) => this.realign(change),
+    });
+    if (queue.restored) {
       this.parked = true;
       this.playing = false;
-      this.repeat = parked.repeat;
-      this.shuffled = parked.shuffled;
-      if (parked.leaving) this.leaving = this.choices[this.index];
-      this.resumeAt = this.choices[this.index]?.position ?? 0;
+      this.resumeAt = queue.current?.position ?? 0;
     }
   }
   async start() {
@@ -227,34 +200,13 @@ export class GaplessQueue {
     };
     if (!this.parked) await this.context.resume();
   }
-  private get upcoming() {
-    return {
-      choices: this.choices,
-      repeat: this.repeat,
-      leaving: this.leaving,
-    };
-  }
-  /** What plays after the choice at `at`. */
-  private advance(at: number) {
-    return playsAfter(this.upcoming, at);
-  }
-  private forgetLeaving() {
-    const at = this.choices.indexOf(this.leaving!);
-    this.choices = this.choices.filter((choice) => choice !== this.leaving);
-    this.order = this.order.filter((choice) => choice !== this.leaving);
-    this.leaving = undefined;
-    if (at >= 0 && at < this.index) this.index--;
-    this.resetAhead();
-  }
   private async load() {
-    if (this.closed || this.next >= this.choices.length) return;
+    if (this.closed || !this.queue.unread) return;
     const generation = this.generation;
     const stale = () =>
       this.closed || generation !== this.generation || !this.ownsSession();
     const first = !this.initialized && !this.entries.length;
-    const at = this.next;
-    const choice = this.choices[at];
-    this.next = this.advance(at);
+    const { at, choice } = this.queue.read()!;
     const resumeAt = this.resumeAt;
     this.resumeAt = 0;
     const pending = { signal: this.preparation.signal, waiting: this.waiting };
@@ -434,7 +386,7 @@ export class GaplessQueue {
   /** Keep the session on the stream, or else on silence, as the queue plays. */
   private sound() {
     const head = this.entries[0];
-    const finished = !head && !this.choices[this.index];
+    const finished = !head && !this.queue.current;
     const element =
       !this.playing || finished
         ? undefined
@@ -548,7 +500,7 @@ export class GaplessQueue {
   }
   private snapshot(current: Entry | null): MusicState {
     // While a track loads, the state already names it.
-    const choice = current?.choice ?? this.choices[this.index];
+    const choice = current?.choice ?? this.queue.current;
     return {
       id: choice?.id ?? '',
       title: choice?.title ?? '',
@@ -559,11 +511,11 @@ export class GaplessQueue {
           : 0,
       duration: current ? this.duration(current) : 0,
       paused: !current || this.context.state !== 'running',
-      index: this.index,
-      count: this.choices.length,
-      shuffle: this.shuffled,
-      repeat: this.repeat,
-      queue: this.choices,
+      index: this.queue.index,
+      count: this.queue.length,
+      shuffle: this.queue.shuffled,
+      repeat: this.queue.repeat,
+      queue: this.queue.choices,
       finished: !choice,
       loading: !current && !!choice && !this.parked,
       buffering:
@@ -571,24 +523,23 @@ export class GaplessQueue {
         !current.stream.ended &&
         this.context.state === 'running' &&
         current.stream.element.readyState < HTMLMediaElement.HAVE_FUTURE_DATA,
-      leaving: !!this.leaving,
+      leaving: this.queue.leaving,
     };
   }
   private update() {
     if (this.closed || !this.initialized) return;
+    let at = this.queue.index;
     while (this.entries.length && this.done(this.entries[0])) {
       const finished = this.entries.shift()!;
       void finished.session.stop(this.duration(finished));
       this.release(finished);
       this.lastCurrent = undefined;
-      this.index =
-        this.entries[0]?.at ?? Math.min(finished.at + 1, this.choices.length);
+      at = this.entries[0]?.at ?? Math.min(finished.at + 1, this.queue.length);
       if (this.entries[0] && !this.entries[0].node)
         this.schedule(this.context.currentTime + 0.02);
     }
-    if (this.entries.length) this.index = this.entries[0].at;
-    if (this.leaving && this.choices[this.index] !== this.leaving)
-      return this.forgetLeaving();
+    if (this.entries.length) at = this.entries[0].at;
+    if (this.queue.reached(at)) return;
     if (this.entries[0]?.stream && this.entries[1] && !this.entries[1].node)
       this.schedule(0);
     const head = this.entries[0];
@@ -596,7 +547,7 @@ export class GaplessQueue {
       !this.parked &&
       this.entries.length < 2 &&
       !this.loading &&
-      this.next < this.choices.length &&
+      this.queue.unread &&
       (!head?.stream || this.duration(head) - this.position(head) <= loadAhead)
     ) {
       this.loading = true;
@@ -664,7 +615,7 @@ export class GaplessQueue {
     this.discard(this.entries);
     this.entries = [];
     this.lastCurrent = undefined;
-    this.next = this.index;
+    this.queue.readFrom(this.queue.index);
     this.generation++;
     return true;
   }
@@ -704,7 +655,7 @@ export class GaplessQueue {
   async resume() {
     this.parked = false;
     this.wake();
-    if (!this.entries.length && !this.choices[this.index]) return this.jump(0);
+    if (!this.entries.length && !this.queue.current) return this.jump(0);
     this.playing = true;
     this.sounding = undefined;
     await this.context.resume();
@@ -765,21 +716,41 @@ export class GaplessQueue {
       void e.session.discard();
     }
   }
-  /** Drop what was loaded ahead, so it is read again under the new order. */
-  private resetAhead() {
+  /** Follow a change of the Queue. */
+  private realign(change: QueueChange) {
+    if (this.closed) return;
+    if (change === 'playing')
+      return this.queue.current
+        ? void this.jump(this.queue.index)
+        : this.finish();
     const [current, ...ahead] = this.entries;
-    this.discard(ahead);
-    this.entries = current ? [current] : [];
-    if (current) current.at = this.index;
-    this.next = current
-      ? this.advance(this.index)
-      : Math.min(this.index, this.choices.length);
+    if (change === 'ahead') {
+      // Read again under the new order.
+      this.discard(ahead);
+      this.entries = current ? [current] : [];
+      if (current) current.at = this.queue.index;
+      this.generation++;
+    } else if (change === 'moved') {
+      let at = this.queue.index;
+      for (const entry of this.entries) {
+        entry.at = at;
+        at = this.queue.after(at);
+      }
+    }
+    this.update();
+  }
+  /** Stop: nothing is left to play. */
+  private finish() {
+    this.parked = false;
+    this.stopCurrent();
+    this.discard(this.entries.slice(1));
+    this.entries = [];
     this.generation++;
     this.update();
   }
   /** Play the choice at `at` from its start. */
   async jump(at: number) {
-    if (this.closed || at < 0 || at >= this.choices.length) return;
+    if (this.closed || at < 0 || at >= this.queue.length) return;
     this.parked = false;
     this.wake();
     this.resumeAt = 0;
@@ -788,8 +759,7 @@ export class GaplessQueue {
     this.discard(this.entries.slice(1));
     this.entries = [];
     this.lastCurrent = undefined;
-    this.index = at;
-    this.next = at;
+    this.queue.readFrom(at);
     this.generation++;
     // Playing a track resumes a paused queue.
     await this.context.resume();
@@ -800,23 +770,13 @@ export class GaplessQueue {
     if (!this.wake() && !this.entries.length && !this.parked) return;
     this.parked = false;
     this.resumeAt = 0;
-    const target =
-      this.index + 1 < this.choices.length
-        ? this.index + 1
-        : wraps(this.upcoming)
-          ? 0
-          : this.choices.length;
-    if (target < this.choices.length)
+    const target = this.queue.nextTrack();
+    if (target < this.queue.length)
       return this.entries[1]?.at === target
         ? this.jumpAhead()
         : this.jump(target);
-    this.stopCurrent();
-    this.discard(this.entries.slice(1));
-    this.entries = [];
-    this.index = this.choices.length;
-    this.next = this.choices.length;
-    this.generation++;
-    this.update();
+    this.queue.readFrom(this.queue.length);
+    this.finish();
   }
   /** Move to what is loaded next, keeping it instead of reading it again. */
   private async jumpAhead() {
@@ -825,9 +785,9 @@ export class GaplessQueue {
     this.stopCurrent();
     this.entries.shift();
     this.lastCurrent = undefined;
-    this.index = this.entries[0]?.at ?? this.advance(current.at);
-    if (!this.entries.length) {
-      this.next = this.index;
+    if (this.entries.length) this.queue.moveTo(this.entries[0].at);
+    else {
+      this.queue.readFrom(this.queue.after(current.at));
       this.generation++;
     }
     await this.context.resume();
@@ -846,180 +806,18 @@ export class GaplessQueue {
   async previous() {
     const current = this.entries[0];
     const position = current ? this.position(current) : this.resumeAt;
-    const earlier =
-      this.index > 0
-        ? this.index - 1
-        : this.repeat === 'all'
-          ? this.choices.length - 1
-          : -1;
-    if (current && (position > 3 || earlier < 0)) {
+    const earlier = this.queue.previous(position);
+    if (current && earlier === null) {
       await this.seek(0);
       return;
     }
-    await this.jump(earlier < 0 || position > 3 ? this.index : earlier);
-  }
-  /** Add tracks after the playing one, or at the end. */
-  insert(items: MediaChoice[], next: boolean) {
-    if (this.closed || !items.length) return;
-    for (const item of items) this.inserted.add(item.id);
-    const finished = !this.entries.length && this.next >= this.choices.length;
-    const { choices, order, at } = insertedQueue(
-      {
-        choices: this.choices,
-        order: this.order,
-        index: this.index,
-        shuffled: this.shuffled,
-        finished,
-      },
-      items,
-      next,
-    );
-    this.choices = choices;
-    this.order = order;
-    if (finished) {
-      this.index = at;
-      this.next = at;
-      this.generation++;
-      this.update();
-    } else this.resetAhead();
-  }
-  async remove(at: number) {
-    if (this.closed || at < 0 || at >= this.choices.length) return;
-    const { choices, order, index } = removedQueue(
-      { choices: this.choices, order: this.order, index: this.index },
-      at,
-    );
-    this.choices = choices;
-    this.order = order;
-    if (at === this.index) {
-      if (at < this.choices.length) return this.jump(at);
-      this.parked = false;
-      this.stopCurrent();
-      this.discard(this.entries.slice(1));
-      this.entries = [];
-      this.index = this.choices.length;
-      this.next = this.choices.length;
-      this.generation++;
-      this.update();
-      return;
-    }
-    this.index = index;
-    this.resetAhead();
-  }
-  /**
-   * Take the order of the playlist this queue follows. What is already loaded
-   * ahead keeps playing when it still comes next.
-   */
-  follow(items: MediaChoice[]) {
-    if (this.closed || this.index >= this.choices.length) return;
-    const upNext = this.choices[this.advance(this.index)];
-    const followed = followedQueue(
-      {
-        choices: this.choices,
-        index: this.index,
-        shuffled: this.shuffled,
-      },
-      items,
-    );
-    this.choices = followed.choices;
-    this.order = followed.order;
-    this.index = followed.index;
-    const playing = this.choices[this.index];
-    this.leaving = items.some((item) => item.id === playing.id)
-      ? undefined
-      : playing;
-    const [current, ahead] = this.entries;
-    if (
-      this.loading ||
-      !current ||
-      upNext !== this.choices[this.advance(this.index)]
-    ) {
-      this.resetAhead();
-      return;
-    }
-    current.at = this.index;
-    this.next = this.advance(this.index);
-    if (ahead) {
-      ahead.at = this.next;
-      this.next = this.advance(ahead.at);
-    }
-    this.update();
-  }
-  /**
-   * Read what comes after this queue's tracks and add it when it arrives. A
-   * queue that can't get it plays on with what it has.
-   */
-  extend(read: NonNullable<MediaChoice['more']>) {
-    const { signal } = this.extension;
-    if (signal.aborted) return;
-    read(signal).then(
-      (items) => {
-        if (!signal.aborted) this.append(items);
-      },
-      () => {},
-    );
-  }
-  private append(list: MediaChoice[]) {
-    if (this.closed || !this.ownsSession()) return;
-    const appended = appendedQueue(
-      {
-        ...this.upcoming,
-        order: this.order,
-        index: this.index,
-        next: this.next,
-        shuffled: this.shuffled,
-        loaded: this.loading || this.entries.length > 0,
-      },
-      list,
-      this.inserted,
-    );
-    if (!appended) return;
-    this.choices = appended.choices;
-    this.order = appended.order;
-    if (appended.reset) return this.resetAhead();
-    this.next = appended.next;
-    this.update();
-  }
-  /** Keep only the playing track. */
-  clear() {
-    if (this.closed) return;
-    this.extension.abort();
-    const current = this.choices[this.index];
-    this.choices = current ? [current] : [];
-    this.order = [...this.choices];
-    this.index = 0;
-    this.leaving = undefined;
-    this.resetAhead();
-  }
-  setShuffle(on: boolean) {
-    if (this.closed || on === this.shuffled) return;
-    const current = this.choices[this.index];
-    if (on) {
-      this.order = [...this.choices];
-      const rest = this.choices.filter((_, i) => i !== this.index);
-      for (let i = rest.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [rest[i], rest[j]] = [rest[j], rest[i]];
-      }
-      this.choices = current ? [current, ...rest] : rest;
-      this.index = 0;
-    } else {
-      this.choices = [...this.order];
-      this.index = Math.max(0, this.choices.indexOf(current));
-    }
-    this.shuffled = on;
-    this.resetAhead();
-  }
-  setRepeat(mode: Repeat) {
-    if (this.closed || mode === this.repeat) return;
-    this.repeat = mode;
-    this.resetAhead();
+    await this.jump(earlier ?? this.queue.index);
   }
   close(): Promise<void> {
     if (this.closing) return this.closing;
     this.closed = true;
     this.preparation.abort();
-    this.extension.abort();
+    this.queue.close();
     clearInterval(this.timer);
     this.heartbeat.stop();
     this.sounding = undefined;

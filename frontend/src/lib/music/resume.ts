@@ -1,58 +1,30 @@
 import { serverUrl } from '../api';
 import type { MusicState } from '../gapless';
-import type { FollowedPlaylist, MediaChoice } from '../playback';
+import type { MediaChoice } from '../playback';
+import { savedChoice, type Queue } from './queue';
 
 const key = (user: string) => `thelxinoe:${serverUrl()}:${user}:music`;
 
 export function forgetMusic(user: string) {
   localStorage.removeItem(key(user));
 }
-export function saveMusic(
-  user: string,
-  state: MusicState,
-  playlist: FollowedPlaylist | null,
-) {
+export function saveMusic(user: string, state: MusicState, queue: Queue) {
   if (state.finished) return forgetMusic(user);
   // A track being read has no position yet: the last one saved still holds.
   if (state.loading) return;
-  const { queue, index, position, duration, repeat, shuffle, leaving } = state;
   try {
     localStorage.setItem(
       key(user),
-      JSON.stringify({
-        queue,
-        index,
-        position,
-        duration,
-        repeat,
-        shuffle,
-        leaving,
-        playlist,
-      }),
+      JSON.stringify(queue.save(state.position, state.duration)),
     );
   } catch {
     forgetMusic(user);
   }
 }
-/** The queue this device left open, ready to play on from where it stopped. */
+/** The Queue this device left open, ready to play on from where it stopped. */
 export function savedMusic(user: string): MediaChoice | null {
   try {
-    const saved = JSON.parse(localStorage.getItem(key(user)) ?? 'null');
-    const track: MediaChoice | undefined = saved?.queue?.[saved.index];
-    if (!track) return null;
-    return {
-      ...track,
-      position: saved.position,
-      duration: saved.duration || track.duration,
-      queueIndex: saved.index,
-      queue: saved.queue,
-      parked: {
-        repeat: saved.repeat,
-        shuffled: saved.shuffle,
-        leaving: saved.leaving,
-      },
-      playlist: saved.playlist ?? undefined,
-    };
+    return savedChoice(JSON.parse(localStorage.getItem(key(user)) ?? 'null'));
   } catch {
     return null;
   }
