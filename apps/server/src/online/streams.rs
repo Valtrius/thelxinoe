@@ -12,6 +12,7 @@ mod index;
 use crate::test_support::tool_runtime;
 
 use super::{downloads, extract, live, network::Family};
+use crate::playback::session::{Origin, Started};
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -564,7 +565,7 @@ async fn select_for_player(
     Ok(prepared)
 }
 
-pub(crate) async fn create_with_delivery(
+pub(crate) async fn start(
     state: &AppState,
     p: &Principal,
     video: &str,
@@ -572,7 +573,7 @@ pub(crate) async fn create_with_delivery(
     position: Option<f64>,
     vod: bool,
     orientation: Option<Orientation>,
-) -> Result<Value> {
+) -> Result<Started> {
     let live_title = if live::domain(video) {
         Some(live::authorize(state, p, video).await?.1)
     } else {
@@ -690,7 +691,7 @@ async fn create_recorded(
     options: Options,
     position: Option<f64>,
     vod: bool,
-) -> Result<Value> {
+) -> Result<Started> {
     let (mut kind, mut format, mut qualities) = plan(&prepared, &options, vod)?;
     let mut prepared = prepared;
     let indexes = if kind == Kind::Relay {
@@ -838,9 +839,32 @@ async fn create_recorded(
     let external_audio = (kind == Kind::Relay && source.audio.is_some())
         .then(|| format!("/api/v1/playback/{sid}/remote/audio?grant={grant}"));
     let encoding = decision.as_ref().map(|d| d.encoding).unwrap_or_default();
-    Ok(
-        json!({"id":sid,"url":format!("{}?grant={grant}",session.path),"external_audio":external_audio,"grant":grant,"mode":mode,"encoding":encoding,"conversion_reason":decision.as_ref().and_then(|d| d.conversion_reason.clone()),"position":start,"duration":prepared.duration,"timeline_start":0.0,"video":true,"live":false,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":(!encoding.video).then(|| format.quality()),"chapters":prepared.chapters,"probe":probe,"replay_gain":"off"}),
-    )
+    Ok(Started {
+        id: sid,
+        url: format!("{}?grant={grant}", session.path),
+        grant,
+        mode,
+        encoding,
+        conversion_reason: decision.and_then(|d| d.conversion_reason),
+        position: start,
+        duration: prepared.duration,
+        timeline_start: 0.0,
+        video: true,
+        tracks: Vec::new(),
+        subtitles: Vec::new(),
+        selected_subtitle: None,
+        options,
+        chapters: prepared.chapters,
+        probe,
+        replay_gain: "off".into(),
+        origin: Origin::Online {
+            external_audio,
+            live: false,
+            qualities,
+            quality: (!encoding.video).then(|| format.quality()),
+            orientation: None,
+        },
+    })
 }
 async fn create_live(
     state: &AppState,
@@ -849,7 +873,7 @@ async fn create_live(
     live_title: Option<String>,
     prepared: Prepared,
     options: Options,
-) -> Result<Value> {
+) -> Result<Started> {
     let prepared = select_for_player(state, prepared, &options).await?;
     let qualities = formats::choices(
         prepared
@@ -930,9 +954,32 @@ async fn create_live(
         return Err(ApiError::not_found());
     }
     let grant = grants::issue(state, p, &format!("playback:{sid}"), 120).await?;
-    Ok(
-        json!({"id":sid,"url":format!("{}?grant={grant}",session.path),"external_audio":null,"grant":grant,"mode":decision.mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":0.0,"duration":0.0,"timeline_start":0.0,"video":true,"live":true,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"orientation":prepared.orientation,"chapters":[],"probe":prepared.probe,"replay_gain":"off"}),
-    )
+    Ok(Started {
+        id: sid,
+        url: format!("{}?grant={grant}", session.path),
+        grant,
+        mode: decision.mode,
+        encoding: decision.encoding,
+        conversion_reason: decision.conversion_reason,
+        position: 0.0,
+        duration: 0.0,
+        timeline_start: 0.0,
+        video: true,
+        tracks: Vec::new(),
+        subtitles: Vec::new(),
+        selected_subtitle: None,
+        options,
+        chapters: Vec::new(),
+        probe: prepared.probe,
+        replay_gain: "off".into(),
+        origin: Origin::Online {
+            external_audio: None,
+            live: true,
+            qualities,
+            quality: prepared.quality,
+            orientation: Some(prepared.orientation),
+        },
+    })
 }
 pub(crate) async fn validate(state: &AppState, id: &str) -> Result<()> {
     if !state.online.streams.sessions.lock().await.contains_key(id) {

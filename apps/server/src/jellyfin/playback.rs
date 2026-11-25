@@ -198,9 +198,13 @@ pub(super) async fn info_source(
     };
     options.capabilities.allow_conversion =
         Some(field("EnableTranscoding").as_ref() != Some(&json!(false)));
+    // What the client's own bitrate would need, before the session decides on the bounded one.
+    // A refused transcode fails here with the client's reason.
     let planned = thelxinoe_playback::decision(&source, &options)
         .map_err(|e| ApiError::bad(e.to_string()))?;
-    if let Some(quality) = super::profile::bounded_quality(&source, &options, max)? {
+    if let Some(quality) =
+        super::profile::bounded_quality(&source, &options, planned.encoding.video, max)?
+    {
         options.quality = quality.into();
         options.capabilities = negotiate(thelxinoe_playback::bitrate(quality)?);
         options.capabilities.allow_conversion =
@@ -214,10 +218,7 @@ pub(super) async fn info_source(
             "The client does not support the available H.264/AAC transcode",
         ));
     }
-    if planned.mode == "transcode" && field("EnableTranscoding").as_ref() == Some(&json!(false)) {
-        return Err(ApiError::bad("The client disabled the required transcode"));
-    }
-    let playback = core::create_with_delivery(
+    let started = core::session::start(
         state,
         p,
         core::Create {
@@ -230,31 +231,31 @@ pub(super) async fn info_source(
         true,
     )
     .await?;
-    let id = playback["id"].as_str().unwrap().to_owned();
+    let id = started.id.clone();
     let key = id.clone();
     storage::info_source(key, &state.db).await?;
-    dto["SupportsDirectPlay"] = json!(playback["mode"] == "direct");
+    dto["SupportsDirectPlay"] = json!(started.direct());
     // HLS selects one audio stream on the server, including when codecs are
     // copied. Clients must use their server-controlled track selection path.
     // DirectStream describes a progressive stream with local track selection.
     dto["SupportsDirectStream"] = json!(false);
-    dto["SupportsTranscoding"] = json!(playback["mode"] != "direct");
-    dto["DirectStreamUrl"] = playback["url"].clone();
+    dto["SupportsTranscoding"] = json!(!started.direct());
+    dto["DirectStreamUrl"] = json!(started.url);
     // The video backend preserves ETag as the stream URL's tag parameter.
     // Use that field for a scoped grant when it omits the device login header.
-    dto["ETag"] = playback["grant"].clone();
-    if playback["mode"] != "direct" {
-        dto["TranscodingUrl"] = playback["url"].clone();
+    dto["ETag"] = json!(started.grant);
+    if !started.direct() {
+        dto["TranscodingUrl"] = json!(started.url);
         dto["TranscodingSubProtocol"] = json!("hls");
         dto["TranscodingContainer"] = json!("ts");
     }
-    if !playback["options"]["audio"].is_null() {
-        dto["DefaultAudioStreamIndex"] = playback["options"]["audio"].clone();
+    if let Some(audio) = started.options.audio {
+        dto["DefaultAudioStreamIndex"] = json!(audio);
     }
     dto["DefaultSubtitleStreamIndex"] = json!(
         tracks
             .iter()
-            .find(|t| Some(t.id.as_str()) == playback["selected_subtitle"].as_str())
+            .find(|t| Some(t.id.as_str()) == started.selected_subtitle.as_deref())
             .map(track_index)
             .unwrap_or(-1)
     );
@@ -277,7 +278,7 @@ pub(super) async fn info_source(
             };
             // As in Jellyfin, a client that reads a track from the original file gets it
             // there; extracting it for External delivery reads the whole file first.
-            if playback["mode"] == "direct"
+            if started.direct()
                 && track.path.is_none()
                 && super::profile::embeds_subtitle(
                     &profile,
@@ -288,14 +289,16 @@ pub(super) async fn info_source(
             {
                 stream["DeliveryMethod"] = json!("Embed");
             } else if stream["IsTextSubtitleStream"] == true
-                && let Some(sub) = playback["subtitles"]
-                    .as_array()
-                    .and_then(|a| a.iter().find(|s| s["id"] == track.id))
+                && let Some(url) = started
+                    .subtitles
+                    .iter()
+                    .find(|s| s.id == track.id)
+                    .and_then(|s| s.url.as_ref())
             {
                 stream["DeliveryUrl"] = if subrip {
-                    json!(format!("{}&format=srt", sub["url"].as_str().unwrap()))
+                    json!(format!("{url}&format=srt"))
                 } else {
-                    sub["url"].clone()
+                    json!(url)
                 };
                 stream["DeliveryMethod"] = json!("External");
                 stream["IsExternal"] = json!(true);

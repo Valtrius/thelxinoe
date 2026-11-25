@@ -67,6 +67,61 @@ async fn delivered(state: &AppState, url: &str) -> Vec<u8> {
     );
     bytes
 }
+/// The web API's playback session of an online video, as the web app reads it.
+fn online_shape(session: &Value, live: bool) {
+    let mut keys = vec![
+        "chapters",
+        "conversion_reason",
+        "duration",
+        "encoding",
+        "external_audio",
+        "grant",
+        "id",
+        "live",
+        "mode",
+        "options",
+        "position",
+        "probe",
+        "qualities",
+        "quality",
+        "replay_gain",
+        "selected_subtitle",
+        "subtitles",
+        "timeline_start",
+        "tracks",
+        "url",
+        "video",
+    ];
+    if live {
+        keys.insert(10, "orientation");
+    }
+    assert_eq!(
+        session.as_object().unwrap().keys().collect::<Vec<_>>(),
+        keys,
+        "{session}"
+    );
+    assert_eq!(session["live"], live);
+    assert_eq!(session["video"], true);
+    assert_eq!(session["timeline_start"].to_string(), "0.0");
+    assert!(session["position"].is_f64() && session["duration"].is_f64());
+    assert_eq!(session["tracks"], json!([]));
+    assert_eq!(session["subtitles"], json!([]));
+    assert_eq!(session["selected_subtitle"], Value::Null);
+    assert_eq!(session["replay_gain"], "off");
+    let grant = session["grant"].as_str().unwrap();
+    assert!(
+        session["url"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("?grant={grant}"))
+    );
+    if live {
+        assert_eq!(session["external_audio"], Value::Null);
+        assert_eq!(session["chapters"], json!([]));
+        assert_eq!(session["position"].to_string(), "0.0");
+        assert_eq!(session["duration"].to_string(), "0.0");
+    }
+}
 fn hashes(bytes: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(bytes)
         .lines()
@@ -362,6 +417,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
         assert_eq!(response.0, StatusCode::OK, "{height}: {}", response.2);
         let session = response.2;
         assert_eq!(session["mode"], "remux");
+        online_shape(&session, true);
         assert_eq!(session["encoding"], json!({"video":false,"audio":false}));
         assert_eq!(session["quality"], format!("{height}p"));
         let url = session["url"].as_str().unwrap();
@@ -397,6 +453,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
     assert_eq!(response.0, StatusCode::OK, "{}", response.2);
     let session = response.2;
     assert_eq!(session["mode"], "remux");
+    online_shape(&session, true);
     assert_eq!(session["encoding"], json!({"video":false,"audio":false}));
     assert_eq!(session["quality"], "180p");
     delete(&session).await;
@@ -418,6 +475,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
         assert_eq!(response.0, StatusCode::OK, "{height}: {}", response.2);
         let session = response.2;
         assert_eq!(session["mode"], "direct");
+        online_shape(&session, false);
         assert_eq!(session["encoding"], json!({"video":false,"audio":false}));
         assert_eq!(session["quality"], format!("{height}p"));
         assert_eq!(session["position"], 3.0);
@@ -477,18 +535,22 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
     let options = |video: Value| -> thelxinoe_playback::Options {
         serde_json::from_value(json!({"quality":"180p","capabilities":{"containers":[],"video":video,"audio":["aac"],"hls":true,"hls_container":"ts","allow_conversion":true}})).unwrap()
     };
-    let session = create_with_delivery(
-        &state,
-        &principal,
-        "abcdefghijk",
-        options(json!(["h264"])),
-        Some(0.0),
-        true,
-        None,
+    let session = serde_json::to_value(
+        start(
+            &state,
+            &principal,
+            "abcdefghijk",
+            options(json!(["h264"])),
+            Some(0.0),
+            true,
+            None,
+        )
+        .await
+        .unwrap(),
     )
-    .await
     .unwrap();
     assert_eq!(session["mode"], "remux");
+    online_shape(&session, false);
     assert_eq!(session["encoding"], json!({"video":false,"audio":false}));
     assert_eq!(session["quality"], "180p");
     let url = session["url"].as_str().unwrap();
@@ -513,7 +575,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
     evidence.push(json!({"delivery":"remux","hls_container":"ts","copied_frames":copied.len()}));
     delete(&session).await;
     // Disabled conversion is refused rather than replaced.
-    let refused = create_with_delivery(
+    let refused = start(
         &state,
         &principal,
         "abcdefghijk",
@@ -548,15 +610,19 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
     );
     insert(&state, &recorded, proxy);
     let input = json!({"media_id":"youtube:abcdefghijk","position":0,"options":{"quality":"180p","capabilities":{"containers":[],"video":[],"audio":["aac"],"hls":true,"hls_container":"mp4","allow_conversion":true,"conversion":{"width":160,"height":90,"frame_rate":24.0,"profile":"high","level":41}}}});
-    let session = crate::playback::create_with_delivery(
-        &state,
-        &principal,
-        serde_json::from_value(input).unwrap(),
-        true,
+    let session = serde_json::to_value(
+        crate::playback::session::start(
+            &state,
+            &principal,
+            serde_json::from_value(input).unwrap(),
+            true,
+        )
+        .await
+        .unwrap(),
     )
-    .await
     .unwrap();
     assert_eq!(session["encoding"], json!({"video":true,"audio":false}));
+    online_shape(&session, false);
     let url = session["url"].as_str().unwrap();
     let playlist = String::from_utf8(delivered(&state, url).await).unwrap();
     let base = url.rsplit_once('/').unwrap().0;
@@ -627,6 +693,7 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
     let response = call(&state, "/api/v1/playback", "POST", input, &cookie).await;
     assert_eq!(response.0, StatusCode::OK, "{}", response.2);
     let session = response.2;
+    online_shape(&session, false);
     let url = session["url"].as_str().unwrap();
     assert!(url.contains("/remote/video?grant="));
     upstream(proxy).await;
