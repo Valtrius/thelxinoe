@@ -3,7 +3,6 @@
   import SeekRange from './SeekRange.svelte';
   import { twMerge } from 'tailwind-merge';
   import { onDestroy, onMount, tick, untrack } from 'svelte';
-  import { PlaybackActivity } from './playback-activity';
   import Hls from 'hls.js';
   import {
     AlertCircle,
@@ -28,7 +27,6 @@
   import { chapterAt, chapterMarks, chapterTitle } from './chapters';
   import { playerHandleReveal, playerReveal } from './player-reveal';
   import { api } from './api';
-  import { inBackground } from './page-readiness';
   import {
     appearance,
     streamOrientation,
@@ -40,9 +38,7 @@
     capabilities,
     qualityOptions,
     mediaUrl,
-    prepare,
     playbackRequest,
-    sessionRefused,
     time,
     replayGain,
     shortSide,
@@ -51,6 +47,12 @@
     type Playback,
     type Preferences,
   } from './playback';
+  import {
+    Heartbeat,
+    PlaybackSession,
+    type ProgressState,
+    type SessionSetup,
+  } from './playback-session';
   let {
     choice,
     closed,
@@ -116,8 +118,6 @@
   let centerBounds = $state({ top: 0, bottom: 0 });
   const interrupted =
     'Playback interrupted. Try seeking or reopening this item.';
-  // The session whose stream already restarted after it died.
-  let restarted: string | undefined;
   let active = $state<Playback | null>(null),
     info = $state<MediaInfo | null>(null),
     error = $state(''),
@@ -201,10 +201,9 @@
   const controlsShown = $derived(
     controlsVisible || loading || !!error || controlFocused || !!optionMenu,
   );
-  let hls: Hls | undefined,
-    sequence = 0,
-    generation = 0,
-    reporting: Promise<unknown> = Promise.resolve();
+  // The playback session whose playback `active` shows.
+  let session: PlaybackSession | undefined,
+    generation = 0;
   let audioContext: AudioContext | undefined,
     audioElement: HTMLVideoElement | undefined,
     gain: GainNode | undefined;
@@ -492,15 +491,12 @@
       return;
     const upperBound = Number.isFinite(player.duration)
       ? player.duration
-      : Math.max(0, active.duration - active.timeline_start);
+      : session!.mediaTime(active.duration);
     player.currentTime = Math.max(
       0,
       Math.min(upperBound, player.currentTime + direction / frameRate()),
     );
-    position = Math.min(
-      active.duration,
-      player.currentTime + active.timeline_start,
-    );
+    position = Math.min(active.duration, session!.timeline(player.currentTime));
     void report('paused');
   }
   function seekBy(seconds: number) {
@@ -594,7 +590,7 @@
       player.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
     ) {
       buffering = false;
-      if (activity.setActive(!player.paused))
+      if (session?.activity.setActive(!player.paused))
         void report(player.paused ? 'paused' : 'playing');
     }
   }
@@ -615,13 +611,13 @@
   // The seek bar shows how far media is buffered from the playhead.
   let bufferedTo = $state(0);
   function updateBuffered() {
-    if (active && player)
-      bufferedTo = player.currentTime + bufferedAhead() + active.timeline_start;
+    if (session && player)
+      bufferedTo = session.timeline(player.currentTime + bufferedAhead());
   }
   function mediaProgress() {
     updateBuffered();
     // Native media can receive bytes before it exposes a playable range.
-    if (!hls) stalledSince = undefined;
+    if (!session?.hls) stalledSince = undefined;
   }
   function fraction(at: number) {
     const duration = active?.duration ?? 0;
@@ -647,7 +643,6 @@
       ready();
     });
   }
-  let activity = new PlaybackActivity();
   let stalledSince: number | undefined;
   let lastPlaybackTime = 0;
   let lastBufferedEnd = 0;
@@ -655,6 +650,7 @@
   let reloadedAfterStall = false;
   const received = new WeakMap<object, number>();
   function receivingFragments() {
+    const hls = session?.hls;
     if (!hls) return false;
     const { main, audio } = hls.inFlightFragments;
     let progress = false;
@@ -691,9 +687,10 @@
     lastPlaybackTime = player.currentTime;
     stalledSince ??= performance.now();
     if (performance.now() - stalledSince >= 30000) {
-      if (!reloadedAfterStall) {
+      if (!reloadedAfterStall && session) {
         const revision = generation;
-        void attach(active.url, position, true, true).catch((e) => {
+        reloadedAfterStall = true;
+        void session.attach(player, position, true).catch((e) => {
           if (generation === revision) error = String(e);
         });
         return;
@@ -708,11 +705,12 @@
   function waiting() {
     if (!active) return;
     buffering = true;
-    if (activity.setActive(false)) void report('paused');
+    if (session?.activity.setActive(false)) void report('paused');
   }
-  const timer = setInterval(() => {
+  // Progress reports keep the session alive.
+  const heartbeat = new Heartbeat(() => {
     void report(paused || buffering ? 'paused' : 'playing');
-  }, 10000);
+  });
   $effect(() => {
     const current = choice;
     untrack(() => void open(current));
@@ -778,187 +776,137 @@
       if (revision === generation) busy = false;
     }
   }
+  // The Player's side of each playback session.
+  const sessionSetup: SessionSetup = {
+    loadHls: () => Hls,
+    // A transcode's playlist grows as it plays; it isn't a live stream to follow.
+    hls: (playback) => ({
+      ...(playback.live ? {} : { liveSyncDurationCount: 1000 }),
+      maxLiveSyncPlaybackRate: 1,
+    }),
+    seekAtStart: true,
+    abortableReports: true,
+    hooks: {
+      attaching(opened, autoplay) {
+        buffering = true;
+        stalledSince = undefined;
+        lastBufferedEnd = 0;
+        awaitingAutoplay = autoplay;
+        holding = false;
+        player.volume = volume;
+        player.playbackRate = speed;
+        if (!opened.playback.video) return connectAudio(opened.playback);
+      },
+      play() {
+        awaitingAutoplay = false;
+        const playing = active;
+        void player.play().catch(() => {
+          // A seek before playback starts interrupts this request; it resumes
+          // when the seek has enough media.
+          if (active === playing && !holding) {
+            paused = true;
+            ready();
+          }
+        });
+      },
+      buffered() {
+        updateBuffered();
+        release();
+      },
+      moved(opened) {
+        active = opened.playback;
+        selectSubtitle();
+        position = opened.playback.position;
+        reloadedAfterStall = false;
+      },
+      // A transcode that died, such as on a failed GPU, restarts once where it stopped.
+      restart() {
+        if (busy) return false;
+        // A failed restart reports its own error.
+        void seek(position);
+        return true;
+      },
+      interrupted() {
+        error = interrupted;
+        player.pause();
+      },
+      refused(opened, e) {
+        if (session !== opened) return;
+        error = String(e);
+        player?.pause();
+      },
+    },
+  };
   async function start(at?: number, revision = generation, autoplay = true) {
-    const result = await prepare(
-      choice,
+    const opened = await PlaybackSession.open(
       {
-        quality,
-        audio,
-        subtitle: subtitleChosen ? subtitle || null : null,
-        capabilities: {
-          ...capabilities(
-            info?.sources.find((s) => !choice.fileId || s.id === choice.fileId)
-              ?.probe,
-          ),
-          burn_subtitles: true,
+        choice,
+        options: {
+          quality,
+          audio,
+          subtitle: subtitleChosen ? subtitle || null : null,
+          capabilities: {
+            ...capabilities(
+              info?.sources.find(
+                (s) => !choice.fileId || s.id === choice.fileId,
+              )?.probe,
+            ),
+            burn_subtitles: true,
+          },
         },
-      },
-      at,
-      {
-        signal: preparation.signal,
-        waiting: (value) => {
-          if (revision === generation) waitingTools = value;
+        at,
+        preparation: {
+          signal: preparation.signal,
+          waiting: (value) => {
+            if (revision === generation) waitingTools = value;
+          },
         },
+        orientation: $streamOrientation,
       },
-      $streamOrientation,
+      sessionSetup,
     );
-    if (revision === generation && active) await stop();
+    if (revision === generation && session) await stop();
     if (revision !== generation) {
-      await api(`/playback/${result.id}/progress`, 'POST', {
-        sequence: 0,
-        position: result.position,
-        state: 'stopped',
-      });
+      await opened.abandon();
       return;
     }
+    const result = opened.playback;
+    session = opened;
     active = result;
     if (result.qualities?.length && quality.endsWith('mbps')) quality = 'auto';
-    activity = new PlaybackActivity();
-    sequence = 0;
     position = result.position;
     subtitle = result.selected_subtitle ?? 'off';
     if (subtitle !== 'off') lastSubtitle = subtitle;
     await tick();
-    if (revision !== generation) return;
-    await attach(result.url, result.position, autoplay);
+    if (revision !== generation || !player) return;
+    reloadedAfterStall = false;
+    await opened.attach(player, result.position, autoplay);
   }
-  async function attach(
-    url: string,
-    at: number,
-    autoplay = true,
-    recovering = false,
-  ) {
-    if (!active || !player) return;
-    buffering = true;
-    const session = active;
-    stalledSince = undefined;
-    lastBufferedEnd = 0;
-    reloadedAfterStall = recovering;
-    awaitingAutoplay = autoplay;
-    holding = false;
-    const play = () => {
-      if (active !== session) return;
-      awaitingAutoplay = false;
-      void player.play().catch(() => {
-        // A seek before playback starts interrupts this request; it resumes
-        // when the seek has enough media.
-        if (active === session && !holding) {
-          paused = true;
-          ready();
-        }
-      });
-    };
-    player.volume = volume;
-    player.playbackRate = speed;
-    if (!active.video) {
-      if (audioElement !== player) {
-        await audioContext?.close();
-        audioContext = new AudioContext();
-        gain = audioContext.createGain();
-        audioContext
-          .createMediaElementSource(player)
-          .connect(gain)
-          .connect(audioContext.destination);
-        audioElement = player;
-      }
-      gain!.gain.value = replayGain(active.probe, active.replay_gain);
-      await audioContext?.resume();
-      if (active !== session) return;
+  async function connectAudio(playback: Playback) {
+    if (audioElement !== player) {
+      await audioContext?.close();
+      audioContext = new AudioContext();
+      gain = audioContext.createGain();
+      audioContext
+        .createMediaElementSource(player)
+        .connect(gain)
+        .connect(audioContext.destination);
+      audioElement = player;
     }
-    hls?.destroy();
-    hls = undefined;
-    // Online videos play their original files as HLS, even in direct mode.
-    const playlist = new URL(url, location.href).pathname.endsWith('.m3u8');
-    if (
-      !playlist ||
-      (!Hls.isSupported() &&
-        player.canPlayType('application/vnd.apple.mpegurl'))
-    ) {
-      player.src = mediaUrl(url);
-      player.onloadedmetadata = () => {
-        if (active !== session) return;
-        if (!session.live)
-          player.currentTime = Math.max(0, at - session.timeline_start);
-        if (autoplay) play();
-      };
-    } else {
-      hls = new Hls({
-        enableWorker: false,
-        startPosition: session.live
-          ? -1
-          : Math.max(0, at - session.timeline_start),
-        ...(session.live ? {} : { liveSyncDurationCount: 1000 }),
-        maxLiveSyncPlaybackRate: 1,
-        maxBufferLength: 30,
-      });
-      hls.loadSource(mediaUrl(url));
-      hls.attachMedia(player);
-      if (autoplay) hls.on(Hls.Events.MANIFEST_PARSED, play);
-      hls.on(Hls.Events.FRAG_BUFFERED, () => {
-        updateBuffered();
-        release();
-      });
-      hls.on(Hls.Events.ERROR, (_, data) => {
-        if (!data.fatal || active !== session) return;
-        // A transcode that died, such as on a failed GPU, restarts once where it stopped.
-        if (
-          restarted !== session.id &&
-          session.mode !== 'direct' &&
-          !session.live &&
-          !busy
-        ) {
-          restarted = session.id;
-          // A failed restart reports its own error.
-          void seek(position);
-          return;
-        }
-        error = interrupted;
-        player.pause();
-      });
-    }
+    gain!.gain.value = replayGain(playback.probe, playback.replay_gain);
+    await audioContext?.resume();
   }
-  let progressRequests = new AbortController();
-  function report(state: string) {
-    if (!active) return Promise.resolve();
-    const id = active.id;
-    const data = {
-      sequence: sequence++,
-      position,
-      state,
-      active_seconds: activity.seconds(),
-    };
-    const signal = state === 'stopped' ? undefined : progressRequests.signal;
-    reporting = reporting
-      .catch(() => {})
-      // Progress reports never hold back the page being opened.
-      .then(() =>
-        inBackground(() =>
-          api(
-            `/playback/${id}/progress`,
-            'POST',
-            data,
-            signal ?? AbortSignal.timeout(5000),
-          ),
-        ),
-      )
-      .catch((e) => {
-        if (active?.id !== id || !sessionRefused(e)) return;
-        error = String(e);
-        player?.pause();
-      });
-    return reporting;
+  function report(state: ProgressState) {
+    return session?.report(state, position) ?? Promise.resolve();
   }
   async function stop() {
-    activity.setActive(false);
-    progressRequests.abort();
-    progressRequests = new AbortController();
-    const stopped = active ? report('stopped') : Promise.resolve();
+    const stopping = session;
+    session = undefined;
+    const stopped = stopping?.stop(position);
     active = null;
     paused = true;
     holding = false;
     bufferedTo = 0;
-    hls?.destroy();
-    hls = undefined;
     if (player) {
       player.onloadedmetadata = null;
       player.pause();
@@ -972,12 +920,12 @@
     await stopped;
   }
   async function seek(at: number, resume?: boolean) {
-    if (!active || active.live) return;
+    if (!session || session.playback.live) return;
     const shouldResume = resume ?? (holding || !player.paused);
-    if (active.mode === 'direct') {
-      player.currentTime = at;
+    if (session.playback.mode === 'direct') {
+      await session.seek(at);
       position = at;
-      if (shouldResume && hls && bufferedAhead() < resumeBuffer) hold();
+      if (shouldResume && session.hls && bufferedAhead() < resumeBuffer) hold();
       await report(shouldResume ? 'playing' : 'paused');
       return;
     }
@@ -985,22 +933,14 @@
     busy = true;
     error = '';
     const revision = generation;
-    const session = active;
+    const sought = session;
     try {
       player.pause();
-      const next = await api<{
-        url: string;
-        timeline_start: number;
-        position: number;
-      }>(`/playback/${active.id}/seek`, 'POST', {
-        position: Math.min(at, active.duration - 0.05),
+      const moved = await sought.seek(at, {
+        autoplay: shouldResume,
+        current: () => revision === generation && session === sought,
       });
-      if (revision !== generation || active !== session) return;
-      active = { ...active, ...next };
-      selectSubtitle();
-      position = next.position;
-      await attach(next.url, next.position, shouldResume);
-      await report(shouldResume ? 'playing' : 'paused');
+      if (moved) await report(shouldResume ? 'playing' : 'paused');
     } catch (e) {
       if (revision === generation) error = String(e);
     } finally {
@@ -1042,17 +982,18 @@
   function update() {
     if (
       active &&
+      session &&
       !busy &&
       player.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
     )
       position = Math.min(
         active.live ? Number.POSITIVE_INFINITY : active.duration,
-        player.currentTime + active.timeline_start,
+        session.timeline(player.currentTime),
       );
     updateBuffered();
   }
   async function end() {
-    activity.setActive(false);
+    session?.activity.setActive(false);
     if (active) {
       const revision = generation;
       if (!active.live) position = active.duration;
@@ -1071,7 +1012,7 @@
   onDestroy(() => {
     preparation.abort();
     generation++;
-    clearInterval(timer);
+    heartbeat.stop();
     clearInterval(stallTimer);
     clearTimeout(clickTimer);
     clearTimeout(hideTimer);
@@ -1084,12 +1025,12 @@
       // Pausing while a seek waits for media keeps playback paused.
       holding = false;
       paused = true;
-      activity.setActive(false);
+      session?.activity.setActive(false);
       void report('paused');
       return;
     }
     const revision = generation;
-    const session = active;
+    const shown = active;
     if (active && !active.live && position >= active.duration - 0.1) {
       busy = true;
       try {
@@ -1107,14 +1048,14 @@
       return;
     }
     await audioContext?.resume();
-    if (revision !== generation || active !== session) return;
+    if (revision !== generation || active !== shown) return;
     const buffered = Array.from(
       { length: player.buffered.length },
       (_, i) =>
         player.currentTime >= player.buffered.start(i) &&
         player.currentTime < player.buffered.end(i),
     );
-    const firstFragment = hls?.latestLevelDetails?.fragments[0];
+    const firstFragment = session?.hls?.latestLevelDetails?.fragments[0];
     const expired = firstFragment && player.currentTime < firstFragment.start;
     if (
       active.mode !== 'direct' &&
@@ -1235,7 +1176,7 @@
     }}
     onpause={() => {
       if (holding) return;
-      activity.setActive(false);
+      session?.activity.setActive(false);
       paused = true;
       void report('paused');
     }}

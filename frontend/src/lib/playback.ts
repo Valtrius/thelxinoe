@@ -1,4 +1,4 @@
-import { api, ApiError, serverUrl } from './api';
+import { ApiError, serverUrl } from './api';
 import { captureSession } from './session';
 import type { Chapter } from './chapters';
 
@@ -291,12 +291,6 @@ export function capabilities(probe: Probe = {}) {
 export function mediaUrl(path: string) {
   return `${serverUrl()}${path}`;
 }
-// The server answers for a session it no longer plays with a 4xx. A dropped
-// connection or a server error is transient: playback goes on and the next
-// report catches up.
-export function sessionRefused(error: unknown) {
-  return error instanceof ApiError && error.status < 500;
-}
 export type Preparation = {
   signal: AbortSignal;
   waiting?: (value: boolean) => void;
@@ -335,23 +329,6 @@ export async function playbackRequest<T>(
   } finally {
     waiting?.(false);
   }
-}
-export function prepare(
-  choice: MediaChoice,
-  options: Options,
-  position?: number,
-  preparation?: Preparation,
-  orientation?: Orientation,
-) {
-  const body = {
-    media_id: choice.id,
-    file_id: choice.fileId,
-    options,
-    position: position ?? choice.position,
-    orientation,
-  };
-  const request = () => api<Playback>('/playback', 'POST', body);
-  return preparation ? playbackRequest(request, preparation) : request();
 }
 export function replayGain(probe: Probe, mode: string): number {
   if (mode === 'off') return 1;
