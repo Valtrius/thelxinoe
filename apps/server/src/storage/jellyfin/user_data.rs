@@ -14,21 +14,16 @@ pub(super) async fn update(
         let position = input.playback_position_ticks.map(|ticks| ticks as f64 / 10_000_000.0);
         match target {
             Target::Media(id) => {
-                if !tx.query_row("SELECT EXISTS(SELECT 1 FROM media WHERE id=?1)", [&id], |row| row.get::<_, bool>(0))? {
-                    return Ok(404);
-                }
-                if let Some(position) = position {
-                    let source: Option<(String, String)> = tx.query_row("SELECT f.edition,f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=?1 AND f.present=1 ORDER BY (f.edition=(SELECT edition FROM edition_progress WHERE user_id=?2 AND media_id=?1 ORDER BY updated_at DESC,edition LIMIT 1)) DESC,f.edition,f.id LIMIT 1", params![id,user], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
-                    let Some((edition, probe)) = source else { return Ok(400); };
-                    let probe: serde_json::Value = serde_json::from_str(&probe)?;
-                    let duration = probe["format"]["duration"].as_str().and_then(|value| value.parse::<f64>().ok()).filter(|duration| duration.is_finite() && *duration > 0.0).unwrap_or(0.0);
-                    if duration == 0.0 { return Ok(400); }
-                    let position = position.min(duration);
-                    tx.execute("INSERT INTO edition_progress(user_id,media_id,edition,position,duration,updated_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id,media_id,edition) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at", params![user,id,edition,position,duration,now()])?;
-                }
-                tx.execute("INSERT INTO media_state(user_id,media_id,watched,favorite,updated_at) VALUES(?1,?2,COALESCE(?3,0),COALESCE(?4,0),?5) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=COALESCE(?3,watched),favorite=COALESCE(?4,favorite),updated_at=?5", params![user,id,input.played,input.is_favorite,now()])?;
-                if let Some(played) = input.played && (position.is_none() || played) {
-                    tx.execute("UPDATE edition_progress SET position=CASE WHEN ?1 THEN duration ELSE 0 END,updated_at=?2 WHERE user_id=?3 AND media_id=?4", params![played,now(),user,id])?;
+                let change = crate::watching::Change {
+                    watched: input.played,
+                    favorite: input.is_favorite,
+                    watch_later: None,
+                    resume: position,
+                };
+                match crate::watching::change(&tx, &user, &id, change, now())? {
+                    crate::watching::Changed::Done => {}
+                    crate::watching::Changed::Missing => return Ok(404),
+                    crate::watching::Changed::Unsupported | crate::watching::Changed::NoEdition => return Ok(400),
                 }
             }
             Target::YouTube(video) => {

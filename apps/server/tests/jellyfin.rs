@@ -3411,3 +3411,99 @@ async fn videos_without_artwork_show_a_still_from_their_file() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+#[tokio::test]
+async fn a_series_and_season_read_as_played_once_every_episode_is() {
+    let (_temp, state, _) = fixture().await;
+    state.db.write("test.fixture", |db| {
+        db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('shows','Shows','shows','/shows');
+INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES
+ ('show','shows','show',NULL,'show','Show',NULL,1),
+ ('season','shows','season','show','season','Season 1',1,1);")?;
+        Ok(())
+    }).await.unwrap();
+    insert_episodes(
+        &state,
+        &[
+            ("e1", "season", 1, "One", None),
+            ("e2", "season", 2, "Two", None),
+        ],
+    )
+    .await;
+    let token = login(&state, "alice", DEVICE).await;
+    let alice = [("X-Emby-Token", token.as_str())];
+    let played = |ids: &'static str| {
+        let state = state.clone();
+        let token = token.clone();
+        async move {
+            let (status, page) = call(
+                &state,
+                &format!("/Items?Ids={ids}"),
+                "GET",
+                Value::Null,
+                &[("X-Emby-Token", token.as_str())],
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{page}");
+            page["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| {
+                    (
+                        item["Id"].as_str().unwrap().to_owned(),
+                        item["UserData"]["Played"].clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(
+        played("show,season").await,
+        [
+            ("season".to_owned(), json!(false)),
+            ("show".to_owned(), json!(false))
+        ]
+    );
+
+    for episode in ["e1", "e2"] {
+        let (status, data) = call(
+            &state,
+            &format!("/UserPlayedItems/{episode}"),
+            "POST",
+            Value::Null,
+            &alice,
+        )
+        .await;
+        assert_eq!(
+            (status, data["Played"].clone()),
+            (StatusCode::OK, json!(true)),
+            "{data}"
+        );
+    }
+    // Like Jellyfin, a folder is played when nothing in it is left unplayed.
+    assert_eq!(
+        played("show,season").await,
+        [
+            ("season".to_owned(), json!(true)),
+            ("show".to_owned(), json!(true))
+        ]
+    );
+    for filter in ["IsPlayed=true", "Filters=IsPlayed"] {
+        let (ids, _) = list(
+            &state,
+            &format!("/Items?Recursive=true&IncludeItemTypes=Series,Season&{filter}"),
+            &alice,
+        )
+        .await;
+        assert_eq!(ids, ["season", "show"], "{filter}");
+    }
+    for filter in ["IsPlayed=false", "Filters=IsUnplayed"] {
+        let (ids, _) = list(
+            &state,
+            &format!("/Items?Recursive=true&IncludeItemTypes=Series,Season&{filter}"),
+            &alice,
+        )
+        .await;
+        assert!(ids.is_empty(), "{filter}: {ids:?}");
+    }
+}

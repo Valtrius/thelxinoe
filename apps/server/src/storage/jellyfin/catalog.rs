@@ -62,8 +62,9 @@ pub(super) async fn browse_media(
         });
     db.read("jellyfin.catalog.browse_media", move |db| {
         let (args, filter) = media_filter(db, &q, uid, id, parent)?;
+        let (select, from) = (select(), from());
         let sql = format!(
-            "{SELECT} {FROM} {filter} ORDER BY {} LIMIT {} OFFSET {start}",
+            "{select} {from} {filter} ORDER BY {} LIMIT {} OFFSET {start}",
             order(&q),
             crate::jellyfin::storage::sql_limit(limit)
         );
@@ -77,7 +78,7 @@ pub(super) async fn browse_media(
             row.1
         } else {
             db.query_row(
-                &format!("SELECT COUNT(*) FROM ({SELECT} {FROM} {filter})"),
+                &format!("SELECT COUNT(*) FROM ({select} {from} {filter})"),
                 rusqlite::params_from_iter(&args),
                 |r| r.get::<_, i64>(0),
             )? as usize
@@ -92,7 +93,8 @@ pub(super) async fn media_ids(db: &Database, uid: String, q: Query) -> anyhow::R
     db.read("jellyfin.catalog.media_ids", move |db| {
         let parent = q.get("parentid").map(|s| canonical(s));
         let (args, filter) = media_filter(db, &q, uid, None, parent)?;
-        let sql = format!("SELECT m.id {FROM} {filter} ORDER BY {}", order(&q));
+        let from = from();
+        let sql = format!("SELECT m.id {from} {filter} ORDER BY {}", order(&q));
         Ok(db
             .prepare(&sql)?
             .query_map(rusqlite::params_from_iter(&args), |r| r.get::<_, String>(0))?
@@ -234,17 +236,30 @@ fn media_filter(
             bind(json!(ids.split(',').map(canonical).collect::<Vec<_>>()).to_string())
         ));
     }
-    for (key, column) in [("isfavorite", "favorite"), ("isplayed", "watched")] {
+    let watched = crate::watching::watched_sql("m", "u", "?1");
+    for (key, column) in [
+        ("isfavorite", "COALESCE(u.favorite,0)"),
+        ("isplayed", &watched),
+    ] {
         if let Some(value) = q.get(key) {
             conditions.push(format!(
-                "COALESCE(u.{column},0)={}",
+                "{column}={}",
                 i32::from(value.eq_ignore_ascii_case("true"))
             ));
         }
     }
     if let Some(filters) = q.get("filters") {
         for filter in filters.to_ascii_lowercase().split(',') {
-            match filter{"isfavorite"=>conditions.push("COALESCE(u.favorite,0)=1".into()),"isplayed"=>conditions.push("COALESCE(u.watched,0)=1".into()),"isunplayed"=>conditions.push("COALESCE(u.watched,0)=0".into()),"isresumable"=>conditions.push("ep.position>0 AND ep.position<ep.duration*0.9 AND m.kind IN ('movie','episode')".into()),_=>{}}
+            match filter {
+                "isfavorite" => conditions.push("COALESCE(u.favorite,0)=1".into()),
+                "isplayed" => conditions.push(format!("{watched}=1")),
+                "isunplayed" => conditions.push(format!("{watched}=0")),
+                "isresumable" => conditions.push(format!(
+                    "{} AND m.kind IN ('movie','episode')",
+                    crate::watching::in_progress_sql("ep")
+                )),
+                _ => {}
+            }
         }
     }
 
@@ -306,10 +321,11 @@ pub(super) async fn filters(db: &Database, user: String, q: Query) -> anyhow::Re
     db.read("jellyfin.catalog.filters", move |db| {
         let parent = q.get("parentid").map(|value| canonical(value));
         let (args, filter) = media_filter(db, &q, user, None, parent)?;
+        let from = from();
         let mut genres = std::collections::BTreeSet::new();
         let mut audio = std::collections::BTreeSet::new();
         let mut subtitles = std::collections::BTreeSet::new();
-        let sql = format!("SELECT m.metadata,file.probe {FROM} LEFT JOIN media_sources source ON source.media_id=m.id LEFT JOIN media_files file ON file.id=source.file_id AND file.present=1 {filter}");
+        let sql = format!("SELECT m.metadata,file.probe {from} LEFT JOIN media_sources source ON source.media_id=m.id LEFT JOIN media_files file ON file.id=source.file_id AND file.present=1 {filter}");
         let mut statement = db.prepare(&sql)?;
         let mut rows = statement.query(rusqlite::params_from_iter(&args))?;
         while let Some(row) = rows.next()? {
@@ -436,14 +452,25 @@ pub(super) async fn display_preferences(
     }).await
 }
 
-pub(super) const SELECT: &str = concat!(
-    "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.created_at,m.root_id,COALESCE(u.favorite,0),COALESCE(u.watched,0),COALESCE(ep.position,0),COALESCE(ep.duration,0),p.kind,p.sort_number,pc.title,p.parent_id,gc.title,(SELECT f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.edition,f.id LIMIT 1),(SELECT COUNT(*) FROM media ch WHERE ch.parent_id=m.id AND ",
+/// The columns of `row` after its watched mark, up to the total count.
+const COLUMNS: &str = concat!(
+    "COALESCE(ep.position,0),COALESCE(ep.duration,0),p.kind,p.sort_number,pc.title,p.parent_id,gc.title,(SELECT f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.edition,f.id LIMIT 1),(SELECT COUNT(*) FROM media ch WHERE ch.parent_id=m.id AND ",
     on_disk!("ch"),
-    "),COUNT(*) OVER(),\
-    CASE m.kind WHEN 'show' THEN (SELECT COUNT(*) FROM media s JOIN media e ON e.parent_id=s.id LEFT JOIN media_state es ON es.media_id=e.id AND es.user_id=?1 WHERE s.parent_id=m.id AND s.kind='season' AND COALESCE(s.sort_number,1)>0 AND e.kind='episode' AND COALESCE(es.watched,0)=0 AND EXISTS(SELECT 1 FROM media_sources es_source JOIN media_files es_file ON es_file.id=es_source.file_id WHERE es_source.media_id=e.id AND es_file.present=1)) \
-    WHEN 'season' THEN (SELECT COUNT(*) FROM media e LEFT JOIN media_state es ON es.media_id=e.id AND es.user_id=?1 WHERE e.parent_id=m.id AND e.kind='episode' AND COALESCE(es.watched,0)=0 AND EXISTS(SELECT 1 FROM media_sources es_source JOIN media_files es_file ON es_file.id=es_source.file_id WHERE es_source.media_id=e.id AND es_file.present=1)) END"
+    "),COUNT(*) OVER()"
 );
-const FROM: &str = "FROM media m JOIN media_cards c ON c.id=m.id LEFT JOIN media_state u ON u.media_id=m.id AND u.user_id=?1 LEFT JOIN edition_progress ep ON ep.rowid=(SELECT rowid FROM edition_progress WHERE media_id=m.id AND user_id=?1 ORDER BY updated_at DESC,edition LIMIT 1) LEFT JOIN media p ON p.id=m.parent_id LEFT JOIN media_cards pc ON pc.id=p.id LEFT JOIN media_cards gc ON gc.id=p.parent_id";
+fn select() -> String {
+    format!(
+        "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.created_at,m.root_id,COALESCE(u.favorite,0),{},{COLUMNS},{}",
+        crate::watching::watched_sql("m", "u", "?1"),
+        crate::watching::unwatched_count_sql("m", "?1"),
+    )
+}
+fn from() -> String {
+    format!(
+        "FROM media m JOIN media_cards c ON c.id=m.id LEFT JOIN media_state u ON u.media_id=m.id AND u.user_id=?1 LEFT JOIN edition_progress ep ON ep.rowid={} LEFT JOIN media p ON p.id=m.parent_id LEFT JOIN media_cards pc ON pc.id=p.id LEFT JOIN media_cards gc ON gc.id=p.parent_id",
+        crate::watching::latest_resume_point("m.id", "?1"),
+    )
+}
 
 /// External identities under Jellyfin's provider names; values are always strings.
 fn provider_ids(metadata: &Value) -> Value {

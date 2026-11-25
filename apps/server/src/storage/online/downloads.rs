@@ -217,7 +217,7 @@ pub(crate) fn record_state(
     duration: f64,
     stopped: bool,
 ) -> anyhow::Result<()> {
-    let finished = stopped && duration > 0.0 && position >= duration * 0.9;
+    let finished = stopped && duration > 0.0 && crate::watching::finished(position, duration);
     tx.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,updated_at) SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2) ON CONFLICT(user_id,video_id) DO UPDATE SET watched=MAX(watched,excluded.watched),position=excluded.position,updated_at=excluded.updated_at",params![user,video,finished,if duration>0.0 {position}else{0.0},now()])?;
     if finished {
         super::super::watchlists::finish_playback(tx, user, video)?;

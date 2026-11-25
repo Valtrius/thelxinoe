@@ -45,6 +45,8 @@ pub mod transcoding;
 pub mod trickplay;
 pub mod user_media;
 pub mod validation;
+#[path = "storage/watching.rs"]
+mod watching;
 pub use jellyfin::discovery::run as run_discovery;
 pub use online::downloads::run as run_downloads;
 pub use online::run as run_online;

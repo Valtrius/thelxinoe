@@ -294,7 +294,7 @@ pub async fn next_up(state: &AppState, p: &Principal, query: &Query) -> Result<V
     let ids = crate::user_media::next_up(
         state,
         p,
-        crate::user_media::NextUp {
+        crate::watching::NextUp {
             show: query.get("seriesid").map(|id| canonical(id)),
             root: query.get("parentid").map(|id| canonical(id)),
             since,
