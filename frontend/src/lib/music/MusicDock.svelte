@@ -1,8 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
-  import { api, ApiError } from '../api';
   import { onServerEvent } from '../server-events.svelte';
-  import { captureSession } from '../session';
   import { Popover } from 'bits-ui';
   import {
     ChevronDown,
@@ -24,20 +22,14 @@
   import Drawer from '../ui/Drawer.svelte';
   import { appearance, updateAppearance } from '../appearance';
   import { compactViewport } from '../responsive';
-  import { choiceIndex } from '../media-state';
   import { time, type MediaChoice } from '../playback';
-  import {
-    GaplessQueue,
-    type MusicState,
-    type Repeat as RepeatMode,
-  } from '../gapless';
+  import { GaplessAudio, type MusicState } from '../gapless';
   import MusicArt from './MusicArt.svelte';
   import FavoriteToggle from './FavoriteToggle.svelte';
   import QueueList from './QueueList.svelte';
   import { musicPlayer } from './player.svelte';
   import { MusicSession } from './media-session';
-  import { playlistQueue, sortedPlaylistTracks } from './playlist-order';
-  import type { PlaylistDetail } from './playlists.svelte';
+  import { Queue, type Repeat as RepeatMode } from './queue';
 
   let {
     choice,
@@ -55,52 +47,38 @@
     queueOpen = $state(false),
     sheetOpen = $state(false),
     sheetQueue = $state(false);
-  let queue = $state<GaplessQueue>();
+  let audio = $state<GaplessAudio>();
+  let queue = $state<Queue>();
   let generation = 0;
-  let followRequest = 0;
   let disposed = false;
   let closing = Promise.resolve();
   const compact = $derived(compactViewport.current);
   const volume = $derived(muted ? 0 : $appearance.audio_volume);
   $effect(() => {
-    queue?.setVolume(volume);
+    audio?.setVolume(volume);
   });
   $effect(() => {
     const selected = choice;
     untrack(() => void open(selected));
   });
   function release() {
-    const previous = queue;
+    const previous = audio;
+    audio = undefined;
     queue = undefined;
+    musicPlayer.queue = null;
     closing = closing.then(() => previous?.close());
   }
   async function open(selected: MediaChoice) {
     const revision = ++generation;
     release();
-    musicPlayer.following = selected.playlist ?? null;
-    followRequest++;
     musicState = null;
     busy = true;
     waitingTools = false;
     error = '';
     await closing;
     if (disposed || generation !== revision) return;
-    const choices = selected.queue ?? [selected];
-    const index = choiceIndex(choices, selected);
-    // The chosen track keeps the file and position it was chosen with.
-    const list = choices.map((entry: MediaChoice, i: number) =>
-      i === index
-        ? {
-            ...entry,
-            ...selected,
-            queue: undefined,
-            shuffle: undefined,
-            parked: undefined,
-            more: undefined,
-          }
-        : { ...entry, queue: undefined },
-    );
-    const owned = new GaplessQueue(
+    const list = Queue.from(selected);
+    const owned = new GaplessAudio(
       list,
       (value) => {
         if (generation === revision) musicState = value;
@@ -112,18 +90,17 @@
       (value) => {
         if (generation === revision) waitingTools = value;
       },
-      selected.shuffle ? Math.floor(Math.random() * list.length) : index,
-      selected.parked,
     );
-    queue = owned;
-    if (selected.shuffle) owned.setShuffle(true);
+    audio = owned;
+    queue = list;
+    musicPlayer.queue = list;
     try {
       owned.setVolume(volume);
       await owned.start();
-      // Its playlist may have changed since the app last had it open.
-      if (selected.parked) void follow();
+      // Its Playlist may have changed since the app last had it open.
+      if (list.restored) void queue?.syncPlaylist();
       // The track goes first; the rest of its list comes while it plays.
-      if (selected.more && generation === revision) owned.extend(selected.more);
+      if (generation === revision) list.extend();
     } catch (e) {
       await owned.close();
       if (disposed || generation !== revision) return;
@@ -132,49 +109,17 @@
       if (generation === revision) busy = false;
     }
   }
-  async function follow() {
-    const followed = musicPlayer.following;
-    const owned = queue;
-    if (!followed || !owned) return;
-    const request = ++followRequest;
-    const session = captureSession();
-    try {
-      const list = await api<PlaylistDetail>(`/playlists/${followed.id}`);
-      if (request !== followRequest || !session()) return;
-      if (list.revision === followed.revision) return;
-      musicPlayer.following = { id: list.id, revision: list.revision };
-      const sorted = sortedPlaylistTracks(
-        list.items,
-        list.sort_mode,
-        list.sort_direction,
-      );
-      owned.follow(playlistQueue(list, sorted)?.queue ?? []);
-    } catch (e) {
-      // Deleted or made private: the queue carries on by itself.
-      if (
-        request === followRequest &&
-        e instanceof ApiError &&
-        [403, 404].includes(e.status)
-      )
-        musicPlayer.following = null;
-    }
-  }
   $effect(() =>
     onServerEvent((event) => {
       const change = event.payload as { id?: string } | null;
-      if (
-        event.kind === 'server.reconnected' ||
-        (event.kind === 'playlists.changed' &&
-          change?.id === musicPlayer.following?.id)
-      )
-        void follow();
+      if (event.kind === 'server.reconnected') void queue?.syncPlaylist();
+      else if (event.kind === 'playlists.changed')
+        queue?.playlistChanged(change?.id);
     }),
   );
   // A track chosen while the dock leaves brings it back through `open`.
   function stop() {
     generation++;
-    musicPlayer.following = null;
-    followRequest++;
     release();
     sheetOpen = false;
     musicPlayer.state = null;
@@ -204,9 +149,9 @@
     musicPlayer.current = finished ? null : current;
   });
   $effect(() => {
-    const owned = queue;
-    musicPlayer.controls = owned
-      ? { insert: (items, next) => owned.insert(items, next) }
+    const list = queue;
+    musicPlayer.controls = list
+      ? { insert: (items, next) => list.insert(items, next) }
       : null;
   });
   const position = $derived(musicState?.position ?? 0);
@@ -229,11 +174,11 @@
   );
   const paused = $derived(musicState?.paused ?? true);
   const session = new MusicSession({
-    play: () => void queue?.resume(),
-    pause: () => void queue?.pause(),
-    previous: () => void queue?.previous(),
-    next: () => void queue?.skip(),
-    seek: (to) => void queue?.seek(to),
+    play: () => void audio?.resume(),
+    pause: () => void audio?.pause(),
+    previous: () => void audio?.previous(),
+    next: () => void audio?.skip(),
+    seek: (to) => void audio?.seek(to),
   });
   $effect(() => session.track(current));
   $effect(() => session.progress(paused, position, duration));
@@ -255,7 +200,7 @@
   );
   function changeVolume(value: number) {
     muted = false;
-    queue?.setVolume(value);
+    audio?.setVolume(value);
     updateAppearance({ audio_volume: value });
   }
   const fraction = (value: number) =>
@@ -273,7 +218,7 @@
     step="0.1"
     {position}
     disabled={!musicState || loading || finished}
-    onseek={(to) => void queue?.seek(to)}
+    onseek={(to) => void audio?.seek(to)}
   />
 {/snippet}
 {#snippet toggle(size: 'default' | 'large')}
@@ -284,7 +229,7 @@
     aria-label={paused ? 'Play' : 'Pause'}
     title={paused ? 'Play' : 'Pause'}
     disabled={!musicState || finished}
-    onclick={() => void queue?.toggle()}
+    onclick={() => void audio?.toggle()}
   >
     {#if (loading || buffering) && !error}<LoaderCircle
         size={size === 'large' ? 26 : 20}
@@ -322,7 +267,7 @@
       aria-label="Previous track"
       title="Previous track"
       disabled={!musicState}
-      onclick={() => void queue?.previous()}
+      onclick={() => void audio?.previous()}
       ><SkipBack size={20} fill="currentColor" /></Button
     >
     {@render toggle(size)}
@@ -332,7 +277,7 @@
       aria-label="Next track"
       title="Next track"
       disabled={!musicState || finished}
-      onclick={() => void queue?.skip()}
+      onclick={() => void audio?.skip()}
       ><SkipForward size={20} fill="currentColor" /></Button
     >
     <Button
@@ -380,8 +325,8 @@
     {from}
     index={musicState?.index ?? 0}
     {paused}
-    jump={(at) => void queue?.jump(at)}
-    remove={(at) => void queue?.remove(at)}
+    jump={(at) => void audio?.jump(at)}
+    remove={(at) => queue?.remove(at)}
   />
 {/snippet}
 
@@ -437,7 +382,7 @@
         aria-label="Next track"
         title="Next track"
         disabled={!musicState || finished}
-        onclick={() => void queue?.skip()}
+        onclick={() => void audio?.skip()}
         ><SkipForward size={20} fill="currentColor" /></Button
       >
     </div>
@@ -517,11 +462,7 @@
                   variant="ghost"
                   size="sm"
                   disabled={!upcoming}
-                  onclick={() => {
-                    musicPlayer.following = null;
-                    followRequest++;
-                    queue?.clear();
-                  }}>Clear</Button
+                  onclick={() => queue?.clear()}>Clear</Button
                 >
               </div>
               <div data-queue-scroller class="min-h-0 overflow-y-auto">
